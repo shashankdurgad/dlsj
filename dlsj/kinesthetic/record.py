@@ -55,6 +55,7 @@ Keys (two-pedal foot switch: left pedal = space or 1, right pedal = h):
 import json
 import logging
 import queue
+from collections import deque
 import sys
 import time
 from dataclasses import dataclass, field
@@ -120,6 +121,8 @@ class KinestheticRecordConfig:
     sounds: bool = True
     operator: str = ""
     resume: bool = False
+    # Listen for keys in this terminal. The web UI (dlsj.kinesthetic_web) feeds `recorder.keys` instead.
+    terminal_keys: bool = True
 
     def __post_init__(self) -> None:
         if self.gripper_mode not in ("keys", "free"):
@@ -160,8 +163,52 @@ class KinestheticRecorder:
         self.dataset: LeRobotDataset | None = None
         self.start_pose: dict[str, float] | None = None
         cams = list(getattr(self.robot, "cameras", {}) or {})
+        self.messages: deque[str] = deque(maxlen=12)  # recent messages, for the web UI
+        self.status_line = ""
+        self.waiting_for: str | None = None  # "replay_go" while waiting to start a replay
+        self.replaying = False
         self.overlay_camera = cfg.overlay_camera or ("top" if "top" in cams else (cams[0] if cams else None))
         self._reset_take()
+
+    def _say(self, msg: str) -> None:
+        self.messages.append(msg)
+        _say(msg)
+
+    def _status(self, msg: str) -> None:
+        self.status_line = msg
+        _status(msg)
+
+    def snapshot(self) -> dict:
+        """State for the web UI. Read without locks: values may be one tick stale."""
+        phase = self.machine.phase
+        elapsed = (time.perf_counter() - self._take_start) if phase is Phase.RECORDING else self._take_duration
+        return {
+            "phase": phase.name.lower(),
+            "elapsed": round(elapsed, 2),
+            "frames": self._frames_written,
+            "episodes": self.dataset.num_episodes if self.dataset is not None else 0,
+            "arm_held": self.arm_held,
+            "gripper": {"target": round(self.gripper.target, 1), "open": self.gripper.is_open,
+                        "mode": self.cfg.gripper_mode},
+            "stats": self.stats.summary(),
+            "messages": list(self.messages),
+            "status": self.status_line,
+            "waiting_for": self.waiting_for,
+            "replaying": self.replaying,
+            "tracking": self._last_tracking,
+            "has_start_pose": self.start_pose is not None,
+            "task": self.cfg.dataset.single_task,
+            "root": str(self.dataset.root) if self.dataset is not None else "",
+        }
+
+    def overlay_rgb(self) -> np.ndarray | None:
+        """The take's first frame blended over the live view of the overlay camera (RGB), or None."""
+        if self._first_image is None or not self.overlay_camera:
+            return None
+        live = self.robot.cameras[self.overlay_camera].read_latest()
+        if live is None or live.shape != self._first_image.shape:
+            return self._first_image
+        return ((self._first_image.astype(np.uint16) + live.astype(np.uint16)) // 2).astype(np.uint8)
 
     def _reset_take(self) -> None:
         self.lookahead.reset()
@@ -255,7 +302,7 @@ class KinestheticRecorder:
             self._release_arm()
         self._take_start = time.perf_counter()
         self.cues.play("start")
-        _say(f"● REC take for episode {self.dataset.num_episodes}  (space stop, h reject, n/f save)")
+        self._say(f"● REC take for episode {self.dataset.num_episodes}  (space stop, h reject, n/f save)")
 
     def _write(self, frames: list[dict]) -> None:
         for f in frames:
@@ -293,19 +340,19 @@ class KinestheticRecorder:
 
     def _enter_review(self, reason: str) -> None:
         self._close_take()
-        _say(f"■ {reason}: {self._take_duration:.1f}s, {self._frames_written} frames. Review: space/n accept, "
+        self._say(f"■ {reason}: {self._take_duration:.1f}s, {self._frames_written} frames. Review: space/n accept, "
              "f failure, r replay on robot, h reject")
 
     def _finish_take(self, cmd: Command) -> None:
         if cmd is Command.DISCARD:
             self._close_take()
             self.dataset.clear_episode_buffer()
-            _say(f"✗ rejected ({self._take_duration:.1f}s)")
+            self._say(f"✗ rejected ({self._take_duration:.1f}s)")
         else:
             self._close_take()
             if self._frames_written == 0:
                 self.dataset.clear_episode_buffer()
-                _say("✗ nothing recorded, discarded")
+                self._say("✗ nothing recorded, discarded")
             else:
                 self._save_take(success=cmd is Command.SAVE_SUCCESS)
         self._reset_take()
@@ -339,14 +386,15 @@ class KinestheticRecorder:
             )
         if success:
             self.stats.add(self._take_duration)
-        _say(f"✓ saved episode {ep} as {'SUCCESS' if success else 'FAILURE'} ({self._take_duration:.1f}s, "
+        self._say(f"✓ saved episode {ep} as {'SUCCESS' if success else 'FAILURE'} ({self._take_duration:.1f}s, "
              f"{label['achieved_fps']} fps) | {self.stats.summary()}")
 
     # ---------------------------------------------------------------- review replay
     def _wait_go_or_reject(self, prompt: str) -> bool:
         """Block until go (True) or reject/quit (False). Shows the alignment overlay if enabled."""
-        _say(prompt)
+        self._say(prompt)
         show = self._overlay_enabled()
+        self.waiting_for = "replay_go"
         try:
             while True:
                 if show:
@@ -361,6 +409,7 @@ class KinestheticRecorder:
                 if k in self.keymap.reject or k in self.keymap.quit:
                     return False
         finally:
+            self.waiting_for = None
             if show:
                 self._close_overlay()
 
@@ -391,16 +440,17 @@ class KinestheticRecorder:
 
     def _replay_take(self) -> None:
         if not self._take_actions:
-            _say("nothing to replay")
+            self._say("nothing to replay")
             return
         actions = np.stack(self._take_actions)
         first = dict(zip(self.motor_names, map(float, actions[0]), strict=True))
         self._move_to(first)
         if not self._wait_go_or_reject("At the take's first pose. Reset the scene, then space = replay, h = cancel"):
-            _say("replay cancelled. Review: space/n accept, f failure, r replay, h reject")
+            self._say("replay cancelled. Review: space/n accept, f failure, r replay, h reject")
             return
         measured, sent = [], []
         stopped = False
+        self.replaying = True
         t_start = time.perf_counter()
         for a in actions:
             t0 = time.perf_counter()
@@ -417,6 +467,7 @@ class KinestheticRecorder:
                 pass
             precise_sleep(max(0.0, self.period - (time.perf_counter() - t0)))
         elapsed = time.perf_counter() - t_start
+        self.replaying = False
         self._hold_arm()
         while not self.keys.empty():  # keys pressed during the replay must not answer the review prompt
             self.keys.get_nowait()
@@ -429,11 +480,11 @@ class KinestheticRecorder:
             "replay_s": round(elapsed, 3),
             "stopped_early": stopped,
         }
-        _say(f"{'⏹ replay stopped' if stopped else '▶ replay done'} in {elapsed:.1f}s "
+        self._say(f"{'⏹ replay stopped' if stopped else '▶ replay done'} in {elapsed:.1f}s "
              f"(take {self._take_duration:.1f}s) | {rep.format('deg')}")
         if worst_arm > 10.0:
-            _say("⚠ arm tracking error > 10 deg: this take may be too fast for the servos to reproduce")
-        _say("Review: space/n accept, f failure, r replay again, h reject")
+            self._say("⚠ arm tracking error > 10 deg: this take may be too fast for the servos to reproduce")
+        self._say("Review: space/n accept, f failure, r replay again, h reject")
 
     # ---------------------------------------------------------------- keys
     def _apply(self, cmd: Command) -> bool:
@@ -460,14 +511,14 @@ class KinestheticRecorder:
         elif cmd is Command.TOGGLE_HOLD:
             if self.arm_held:
                 self._release_arm()
-                _say("arm released (torque off): hold it")
+                self._say("arm released (torque off): hold it")
             else:
                 self._hold_arm()
-                _say("arm held (torque on)")
+                self._say("arm held (torque on)")
         elif cmd is Command.SAVE_START_POSE:
             self.start_pose = {m: float(v) for m, v in self._present().items()}
             (self.sidecar / "start_pose.json").write_text(json.dumps(self.start_pose, indent=2))
-            _say("start pose saved" + ("" if self.cfg.go_to_start else " (use --go_to_start=true to return to it)"))
+            self._say("start pose saved" + ("" if self.cfg.go_to_start else " (use --go_to_start=true to return to it)"))
         return True
 
     def _drain_keys(self) -> bool:
@@ -505,10 +556,11 @@ class KinestheticRecorder:
             self._load_start_pose()
             if cfg.go_to_start and self.start_pose:
                 self._move_to(self.start_pose)
-            listener = create_key_listener(self.keys.put, controls_help="space go, h reject, q quit")
+            if cfg.terminal_keys:
+                listener = create_key_listener(self.keys.put, controls_help="space go, h reject, q quit")
             print("Keys" + __doc__.split("Keys", 1)[1])
-            _say(f"dataset: {self.dataset.root}")
-            _say("Arm is HELD. Hold it, then press SPACE to start a take (torque is released when recording starts).")
+            self._say(f"dataset: {self.dataset.root}")
+            self._say("Arm is HELD. Hold it, then press SPACE to start a take (torque is released when recording starts).")
             with VideoEncodingManager(self.dataset):
                 last_status = 0.0
                 while True:
@@ -526,11 +578,11 @@ class KinestheticRecorder:
                             if cfg.target_s:
                                 tgt = f" / target {cfg.target_s:.1f}s" + (" ⚠ OVER" if elapsed > cfg.target_s else "")
                             grip = "open" if self.gripper.is_open else "closed"
-                            _status(f"● {elapsed:5.1f}s{tgt} | gripper {grip} ({self.gripper.target:.0f})")
+                            self._status(f"● {elapsed:5.1f}s{tgt} | gripper {grip} ({self.gripper.target:.0f})")
                             last_status = t0
                     elif phase is Phase.IDLE and t0 - last_status > 0.25:
                         g = self.bus.read("Present_Position", GRIPPER)
-                        _status(f"idle | arm {'HELD' if self.arm_held else 'free'} | gripper measured {g:.1f} "
+                        self._status(f"idle | arm {'HELD' if self.arm_held else 'free'} | gripper measured {g:.1f} "
                                 f"target {self.gripper.target:.0f} | {self.stats.summary()} | space start, h hold, q quit")
                         last_status = t0
                     precise_sleep(max(0.0, self.period - (time.perf_counter() - t0)))
@@ -542,12 +594,12 @@ class KinestheticRecorder:
             if self.robot.is_connected:
                 # disconnect() turns torque off, so the arm goes limp: give the operator time to support it.
                 for s in range(3, 0, -1):
-                    _status(f"Exiting: support/rest the arm, torque off in {s}s")
+                    self._status(f"Exiting: support/rest the arm, torque off in {s}s")
                     time.sleep(1.0)
                 self.robot.disconnect()
             if listener is not None:
                 listener.stop()
-            _say(f"done | {self.stats.summary()}")
+            self._say(f"done | {self.stats.summary()}")
 
 
 @parser.wrap()
