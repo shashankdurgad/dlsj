@@ -14,7 +14,8 @@ Hackathon repo for **Intel's challenge at Junction**: end-to-end robotic defect 
 - **VLA:** **π0.5 trained via Physical AI Studio** on cloud RTX, exported to OpenVINO INT8, run with the `physicalai` runtime on the XPS GPU. SmolVLA is the fallback; **ACT is the baseline**. No Chinese VLA beats π0.5 in independent tests (PLAYBOOK §2.1, `reports/XPU kernels and Chinese VLAs.md`).
 - **Device split:** Anomalib on the **NPU** (static shapes); π0.5 on the **GPU**; cameras, rules and control on the **CPU**. Stretch: π0.5 action expert on the NPU.
 - **REASON:** a rule table maps (defect flag, colour, kickoff rules) to a fixed instruction string, which conditions π0.5. Use identical strings in training demos and at run time.
-- **Defect detection:** Anomalib PaDiM/PatchCore on the fixed overhead view (arm parked out of frame), plus a depth height-map check against the table plane.
+- **Defect detection:** Anomalib PaDiM/PatchCore on the fixed overhead view (arm parked out of frame), plus a depth height-map check against the table plane. Its anomaly map must also give a **localization signal** (defect box → table coordinates) consumed by REASON.
+- **Studio is the hub:** environment, recording, remote SSH training on the cloud RTX box, export and Run model all go through the Studio UI on the XPS (PLAYBOOK §4.0). Studio inference only covers GPU/CPU, so NPU work uses our own OpenVINO code.
 - **Force:** gripper `Present_Current` in `observation.state` (never in actions), plus a rule-based grasp check.
 - **OPTIMIZE:** always report baseline vs optimised median/p99 latency (PLAYBOOK §8.1). The LeRobot PyTorch-XPU policy server in `~/inference/.venv` is the baseline.
 - **XPU inference:** follow the PLAYBOOK §4.5 checklist. `torch.compile(mode="reduce-overhead")` is a no-op on XPU; no IPEX; don't quantise ACT.
