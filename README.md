@@ -1,6 +1,6 @@
 # dlsj: Intel Physical AI challenge (SO-101, Junction)
 
-End-to-end robotic **defect detection and manipulation**: an SO-101 arm tells "perfect" from "defective" objects and sorts them by the kickoff rules. Built on **Intel Physical AI Studio + Anomalib + OpenVINO**, deployed on a **Core Ultra Series 3** laptop (Dell XPS 16, X9 388H) using **CPU, GPU and NPU**.
+End-to-end robotic **defect detection and manipulation**: an SO-101 arm picks a brick, shows it to an inspection camera, and Anomalib decides whether it is **plain (perfect)** or **marked with a cross (defective)**. The VLA then places plain bricks on the blue plate and crossed bricks on the pink plate. Built on **Intel Physical AI Studio + Anomalib + OpenVINO**, deployed on a **Core Ultra Series 3** laptop (Dell XPS 16, X9 388H) using **CPU, GPU and NPU**.
 
 The full plan, commands, code snippets and sources are in **[docs/PLAYBOOK.md](docs/PLAYBOOK.md)**.
 

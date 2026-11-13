@@ -21,6 +21,14 @@
 - The demo setup has **two plates (orange/red and blue)**. In the slide's photos the perfect brick ends on the blue plate. ⚠️ Confirm the plate-to-label mapping in the kickoff rules.
 - Intel's own reference split: **ACT does the pick-and-present skill, SmolVLA does the language-conditioned place** ("place the brick on the … plate").
 - Plate mapping in the slide photos: **perfect → blue plate**, **defective → pink/red plate**. ⚠️ Confirm in the kickoff rules.
+
+**Our concrete task (team decision): "defective" = a brick marked with a cross.**
+- We draw a **cross (✗) on some bricks** and leave the others **plain**.
+- **Anomalib is trained only on plain bricks**, so a cross is the anomaly. Anomalib decides; π0.5 only moves:
+  - **plain → "perfect" → blue plate**: `"place the brick on the blue plate"`;
+  - **cross → "defective" → pink plate**: `"place the brick on the pink plate"`.
+- The anomaly map's hot region is the cross itself, which gives the **localization signal** for free (show it as the heatmap in the demo).
+- Further extension: numbered bricks (Section 8.2).
 - **Our choice (team decision): no ACT. One VLA, π0.5, does every movement**, switched by instruction:
   - `"pick up the brick and show it to the inspection camera"`;
   - `"place the brick on the blue plate"`;
@@ -80,7 +88,7 @@
 - **Cameras:** `wrist`, `top`, `inspect`.
 - **Objects:** bricks.
 - **Destinations:** plates.
-- **Workflow:** **pick a brick → present it to the `inspect` camera → Anomalib decides perfect/defective → choose the plate per the kickoff rules → place it**.
+- **Workflow:** **pick a brick → present it to the `inspect` camera → Anomalib decides plain (perfect) vs cross-marked (defective) → choose the plate → place it**.
 - **Tools:**
   - recording: `dlsj.teleop_record` (leader/follower) and `dlsj.kinesthetic_web` (hand-guided);
   - calibration: in `calibration/` via `dlsj.arms`;
@@ -284,6 +292,7 @@ pip install "physicalai[so101,realsense]"
   3. `"place the brick on the pink plate"`: from the `inspect` spot to the pink plate. Use **one fixed string per destination** from the kickoff rules, and the exact same strings at run time (REASON step, Section 8).
 - **Balance the demos across instructions**, and vary which object goes where, so the policy listens to the instruction instead of guessing from the object's look.
 - With `dlsj.teleop_record` / `dlsj.kinesthetic_web` this is `--task "..."`. Record each instruction as its own `--repo-id`, or as a `--resume` batch, and merge.
+- **Mix plain and cross-marked bricks in every skill's demos.** The policy must not learn "cross → go pink" by itself: the plate comes only from the instruction, which Anomalib's result chooses. Place demos for each plate should use both kinds of brick.
 - Splitting at the `inspect` spot is what lets Anomalib + REASON choose skill 2 or 3. Record roughly **as many pick demos as place demos combined**, and the two place skills equally.
 - Optional fourth skill for recovery: `"turn the brick and show it to the inspection camera again"` (Section 8, uncertainty band).
 
@@ -571,7 +580,14 @@ def dominant_colour(bgr, roi=None, min_px=400):
 ### 6.1 Recommended approach
 **Run it on the NPU** (the brief requires using the NPU): export to OpenVINO with a **fixed input shape** and compile on `"NPU"` (`OpenVINOInferencer(path=..., device="NPU")`). PaDiM/PatchCore with a ResNet-18 backbone is a natural NPU fit (~0.9 ms for the backbone on this NPU). Train in `~/inference/.venv-anomalib` on the XPS: the model is tiny and needs on-site images.
 
-**Anomalib PaDiM or PatchCore**, trained on **50–200 "good" crops from the fixed `inspect` camera, of bricks held at the present pose**, exported to OpenVINO, gating which plate the brick goes to. Runs **separately from the policy**. The policy brings the brick to roughly the same spot in front of `inspect` every time, which is exactly the fixed viewpoint memory-bank methods need. Crop tightly around the brick and keep the gripper fingers' position consistent.
+**Our anomaly = a hand-drawn cross on the brick** (Challenge brief). What that means for data and setup:
+- **Train only on plain bricks**: 50–200 `inspect` crops, covering **every brick colour and size** in the kit, several grasp orientations, and the lighting you'll demo under. Anything not in the plain set (a new colour, a new orientation) will also look anomalous, so cover the normal variation well.
+- **Make the cross visible to `inspect`:** decide which face gets the cross, and record pick demos so that face ends up facing the camera. Simpler: **draw the cross on every face** of a marked brick (or at least the top and two long sides).
+- **Cross style:** a thick, high-contrast marker (black on light bricks, white paint pen on dark bricks), at least a third of the face. Thin or tiny crosses are what PaDiM/PatchCore miss.
+- **Test set:** 20+ crossed bricks of mixed colours, plus 20+ held-out plain bricks. Calibrate the threshold so all plain bricks pass with margin. False "defective" calls are the usual failure (Section 6.5).
+- **Don't put crosses in the training set**, not even by accident. One crossed brick in `good/` teaches Anomalib that crosses are normal.
+
+**Anomalib PaDiM or PatchCore**, trained on **50–200 "good" crops from the fixed `inspect` camera, of plain bricks held at the present pose**, exported to OpenVINO, gating which plate the brick goes to. Runs **separately from the policy**. The policy brings the brick to roughly the same spot in front of `inspect` every time, which is exactly the fixed viewpoint memory-bank methods need. Crop tightly around the brick and keep the gripper fingers' position consistent.
 
 - Intel's own robot demo: a Dobot arm with **PaDiM, resnet18, 256×256, 1 epoch, F1AdaptiveThreshold** ([Intel article](https://www.intel.com/content/www/us/en/developer/articles/training/defect-detection-with-anomalib.html)), which is almost exactly this setup.
 - Anomalib v2.7.0 has 33 image models, including PatchCore, PaDiM, EfficientAd, Dinomaly, SuperSimpleNet, UniNet, and few/zero-shot **AnomalyDINO, WinCLIP, FoundAD, AnomalyVFM, VLM-AD** ([models](https://anomalib.readthedocs.io/en/latest/markdown/guides/reference/models/image/index.html)).
@@ -585,8 +601,8 @@ pip install "anomalib[xpu,openvino]"
 Dataset layout:
 ```
 data/
-  good/   # 50–200 `inspect` crops of perfect bricks held at the present pose (same crop as at run time)
-  bad/    # optional: a few defective examples (for threshold calibration/eval)
+  good/   # 50–200 `inspect` crops of PLAIN bricks (no cross) at the present pose, all colours/orientations
+  bad/    # crossed bricks: used only for threshold calibration and evaluation, never for training
 ```
 ```python
 from anomalib.data import Folder
@@ -774,7 +790,7 @@ The same "fully closed = nothing grasped" override improved disturbance recovery
 2. `DETECT`: wait for `Moving` = 0, grab 3 `inspect` frames, crop the brick, run Anomalib on the **NPU** (median score). Output a **structured signal** `{label: perfect|defective, score, region}`:
    - `region` = the anomaly map thresholded → connected components → bounding box on the brick: the **localization signal** the brief requires;
    - also log it and draw it as a heatmap overlay.
-3. `REASON`: apply the **kickoff rules** to (label, score, region, brick colour/type via HSV on the `inspect` crop, anything else the rules use) → **which plate** (default per the slide: perfect → blue, defective → pink).
+3. `REASON`: apply the **kickoff rules** to (label, score, region, brick colour/type via HSV on the `inspect` crop, anything else the rules use) → **which plate** (our task: **plain → blue, cross → pink**).
    - **Uncertainty band (reliability criterion, 10 pts):** if the score is within a margin of the threshold, or the 3 frames disagree, don't guess. Re-inspect: wait, re-grab frames, or run the optional `"turn the brick and show it ... again"` skill. If it's still uncertain after 2 tries, treat it as **defective** (the safe default) and log it.
    - Then pick the instruction → one of a fixed set of instruction strings, e.g. `"place the brick on the reject plate"`. Keep the strings **identical** to the training demos. A rule table is enough; an LLM is optional narration only.
 4. `PLACE`: run **π0.5** with that instruction until the brick is released on the plate.
@@ -865,6 +881,7 @@ Reference points:
 - [ ] OpenVINO IR is static-shape; `benchmark_app -pc` shows SDPA/GatedMLP fusions; median + p99 latency logged.
 - [ ] Go/no-go on π0.5 vs SmolVLA within the first hour of training.
 - [ ] Uncertain detections trigger re-inspection, and fall back to the defective plate after 2 tries.
+- [ ] Anomalib trained only on plain bricks (all colours/orientations); threshold calibrated on 20+ crossed vs 20+ held-out plain bricks; crosses visible to `inspect` from the presented face.
 - [ ] Anomaly threshold calibrated **on site**; false-positive rate checked on 20+ good samples; model **runs on the NPU**.
 - [ ] Defect output is a structured signal `{label, score, box, table_xyz}` and is logged per object.
 - [ ] Pitch ready: **concise architecture + optimization decisions** explanation (loop diagram, device split and why, OPTIMIZE table), per expectation 6.
