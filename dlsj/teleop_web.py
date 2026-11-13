@@ -28,6 +28,7 @@ import numpy as np
 from dlsj import arms
 
 log = logging.getLogger("teleop_web")
+CAM_BACKEND = cv2.CAP_AVFOUNDATION if sys.platform == "darwin" else cv2.CAP_V4L2
 
 
 # ----------------------------------------------------------------------------- cameras
@@ -56,7 +57,7 @@ class CameraStream:
         self._stop.set()
 
     def _open(self) -> cv2.VideoCapture:
-        cap = cv2.VideoCapture(self.index, cv2.CAP_AVFOUNDATION)
+        cap = cv2.VideoCapture(self.index, CAM_BACKEND)
         if not cap.isOpened():
             cap = cv2.VideoCapture(self.index)
         if self.width and self.height:
@@ -108,7 +109,7 @@ class CameraStream:
 def probe_camera_indices(max_index: int) -> list[int]:
     found = []
     for i in range(max_index):
-        cap = cv2.VideoCapture(i, cv2.CAP_AVFOUNDATION)
+        cap = cv2.VideoCapture(i, CAM_BACKEND)
         ok = cap.isOpened() and cap.read()[0]
         cap.release()
         if ok:
@@ -504,7 +505,7 @@ def main() -> None:
         help="cap per-step follower motion (degrees) for safety; unset = no cap",
     )
     p.add_argument("--cameras", default="auto", help='"auto" or name=index,... e.g. wrist=1,top=2')
-    p.add_argument("--max-camera-index", type=int, default=8)
+    p.add_argument("--max-camera-index", type=int, default=8 if sys.platform == "darwin" else 48)
     p.add_argument("--width", type=int, default=640)
     p.add_argument("--height", type=int, default=480)
     p.add_argument("--cam-fps", type=int, default=30)
