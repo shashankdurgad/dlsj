@@ -4,3 +4,4 @@ __pycache__/
 ov_cache/
 exports/
 outputs/
+data/
