@@ -208,3 +208,12 @@ def test_engages_when_leader_matches_and_not_again_right_after_hold(tmp_path, mo
     assert wait_for(lambda: t.phase == "live")
     t.stop()
     th.join(3)
+
+
+def test_parse_cameras_accepts_indices_and_device_paths():
+    from dlsj.teleop_web import parse_cameras
+
+    assert parse_cameras("wrist=0, top=/dev/v4l/by-id/usb-cam-video-index0", 8) == {
+        "wrist": 0,
+        "top": "/dev/v4l/by-id/usb-cam-video-index0",
+    }

@@ -35,7 +35,7 @@ CAM_BACKEND = cv2.CAP_AVFOUNDATION if sys.platform == "darwin" else cv2.CAP_V4L2
 class CameraStream:
     """Grabs frames from one OpenCV camera in a thread and keeps the latest one as JPEG."""
 
-    def __init__(self, name: str, index: int, width: int, height: int, fps: int, quality: int):
+    def __init__(self, name: str, index: int | str, width: int, height: int, fps: int, quality: int):
         self.name, self.index = name, index
         self.width, self.height, self.fps = width, height, fps
         self.quality = quality
@@ -117,7 +117,8 @@ def probe_camera_indices(max_index: int) -> list[int]:
     return found
 
 
-def parse_cameras(spec: str, max_index: int) -> dict[str, int]:
+def parse_cameras(spec: str, max_index: int) -> dict[str, int | str]:
+    """"auto", or name=index or name=/dev/v4l/by-id/... (stable across re-plugs on Linux), comma-separated."""
     if spec == "auto":
         idx = probe_camera_indices(max_index)
         log.info("auto-detected camera indices: %s", idx)
@@ -125,7 +126,8 @@ def parse_cameras(spec: str, max_index: int) -> dict[str, int]:
     out = {}
     for part in filter(None, (p.strip() for p in spec.split(","))):
         name, _, index = part.partition("=")
-        out[name.strip()] = int(index)
+        index = index.strip()
+        out[name.strip()] = int(index) if index.isdigit() else index
     return out
 
 
