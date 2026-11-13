@@ -64,7 +64,7 @@ class EpisodeRecorder:
                  bowls: list[str] | None = None, pick_task: str = PICK_TASK, place_task: str = PLACE_TASK,
                  inspect_camera: str | None = "inspect", detector: BrickInViewDetector | None = None,
                  record_depth: bool = True, auto_split: bool = False, continuous: bool = True,
-                 streaming_encoding: bool = True):
+                 streaming_encoding: bool = True, checkpoint_every: int = 10):
         self.teleop, self.streams = teleop, streams
         self.repo_id, self.fps = repo_id, fps
         self.root = Path(root) if root else Path("data") / repo_id.split("/")[-1]
@@ -79,6 +79,12 @@ class EpisodeRecorder:
         self.auto_split = auto_split
         # continuous: saving a take immediately starts the next one, so takes chain without pausing
         self.continuous, self.streaming_encoding = continuous, streaming_encoding
+        # LeRobot keeps the frame table (state, action, task) in one open parquet file that only gets its
+        # footer on finalize(); a crash before that loses every episode's actions. Every `checkpoint_every`
+        # saved takes we finalize and resume into a new file, so at most that many takes are ever unsealed.
+        self.checkpoint_every = checkpoint_every
+        self._since_checkpoint = 0
+        self.checkpoints = 0
         # RealSense streams carry aligned depth; it is recorded as observation.images.<cam>_depth (uint16 mm)
         self.depth_cams = [n for n, s in streams.items() if record_depth and getattr(s, "use_depth", False)]
         self.depth_shapes: dict[str, tuple[int, int, int]] = {}
@@ -132,14 +138,10 @@ class EpisodeRecorder:
         }
 
     def open_dataset(self) -> None:
-        from lerobot.configs.video import RGBEncoderConfig
         from lerobot.datasets import LeRobotDataset
 
         self._wait_for_cameras()
-        n = max(1, len(self.streams))
-        # streaming encoding: videos are encoded while recording, so saving a take is near-instant
-        kw = dict(root=self.root, image_writer_threads=4 * n, rgb_encoder=RGBEncoderConfig(vcodec=self.vcodec),
-                  streaming_encoding=self.streaming_encoding)
+        kw = self._dataset_kwargs()
         if self.resume and (self.root / "meta" / "info.json").exists():
             self.dataset = LeRobotDataset.resume(self.repo_id, **kw)
             want = set(self.features())
@@ -152,6 +154,24 @@ class EpisodeRecorder:
                                                  features=self.features(), use_videos=True, **kw)
         log.info("recording to %s (%d episodes already)", self.root, self.dataset.num_episodes)
         self._load_bowl()
+
+    def _dataset_kwargs(self) -> dict:
+        from lerobot.configs.video import RGBEncoderConfig
+
+        n = max(1, len(self.streams))
+        # streaming encoding: videos are encoded while recording, so saving a take is near-instant
+        return dict(root=self.root, image_writer_threads=4 * n, rgb_encoder=RGBEncoderConfig(vcodec=self.vcodec),
+                    streaming_encoding=self.streaming_encoding)
+
+    def checkpoint(self) -> None:
+        """Seal everything recorded so far (finalize), then carry on in a fresh data file (resume)."""
+        from lerobot.datasets import LeRobotDataset
+
+        self.dataset.finalize()
+        self.dataset = LeRobotDataset.resume(self.repo_id, **self._dataset_kwargs())
+        self._since_checkpoint = 0
+        self.checkpoints += 1
+        log.info("checkpoint: %d episodes sealed", self.dataset.num_episodes)
 
     def _store_bowl(self) -> None:
         if self.dataset is not None:
@@ -263,6 +283,9 @@ class EpisodeRecorder:
         with open(self.sidecar / "labels.jsonl", "a") as fh:
             fh.write(json.dumps(label) + "\n")
         self.saved["success" if success else "failure"] += 1
+        self._since_checkpoint += 1
+        if self.checkpoint_every and self._since_checkpoint >= self.checkpoint_every:
+            self.checkpoint()
         if success:
             self.stats.add(self._take_duration)
         self.phase = "idle"
@@ -378,6 +401,7 @@ class EpisodeRecorder:
                 "threshold": getattr(self.detector, "threshold", None),
                 "guide": "square" if hasattr(self.detector, "prob") else list(self.detector.cfg.roi),
                 "depth_cams": self.depth_cams, "auto_split": self.auto_split, "continuous": self.continuous,
+                "unsealed": self._since_checkpoint, "checkpoints": self.checkpoints,
                 "teleop_live": self._teleop_live(), "root": str(self.root),
                 "task": self._current_task() if self.phase == "recording" else None,
             }
@@ -642,6 +666,8 @@ def main() -> None:
                    help="after saving, wait for space instead of starting the next take straight away")
     p.add_argument("--no-streaming", action="store_true",
                    help="encode videos when a take is saved instead of while recording (slower saves)")
+    p.add_argument("--checkpoint-every", type=int, default=10,
+                   help="seal the dataset every N saved takes so a crash can't lose more than that (0 = only at exit)")
     p.add_argument("--auto-split", action="store_true",
                    help="let the classifier mark the in-view moment instead of the operator's space press")
     p.add_argument("--width", type=int, default=640)
@@ -681,7 +707,8 @@ def main() -> None:
                                args.operator, args.vcodec, args.resume, [b.strip() for b in args.bowls.split(",")],
                                args.pick_task, args.place_task, args.inspect_camera, detector,
                                record_depth=not args.no_depth, auto_split=args.auto_split,
-                               continuous=not args.no_continuous, streaming_encoding=not args.no_streaming)
+                               continuous=not args.no_continuous, streaming_encoding=not args.no_streaming,
+                               checkpoint_every=args.checkpoint_every)
     server = None
     worker = rec_thread = None
     try:

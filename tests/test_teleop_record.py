@@ -308,3 +308,39 @@ def test_keys_space_starts_and_stops_s_saves_d_discards(rec):
     assert rec.phase == "review" and "(m)" in rec.message
     press(rec, "fail")  # f saves as failed, then the next take starts
     assert rec.saved["failure"] == 1 and rec.phase == "recording"
+
+
+def test_checkpoint_seals_earlier_takes_while_recording_continues(tmp_path):
+    import pyarrow.parquet as pq
+
+    streams = {"top": FakeRealSense("top"), "inspect": FakeStream("inspect")}
+    r = EpisodeRecorder(FakeTeleop(), streams, "local/test_ckpt", root=tmp_path / "ds", bowls=["yellow"],
+                        checkpoint_every=2, detector=BrickInViewDetector(DetectorConfig(stable_frames=2, downscale=1)))
+    r.open_dataset()
+    r.teleop.go_live()
+
+    def take(n):
+        if r.phase == "idle":
+            press(r, "space")
+        step(r, n)
+        press(r, "inview", "bowl1")
+        step(r, n)
+        press(r, "space", "save")
+
+    take(2)
+    take(3)  # second save triggers a checkpoint
+    assert r.checkpoints == 1 and r.dataset.num_episodes == 2
+    first = tmp_path / "ds" / "data" / "chunk-000" / "file-000.parquet"
+    sealed = pq.read_table(first, columns=["episode_index"]).to_pandas()  # readable while still recording
+    assert sorted(sealed.episode_index.unique()) == [0, 1]
+    take(4)  # continues into a new data file
+    r.close()
+
+    from lerobot.datasets import LeRobotDataset
+
+    ds = LeRobotDataset("local/test_ckpt", root=tmp_path / "ds")
+    assert ds.num_episodes == 3
+    assert len(list((tmp_path / "ds" / "data").glob("*/*.parquet"))) == 2
+    labels = (r.sidecar / "labels.jsonl").read_text().splitlines()
+    assert len(labels) == 3
+    assert float(ds[ds.num_frames - 1]["observation.images.top_depth"].float().median()) > 0
