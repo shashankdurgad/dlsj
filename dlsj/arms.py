@@ -201,7 +201,8 @@ def ensure_calibrated(device, label: str, force: bool = False) -> bool:
     if warn:
         log.warning("%s calibration notes (not blocking; --calibrate %s to redo):\n  - %s",
                     label, label, "\n  - ".join(warn))
-    hold_present_goal(device.bus, label)
+    if hasattr(device, "send_action"):  # follower only; a goal write also switches a Feetech servo's torque on
+        hold_present_goal(device.bus, label)
     device.configure()  # LeRobot enables torque at the end of this for a follower
     return recalibrated
 
@@ -211,7 +212,8 @@ def hold_present_goal(bus, label: str = "") -> None:
 
     Feetech servos drive to the stored goal the moment torque is enabled. A stale goal (we found 0 on every
     joint after another tool had used the arm) makes the follower lunge to its limits at full torque, buzz
-    against them and brown out the bus. LeRobot's configure() does not reset it, so we do.
+    against them and brown out the bus. LeRobot's configure() does not reset it, so we do. Note the write itself
+    switches torque on (Feetech behaviour); with goal == present the arm just holds still.
     """
     bus.disable_torque()
     present = bus.sync_read("Present_Position", normalize=False, num_retry=5)
