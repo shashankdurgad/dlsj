@@ -16,6 +16,8 @@ The full plan, commands, code snippets and sources are in **[docs/PLAYBOOK.md](d
 
 No ACT: one π0.5 model handles pick and place by instruction (Intel's reference uses ACT + SmolVLA; SmolVLA is our fallback). Training runs on the Modal GPU instance.
 
+**Phase 2 (extension):** bricks are numbered; a number reader on the `top` camera (NPU) and a planner sort them, π0.5 picks each brick in order, and `inspect` re-checks the number and defects before placing. See PLAYBOOK §8.2.
+
 ## Timeline
 
 1. **0–1 h:** XPS is ready (`ssh xps`); verify the arm and the three cameras; write down the kickoff rules.

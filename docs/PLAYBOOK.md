@@ -106,6 +106,7 @@
 | **REASON** | Decision | Kickoff rules + defect result (+ brick colour/type) → **which plate** → a **language instruction**, e.g. "place the brick on the reject plate" | CPU |
 | **ACT** | Manipulation | **π0.5 does every movement**, by instruction: pick and show to `inspect`, then place on the blue or pink plate. Fine-tuned via Physical AI Studio on cloud GPUs (Modal), exported to OpenVINO **INT8**, `physicalai` runtime with RTC/async. No ACT | **GPU** |
 | **OPTIMIZE** | Evidence | Latency table: PyTorch-XPU vs OpenVINO FP16 vs INT8 vs NPU; per-stage timings; tasks/min (Section 8.1) | all |
+| *Phase 2* | Numbered sorting | Number reader on `top` (NPU) → planner orders bricks → π0.5 picks the **marked** brick → number + defect check on `inspect` → place in order (Section 8.2) | NPU/CPU/GPU |
 
 | Component | Choice | Why |
 |---|---|---|
@@ -797,6 +798,47 @@ Measure on the XPS (median and p99 over ≥100 runs, after warmup, on mains powe
 Reference points:
 - Intel's π0.5 on a Core Ultra X7 358H: 555 → 172 ms per chunk (3 cameras, 10 steps).
 - Our ResNet-18 smoke test on this XPS: GPU FP16 0.59 ms, NPU 0.88 ms, PyTorch-XPU 2.17 ms, CPU 12.6 ms.
+
+### 8.2 Extension (phase 2): sort numbered bricks in order
+
+**Goal:** once pick → inspect → place is reliable, the bricks carry numbers (1, 2, 3, …) and the robot handles them **in numeric order**. It still rejects defective ones. ⚠️ The exact target needs confirming: placed in a row of numbered slots, stacked, or each dropped onto a plate in order. The design below works for all three.
+
+**Who does what:** Anomalib cannot read numbers. It only learns "normal" vs "not normal". So phase 2 adds one perception module and a planner:
+
+| Job | Module | Device | Notes |
+|---|---|---|---|
+| Find bricks and **read their numbers** (whole table) | **Number reader on the `top` image**: brick detection (depth mask or HSV blobs) → crop each brick → digit classifier | **NPU** | A tiny CNN trained on brick-digit crops (fast, static shapes), or OpenVINO's PaddleOCR. Outputs `[{number, confidence, box, table_xy}]` |
+| **Plan the order** | Planner (CPU): sort detections by number → a task queue; re-plan after every brick | CPU | Trivial and deterministic. This is the "planning" in the brief's "perception, reasoning, planning and manipulation" |
+| Pick the **right** brick | **π0.5 with a grounded instruction** (options below) | GPU | The hard part |
+| **Verify** before placing | Read the number again on the `inspect` crop + Anomalib defect check | NPU | Catches picking the wrong brick: if the number ≠ the expected one, put it back and re-plan (reliability points) |
+| Place in order | π0.5: `"place the brick in slot <k>"` / on the plate | GPU | Slot k is chosen by the planner |
+
+**How π0.5 picks a specific brick (choose one; the order is our recommendation):**
+1. **Visual marker (recommended):** the planner draws a marker (e.g. a coloured circle) on the target brick **in the `top` image fed to the policy**. π0.5 is trained to "pick up the marked brick and show it to the inspection camera". It doesn't need to read digits, and it works for any number of bricks.
+   - Demos: record picks with the marker drawn on the brick being picked (overlay applied at recording time from the brick detector, or added afterwards).
+2. **Position words:** the planner turns the brick's location into words: `"pick up the brick on the far left"` / `"… second from the left"`. This works with a small fixed layout. It needs demos for each position word.
+3. **Pure language grounding:** `"pick up brick number 3"`, relying on π0.5's PaliGemma backbone to read the digit. This is the most "VLA reasoning", but also the most data-hungry and least reliable. Selective picking among look-alike objects is where VLAs fail most: 0–10% on the SO-101 colour-sorting benchmark (Section 2). Treat it as a stretch to show off, with 1 or 2 as the fallback.
+
+**Optional "reasoning" layer:** a small VLM on the GPU or NPU (e.g. Qwen2.5-VL-3B via OpenVINO GenAI) can turn a spoken or typed goal ("sort the bricks in ascending order, rejects to the pink plate") plus the detections into the task queue, and narrate decisions in the demo. Keep the deterministic planner as the source of truth and use the VLM only to produce or check the plan.
+
+**Phase-2 loop:**
+```
+ top image ──► number reader (NPU) ──► planner: queue sorted by number ──► next target k
+      ▲                                                                        │
+      │                                    π0.5 "pick up the marked brick and show it ..." (GPU)
+      │                                                                        ▼
+      │                         inspect: number check + Anomalib (NPU) ──► wrong number → put back, re-plan
+      │                                                                        │ defective → pink plate
+      └──────────── re-plan ◄── π0.5 "place the brick in slot k" (GPU) ◄───────┘ perfect
+```
+
+**Building phase 1 so phase 2 slots in (do this now):**
+- **Skill library, not one script:** keep π0.5 skills as named instruction strings in one table (`PICK_AND_SHOW`, `PLACE_BLUE`, `PLACE_PINK`, later `PICK_MARKED`, `PLACE_SLOT_k`). The state machine only calls skills by name.
+- **Perception modules return structured signals** with the same shape: `{label, score, region}` from Anomalib, `[{number, confidence, box, table_xy}]` from the number reader. Log them all.
+- **A planner/task queue from day one**, even if phase 1's queue is "whatever brick is there". Phase 2 then just changes how the queue is ordered.
+- **Record phase-1 demos with bricks in varied positions** (and some with several bricks on the table), so the pick skill already copes with clutter.
+- **Collect number crops early:** while recording phase 1, save `top` and `inspect` crops of numbered bricks, so the digit classifier can be trained with no extra session.
+- **OPTIMIZE:** the number reader is a second NPU workload next to Anomalib. Report both in the Section 8.1 table (and try batching all brick crops into one NPU call).
 
 ---
 
