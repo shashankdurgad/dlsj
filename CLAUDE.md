@@ -12,17 +12,18 @@ Hackathon repo for **Intel's challenge at Junction**: end-to-end robotic defect 
 - **Training:** cloud/team NVIDIA RTX GPUs.
 
 ## Decisions already made (don't re-litigate without a reason)
-- **Policies (Intel's reference split):** **ACT** for pick-and-present, and **π0.5** (team choice; Intel's reference uses SmolVLA, which is our fallback) for the language-conditioned place on a plate. Train via Physical AI Studio on cloud RTX; export to OpenVINO (ACT FP16, π0.5 INT8); run on the XPS GPU.
+- **Policy: π0.5 only, no ACT** (team decision). One π0.5 model does every movement, selected by instruction: `"pick up the brick and show it to the inspection camera"`, `"place the brick on the blue plate"`, `"place the brick on the pink plate"`. Anomalib + rules choose the place instruction. SmolVLA (Intel's reference VLA) is the fallback. Fine-tune on the Modal GPU instance; export to OpenVINO INT8; run on the XPS GPU.
+- **Judging (100 pts):** end-to-end loop 25, Anomalib 20, VLA + Studio 20, OpenVINO/NPU/GPU/CPU 20, execution reliability 10 (incl. recovery from uncertain detections), innovation 5. See the PLAYBOOK Challenge brief.
 - **Device split:** Anomalib on the **NPU** (static shapes); π0.5 on the **GPU**; cameras, rules and control on the **CPU**. Stretch: π0.5 action expert on the NPU.
 - **REASON:** a rule table maps (label, score, region, brick colour/type, kickoff rules) to a plate and a fixed instruction string, which conditions π0.5. Use identical strings in training demos and at run time.
 - **Defect detection:** Anomalib PaDiM/PatchCore on the `inspect` crop of the brick the arm presents, output as a structured `{label, score, region}` signal. The anomaly-map `region` is the **localization signal** consumed by REASON.
 - **Studio is the hub:** environment, recording, remote SSH training on the cloud RTX box, export and Run model all go through the Studio UI on the XPS (PLAYBOOK §4.0). Studio inference only covers GPU/CPU, so NPU work uses our own OpenVINO code.
 - **Force:** gripper `Present_Current` in `observation.state` (never in actions), plus a rule-based grasp check.
 - **OPTIMIZE:** always report baseline vs optimised median/p99 latency (PLAYBOOK §8.1). The LeRobot PyTorch-XPU policy server in `~/inference/.venv` is the baseline.
-- **XPU inference:** follow the PLAYBOOK §4.5 checklist. `torch.compile(mode="reduce-overhead")` is a no-op on XPU; no IPEX; don't quantise ACT.
+- **XPU inference:** follow the PLAYBOOK §4.5 checklist. `torch.compile(mode="reduce-overhead")` is a no-op on XPU; no IPEX.
 
 ## Conventions
 - Record with `dlsj.teleop_record` / `dlsj.kinesthetic_web` (`--cameras wrist=..,top=..,inspect=..`), 640×480@30. Calibration lives in `calibration/` (`dlsj.arms`). Auto-exposure and auto-WB **locked** on all cameras. Never move `top` or `inspect`.
-- VLA export uses 3 cameras (`-c 3`), batched into one vision call. ACT export: `python -m dlsj.deploy.act_export`.
+- VLA export uses 3 cameras (`-c 3`), batched into one vision call.
 - Apply any sensor filtering (median/EMA) identically at record and inference time.
 - Items marked ⚠️ Unverified in the playbook must be smoke-tested on hardware before relying on them.

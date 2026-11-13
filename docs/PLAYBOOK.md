@@ -19,8 +19,25 @@
 ```
 
 - The demo setup has **two plates (orange/red and blue)**. In the slide's photos the perfect brick ends on the blue plate. ⚠️ Confirm the plate-to-label mapping in the kickoff rules.
-- Intel's own split: **ACT does the pick-and-present skill, SmolVLA does the language-conditioned place** ("place the brick on the … plate"). This is the two-skill design from Section 3.1b.
-- **Our choice (team decision):** same split, but **π0.5 instead of SmolVLA** for the place step, for robustness. SmolVLA remains the fallback.
+- Intel's own reference split: **ACT does the pick-and-present skill, SmolVLA does the language-conditioned place** ("place the brick on the … plate").
+- Plate mapping in the slide photos: **perfect → blue plate**, **defective → pink/red plate**. ⚠️ Confirm in the kickoff rules.
+- **Our choice (team decision): no ACT. One VLA, π0.5, does every movement**, switched by instruction:
+  - `"pick up the brick and show it to the inspection camera"`;
+  - `"place the brick on the blue plate"`;
+  - `"place the brick on the pink plate"`.
+
+  Anomalib decides between the two place instructions. This makes the VLA the whole "ACT" stage, which is what the 20-point VLA criterion rewards. SmolVLA (Intel's reference VLA) is the fallback, doing the same job.
+
+**Judging criteria (100 points, deck slide 7):**
+
+| Points | Criterion | What it means for us |
+|---|---|---|
+| **25** | End-to-end Physical AI solution | One **integrated closed loop**, perception → defect detection → decision → SO-101 action, "rather than independent component demonstrations". Run it as one program/state machine (Section 8) |
+| **20** | Defect detection with Anomalib | Detection quality, model integration, normal vs defective handling, **how defect outputs are exposed to and consumed by the downstream workflow**: the `{label, score, region}` signal feeding the instruction |
+| **20** | VLA & Physical AI Studio integration | Studio + VLA reasoning turn perception results and task instructions into robot actions; show integration across **perception, reasoning, planning and manipulation** |
+| **20** | OpenVINO & Core Ultra 3 optimization | **Latency, throughput, deployment efficiency**, and appropriate use of **NPU, GPU and CPU**: the Section 8.1 table |
+| **10** | Robotic execution & reliability | Object localization, manipulation accuracy, repeatability, stable task completion, and **recovery from incorrect or uncertain defect detections** (Section 8, uncertainty band) |
+| **5** | Innovation & technical demonstration | Originality, use of Intel tech, completeness, clarity of the live demo, architecture and optimization explanation |
 
 **What teams must deliver** (same slide):
 1. **Working Physical AI prototype:** a closed-loop SO-101 solution from perception to action.
@@ -34,7 +51,7 @@
 |---|---|---|---|
 | 1 | Perception & defect detection | Capture workspace imagery, apply Anomalib; defect output available to the policy as a **structured signal: label, score, or localized region** | Section 8 DETECT: `{label, score, box, table_xyz}` |
 | 2 | VLA reasoning & task planning | **Use Physical AI Studio to construct the VLA-driven application flow.** The VLA interprets the **task instruction and perception results**, determines the response, and produces the **action intent** for the robot controller | Section 8 REASON → π0.5 instruction; Studio flow (4.0) |
-| 3 | SO-101 execution | Turn the action into robot behaviour: motion, grasping, sorting or other challenge-specific manipulation | π0.5/ACT + grasp check |
+| 3 | SO-101 execution | Turn the action into robot behaviour: motion, grasping, sorting or other challenge-specific manipulation | π0.5 + grasp check |
 | 4 | OpenVINO optimization | Model conversion, **precision, graph optimization, preprocessing/postprocessing efficiency, device selection** → lower **end-to-end** latency | Sections 4.5, 8.1 (incl. pre/post-processing rows) |
 | 5 | Core Ultra Series 3 deployment | Use **NPU, GPU and CPU according to workload characteristics and operator support**, while keeping robot control and the app responsive | Section 8 device split |
 | 6 | Closed-loop demonstration | Full sequence from image acquisition and defect detection through VLA reasoning to robot action, **then a concise explanation of the architecture and optimization decisions** | Section 9 demo + pitch |
@@ -46,7 +63,7 @@
 - **Extras:** camera desk mounts, a **USB hub**, **Lego/Duplo bricks and plates** (the objects and the destinations), printed robot safety guidelines.
 - **Software to install as part of the challenge:** Physical AI Studio and **Anomalib v2.7.0** (both done on our XPS, Section 1.0).
 - **Pre-installed:** Ubuntu 26.04 and NPU/GPU drivers. On our XPS the GPU *compute* runtime and the NPU user-space driver were still missing, and we installed them.
-- A **GPU cloud instance** is provided for training.
+- A **GPU cloud instance via [Modal](https://modal.com)** is provided for training. ⚠️ Modal is serverless, not a plain SSH box, so Studio's SSH remote-trainer flow may not apply directly. Plan to run Studio's training library (`physicalai fit`) or LeRobot in a Modal job instead (Section 4.0).
 
 **Required technology stack** (second kickoff slide):
 
@@ -67,7 +84,7 @@
 - **Tools:**
   - recording: `dlsj.teleop_record` (leader/follower) and `dlsj.kinesthetic_web` (hand-guided);
   - calibration: in `calibration/` via `dlsj.arms`;
-  - ACT → OpenVINO: `dlsj.deploy.act_export`.
+  - `dlsj.deploy.act_export` (ACT → OpenVINO) exists but is **not used**: the team dropped ACT.
 
 **Hardware:**
 - **Robot:** SO-101 leader/follower arms.
@@ -87,13 +104,12 @@
 | **PERCEIVE** | Cameras | `wrist`, `top`, `inspect` at 640×480@30, exposure/WB locked; the arm picks a brick and **presents it to `inspect`** | CPU |
 | **DETECT** | Defect detection | **Anomalib PaDiM/PatchCore** on the **`inspect` view of the presented brick**, OpenVINO, **static shapes**; anomaly map → **defect localization** (region on the brick) | **NPU** |
 | **REASON** | Decision | Kickoff rules + defect result (+ brick colour/type) → **which plate** → a **language instruction**, e.g. "place the brick on the reject plate" | CPU |
-| **ACT** | Manipulation | **Two skills:** (1) pick a brick and present it to `inspect` = **ACT**; (2) place the brick on the chosen plate = **π0.5** (language-conditioned). Both trained via Physical AI Studio on cloud RTX, exported to OpenVINO (ACT FP16, π0.5 **INT8**), `physicalai` runtime with RTC/async | **GPU** |
+| **ACT** | Manipulation | **π0.5 does every movement**, by instruction: pick and show to `inspect`, then place on the blue or pink plate. Fine-tuned via Physical AI Studio on cloud GPUs (Modal), exported to OpenVINO **INT8**, `physicalai` runtime with RTC/async. No ACT | **GPU** |
 | **OPTIMIZE** | Evidence | Latency table: PyTorch-XPU vs OpenVINO FP16 vs INT8 vs NPU; per-stage timings; tasks/min (Section 8.1) | all |
 
 | Component | Choice | Why |
 |---|---|---|
-| Pick & present | **ACT** (as in Intel's reference) | One fixed skill, no language needed; trains in <1 h; exported with `dlsj.deploy.act_export` |
-| Place (VLA) | **π0.5** via Physical AI Studio (team choice). Fallback **SmolVLA** (Intel's reference choice) | Required "VLA through Studio"; language picks the plate; best independent results; Intel-measured OpenVINO path (172 ms/chunk on Panther Lake). Section 2.1 |
+| Policy (all movement) | **π0.5** via Physical AI Studio, one model, three instructions. **No ACT.** Fallback **SmolVLA** (Intel's reference VLA) | Required "VLA through Studio" (20 pts); language selects the skill and plate; best independent results; Intel-measured OpenVINO path (172 ms/chunk on Panther Lake). Section 2.1 |
 | Training | **Cloud RTX** (CUDA, bf16), Studio CLI or Studio trainer container | π0.5 needs ≥24 GB to fine-tune; XPU training is fallback only |
 | Deployment | **OpenVINO export** + `physicalai` runtime on the XPS, **AsyncExecution**, **no temporal ensembling** | Required stack; low latency |
 | Data | ~150 brisk demos over **6–10 lighting/background conditions**, idle frames trimmed; demos **with language instructions** per bin | Diversity beats quantity; π0.5 learns the instruction → bin mapping |
@@ -104,7 +120,7 @@
 ### Suggested timeline (adapt to remaining hours)
 1. **Hour 0–1:** XPS is already set up (Section 1.0). Verify the arm and all three cameras (lock exposure/WB, fix the `top` and `inspect` mounts). Write the kickoff rules into the brief above. One person starts collecting demos.
 2. **Hour 1–3:** collect diverse demos with language instructions (Section 3); in parallel, capture good and defective images of bricks **held at the `inspect` pose** (Section 6).
-3. **Hour 3–5:** push the dataset to the Hub; **train π0.5 and ACT on cloud RTX** via Studio; **train Anomalib on the XPS** and export to the NPU.
+3. **Hour 3–5:** push the dataset to the Hub; **fine-tune π0.5 on the Modal GPU instance**; **train Anomalib on the XPS** and export to the NPU.
 4. **Hour 5–7:** export π0.5 to OpenVINO INT8, deploy with the `physicalai` runtime; wire the REASON step and the grasp check.
 5. **Hour 7+:** test on held-out lighting/background; iterate on failures (more demos of the failure condition beats more training); fill in the OPTIMIZE table.
 6. **Final:** demo of the full loop with the anomaly heatmap, live per-stage latency readout, and the OPTIMIZE table.
@@ -229,7 +245,7 @@ pip install "physicalai[so101,realsense]"
 
 **SO-101 benchmark** ([arXiv 2606.08881](https://arxiv.org/html/2606.08881)), average success: **π0.5 56.25%**, ACT 33.75%, SmolVLA 32.5%. Selective colour sorting was **0–10% for all three**, which is why sorting needs a separate perception step (Section 5.6).
 
-**Decision (after kickoff):** follow Intel's reference split. **ACT for pick-and-present**, and a VLA for the language-conditioned **place**: **π0.5** (team choice), with **SmolVLA** (Intel's reference) as fallback. All train on cloud RTX via Studio.
+**Decision (after kickoff, updated): no ACT.** **π0.5 does every movement** (pick and show to `inspect`, place on the blue or pink plate), selected by instruction; **SmolVLA** (Intel's reference VLA) is the fallback. Train on the Modal GPU instance. The ACT rows above are background only.
 
 ### 2.1 Which VLA (updated after research, see `reports/XPU kernels and Chinese VLAs.md`)
 
@@ -261,10 +277,14 @@ pip install "physicalai[so101,realsense]"
 - **Hold out one lighting setup and one background** that you never train on, as your own robustness test.
 
 ### 3.1b Language instructions (for π0.5)
-- Every demo is the full sequence **pick → present to `inspect` → place on a plate**, with a **task string** naming the plate, e.g. `"place the brick on the reject plate"`, `"place the brick on the left plate"`. Use **one fixed string per destination** from the kickoff rules, and the exact same strings at run time (REASON step, Section 8).
+- One π0.5 model learns **three skills**, recorded as separate episodes, each with its own **task string**:
+  1. `"pick up the brick and show it to the inspection camera"`: from a brick on the table to holding it still at the `inspect` spot;
+  2. `"place the brick on the blue plate"`: from the `inspect` spot to the blue plate;
+  3. `"place the brick on the pink plate"`: from the `inspect` spot to the pink plate. Use **one fixed string per destination** from the kickoff rules, and the exact same strings at run time (REASON step, Section 8).
 - **Balance the demos across instructions**, and vary which object goes where, so the policy listens to the instruction instead of guessing from the object's look.
 - With `dlsj.teleop_record` / `dlsj.kinesthetic_web` this is `--task "..."`. Record each instruction as its own `--repo-id`, or as a `--resume` batch, and merge.
-- **Option (simpler for the policy):** split into two skills, `"pick the brick and present it to the inspection camera"` and `"place the brick on the <X> plate"`. Then REASON only picks the second instruction after inspection.
+- Splitting at the `inspect` spot is what lets Anomalib + REASON choose skill 2 or 3. Record roughly **as many pick demos as place demos combined**, and the two place skills equally.
+- Optional fourth skill for recovery: `"turn the brick and show it to the inspection camera again"` (Section 8, uncertainty band).
 
 ### 3.2 Demo quality = policy speed
 - The policy copies your speed and hesitation. **Demo at the speed you want the robot to move**, decisively, with no fumbling. (Lesson from [Flash ALOHA](https://flash-aloha.github.io), which reached >80% success at near-human speed with 50 demos per task.)
@@ -281,7 +301,9 @@ pip install "physicalai[so101,realsense]"
 
 ## 4. Training & speed on Intel XPU
 
-### 4.0 Train on cloud RTX, deploy on the XPS (Studio-orchestrated)
+### 4.0 Train on the cloud GPU (Modal), deploy on the XPS (Studio-orchestrated)
+⚠️ The provided GPU instance is on **Modal**. Studio's remote trainer expects an **SSH host** (or AWS). Check with the Intel mentors whether their Modal setup exposes SSH or a Studio trainer. If not, run training as a Modal job: `physicalai fit` from the same Studio commit, or `lerobot-train --policy.type=pi05`. Then import the checkpoint into Studio and export from there.
+
 **Preferred flow: everything driven from the Studio UI on the XPS** (http://100.77.191.42:7860). This is what the "Studio integrates the workflow" requirement wants to see:
 1. **Environment:** add the SO-101 robot and the three cameras (`wrist`, `top`, `inspect`), then create an environment (`application/docs/04-environment-setup.md`).
 2. **Record:** create a dataset and record episodes with the task (instruction) string (`05-recording-datasets.md`), or record with `dlsj.teleop_record` / `dlsj.kinesthetic_web` and **import** the LeRobot v3 dataset into Studio.
@@ -729,8 +751,8 @@ The same "fully closed = nothing grasped" override improved disturbance recovery
 
 ```
  PERCEIVE (CPU)              ACT-1 (GPU)                DETECT (NPU)                 REASON (CPU)               ACT-2 (GPU)
- wrist + top + inspect ──►  π0.5: pick a brick,   ──►  Anomalib on the `inspect` ──► kickoff rules + label  ──► π0.5: "place the brick
- joint state + gripper       present it to `inspect`    crop → {label, score,        (+ colour/type) →           on the <X> plate"
+ wrist + top + inspect ──►  π0.5 "pick up the     ──►  Anomalib on the `inspect` ──► kickoff rules + label  ──► π0.5: "place the brick
+ joint state + gripper       brick and show it ..."     crop → {label, score,        (+ colour/type) →           on the <X> plate"
  current                     (hold still, Moving=0)     region}                      which plate → instruction        │
                                                                                                                        ▼
                                           grasp check (gripper current) after the pick ◄──────────────────────── SO-101
@@ -742,20 +764,22 @@ The same "fully closed = nothing grasped" override improved disturbance recovery
 | Device | Work | Why |
 |---|---|---|
 | **NPU** | Anomalib PaDiM/PatchCore on the `inspect` crop | Small, static-shape CNN; frees the GPU for the VLA; low power |
-| **GPU** (Arc B390) | ACT (pick & present) and π0.5 (place) | Compute-bound VLM needs XMX; INT8 weights for π0.5, FP16 for ACT |
+| **GPU** (Arc B390) | π0.5 for every movement (pick & show, place) | Compute-bound VLM needs XMX; INT8 weights |
 | **CPU** | Camera capture, crop/pre-processing, rules → instruction, arm control, grasp check | Light, latency-tolerant logic |
 | Stretch | π0.5 **action expert on the NPU**, KV cache shared zero-copy (Intel's split, Section 4.5 step 9) | Overlaps VLM and expert under RTC |
 
 **Task state machine:**
-1. `PICK`: run **ACT** (pick-and-present skill) until the brick is held at the `inspect` spot. → `VERIFY_GRASP` (gripper current; on EMPTY, retry up to 2).
+1. `PICK`: run **π0.5** with `"pick up the brick and show it to the inspection camera"` until the brick is held at the `inspect` spot. → `VERIFY_GRASP` (gripper current; on EMPTY, retry up to 2).
 2. `DETECT`: wait for `Moving` = 0, grab 3 `inspect` frames, crop the brick, run Anomalib on the **NPU** (median score). Output a **structured signal** `{label: perfect|defective, score, region}`:
    - `region` = the anomaly map thresholded → connected components → bounding box on the brick: the **localization signal** the brief requires;
    - also log it and draw it as a heatmap overlay.
-3. `REASON`: apply the **kickoff rules** to (label, score, region, brick colour/type via HSV on the `inspect` crop, anything else the rules use) → **which plate** → one of a fixed set of instruction strings, e.g. `"place the brick on the reject plate"`. Keep the strings **identical** to the training demos. A rule table is enough; an LLM is optional narration only.
+3. `REASON`: apply the **kickoff rules** to (label, score, region, brick colour/type via HSV on the `inspect` crop, anything else the rules use) → **which plate** (default per the slide: perfect → blue, defective → pink).
+   - **Uncertainty band (reliability criterion, 10 pts):** if the score is within a margin of the threshold, or the 3 frames disagree, don't guess. Re-inspect: wait, re-grab frames, or run the optional `"turn the brick and show it ... again"` skill. If it's still uncertain after 2 tries, treat it as **defective** (the safe default) and log it.
+   - Then pick the instruction → one of a fixed set of instruction strings, e.g. `"place the brick on the reject plate"`. Keep the strings **identical** to the training demos. A rule table is enough; an LLM is optional narration only.
 4. `PLACE`: run **π0.5** with that instruction until the brick is released on the plate.
 5. Loop. Log per-stage timings every iteration.
 
-If π0.5 isn't ready: SmolVLA for the place step (Intel's reference), or one ACT policy per plate (instruction → policy lookup).
+If π0.5 isn't ready: **SmolVLA** with the same three instructions (Intel's reference VLA). No ACT.
 
 ### 8.1 OPTIMIZE: the numbers to show
 
@@ -766,7 +790,7 @@ Measure on the XPS (median and p99 over ≥100 runs, after warmup, on mains powe
 | Preprocessing | Python/NumPy resize + normalise on CPU per camera | Capture at the policy's resolution; fold normalisation into the OpenVINO graph (`ov.preprocess.PrePostProcessor`); batch cameras | |
 | Anomalib | PyTorch-XPU eager | OpenVINO on **NPU** (and GPU FP16 for comparison) | |
 | Postprocessing | Full-res anomaly map → NumPy threshold | Threshold/box on the downsampled map; only upsample the box | |
-| π0.5 chunk | LeRobot PyTorch-XPU (`~/inference/.venv`, policy server) | OpenVINO FP16 → **INT8** → (stretch) 1-step distilled / expert on NPU | |
+| π0.5 chunk (pick and place) | LeRobot PyTorch-XPU (`~/inference/.venv`, policy server) | OpenVINO FP16 → **INT8** → (stretch) 1-step distilled / expert on NPU | |
 | End-to-end loop | sum of baselines | sum of optimised + async overlap | |
 | Throughput | tasks/min, baseline | tasks/min, optimised | |
 
@@ -779,15 +803,16 @@ Reference points:
 ## 9. Evaluation checklist
 - [ ] Kickoff rules written into the Challenge brief; instruction strings fixed and used identically in demos and the REASON step.
 - [ ] XPS: OpenVINO lists CPU, GPU, NPU; `HF_TOKEN` set (PaliGemma access); Studio UI reachable on :7860.
-- [ ] Cloud RTX training run for π0.5 (and ACT) uses the same Studio commit as the XPS; first 200 steps timed.
+- [ ] π0.5 fine-tune on the Modal GPU uses the same Studio/LeRobot version as the XPS; first 200 steps timed; all three instructions covered in the data.
 - [ ] `wrist`, `top`, `inspect` all streaming at 640×480@30 with **auto-exposure/WB locked**; `top` and `inspect` mounts fixed and marked; `inspect` has steady light and a plain background.
 - [ ] ≥150 demos across ≥6 conditions; one lighting + one background **held out**.
 - [ ] Idle frames trimmed; slow/retry episodes dropped.
 - [ ] Augmentation on, **hue ≈ 0** if colour matters.
-- [ ] ACT trained in bf16; `update_s` timed; checkpoint exported to OpenVINO; latency benchmarked.
+- [ ] π0.5 checkpoint exported to OpenVINO INT8 (`-c 3`); latency benchmarked; trajectories checked against PyTorch.
 - [ ] Async execution working, with no jerks at chunk boundaries.
 - [ ] OpenVINO IR is static-shape; `benchmark_app -pc` shows SDPA/GatedMLP fusions; median + p99 latency logged.
-- [ ] VLA track: first 200 training steps timed; go/no-go on π0.5 vs SmolVLA within the first hour; VLA beats ACT on held-out lighting before it's used in the demo.
+- [ ] Go/no-go on π0.5 vs SmolVLA within the first hour of training.
+- [ ] Uncertain detections trigger re-inspection, and fall back to the defective plate after 2 tries.
 - [ ] Anomaly threshold calibrated **on site**; false-positive rate checked on 20+ good samples; model **runs on the NPU**.
 - [ ] Defect output is a structured signal `{label, score, box, table_xyz}` and is logged per object.
 - [ ] Pitch ready: **concise architecture + optimization decisions** explanation (loop diagram, device split and why, OPTIMIZE table), per expectation 6.
@@ -800,14 +825,14 @@ Reference points:
 
 | Risk | Fallback |
 |---|---|
-| Cloud GPU unavailable | Train ACT/SmolVLA on the XPS GPU (Section 4.1–4.2); 64 GB shared RAM may even fit π0.5, but slowly |
+| Modal GPU unavailable or slow | Train SmolVLA on the XPS GPU (Section 4.1–4.2); 64 GB shared RAM may even fit π0.5, but slowly |
 | π0.5 fails on gated tokenizer (401 on `google/paligemma-3b-pt-224`) | Set `HF_TOKEN` from an account that accepted PaliGemma's terms |
 | Anomalib export fails on NPU ("Upper bounds are not specified") | Export with a static input shape; else run it on GPU and use the NPU for the π0.5 action expert instead |
 | Studio export not loadable by the runtime | Use the same Studio commit for training and deploy; fall back to the LeRobot policy server on PyTorch-XPU (baseline env) |
 | `bf16-mixed` / XPU strategy errors in Studio | `precision: 32`; or train with LeRobot `--policy.device=xpu` |
 | LeRobot version lacks new augmentations | Use `ColorJitter` + `SharpnessJitter` only, or pass torchvision v2 transforms |
 | OpenVINO export fails | PyTorch on XPU with `torch.compile(mode="max-autotune-no-cudagraphs")` + manual `torch.xpu.graph` (not `reduce-overhead`, a no-op on XPU); or ONNX backend in `InferenceModel` |
-| π0.5 doesn't fit / trains too slowly | SmolVLA (`train_expert_only` / frozen vision encoder); ACT stays the baseline |
+| π0.5 doesn't fit / trains too slowly | SmolVLA with the same three instructions (`train_expert_only` / frozen vision encoder) |
 | INT8/INT4 hurts policy accuracy | Check trajectory MSE vs PyTorch; drop to INT8 weight-only or FP16; never generic INT4 on the action expert |
 | A Chinese VLA won't run on XPU | Don't port during the event; stick to LeRobot-native X-VLA/EVO1 smoke tests only |
 | Training too slow | Fewer steps (10–15k), smaller batch, fewer cameras, lower resolution |
