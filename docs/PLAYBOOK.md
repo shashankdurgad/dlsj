@@ -11,6 +11,22 @@
 - **Primary task:** distinguish acceptable ("perfect") from anomalous ("defective") objects, then physically sort or respond according to the **rules revealed at kickoff**. ⚠️ Fill in the rules here: _TBD_.
 - **Closed loop:** **PERCEIVE → DETECT → REASON → ACT → OPTIMIZE**, demonstrated end to end.
 
+**End goal: Intel's reference pipeline** ("End Goal" slide):
+
+```
+ brick on the table ──ACT──► picked and shown to the inspection camera ──Anomalib──► perfect / defective ──SmolVLA──► defective → one plate
+                                                                                                                   perfect   → the other plate
+```
+
+- The demo setup has **two plates (orange/red and blue)**. In the slide's photos the perfect brick ends on the blue plate. ⚠️ Confirm the plate-to-label mapping in the kickoff rules.
+- Intel's own split: **ACT does the pick-and-present skill, SmolVLA does the language-conditioned place** ("place the brick on the … plate"). This is the two-skill design from Section 3.1b.
+
+**What teams must deliver** (same slide):
+1. **Working Physical AI prototype:** a closed-loop SO-101 solution from perception to action.
+2. **VLA + Anomalib integration:** a VLA robotics workflow with visual anomaly/defect detection.
+3. **OpenVINO-optimized deployment:** an optimized inference pipeline on Intel Core Ultra Series 3.
+4. **Live demonstration:** execute the **Challenge-Day task** and explain the architecture and optimization choices.
+
 **Technical implementation expectations** (kickoff slide; treat as the judging rubric):
 
 | # | Expectation | Slide wording (condensed) | Where we cover it |
