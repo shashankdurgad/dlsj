@@ -81,6 +81,7 @@ def test_refuses_to_start_until_follower_is_live(rec):
 
 
 def test_detector_splits_take_and_tasks_follow_the_chosen_bowl(rec):
+    rec.auto_split = True  # --auto-split: the classifier marks the moment
     rec.teleop.go_live()
     press(rec, "space")
     assert rec.phase == "recording" and rec.stage == "pick"
@@ -112,15 +113,12 @@ def test_detector_splits_take_and_tasks_follow_the_chosen_bowl(rec):
     assert f["observation.state"][0].item() == 1.0 and f["action"][0].item() == 1.5  # state=follower, action=cmd
 
 
-def test_manual_in_view_failure_and_discard(rec):
+def test_failure_without_marking_and_discard(rec):
     rec.teleop.go_live()
     press(rec, "space")
     step(rec, 2)
-    press(rec, "space", "space")  # stop, then try to save without an in-view moment
-    assert rec.phase == "review" and "in-view" in rec.message
-    press(rec, "fail")  # failures can be saved without one
+    press(rec, "fail")  # failures can be saved without an in-view moment
     assert rec.saved == {"success": 0, "failure": 1}
-
     press(rec, "space")
     step(rec, 2)
     press(rec, "inview", "bowl1")
@@ -128,6 +126,38 @@ def test_manual_in_view_failure_and_discard(rec):
     step(rec, 2)
     press(rec, "discard")
     assert rec.phase == "idle" and rec.dataset.num_episodes == 1
+
+
+def test_space_marks_in_view_and_classifier_frame_is_kept_separately(rec):
+    rec.teleop.go_live()
+    press(rec, "space")  # start
+    step(rec, 2)
+    rec.streams["inspect"].show_brick()
+    step(rec, 3)  # classifier fires, but without --auto-split it only records when
+    assert rec.stage == "pick" and rec.classifier_frame is not None
+    clf = rec.classifier_frame
+    step(rec, 2)
+    press(rec, "space")  # operator marks in view
+    assert rec.stage == "place" and rec.split_frame is not None and not rec.split_auto
+    marked = rec.split_frame
+    rec.streams["inspect"].show_brick(False)
+    press(rec, "bowl2")
+    step(rec, 2)
+    press(rec, "space")  # stop
+    assert rec.phase == "review"
+    press(rec, "space")  # save
+    rec.close()
+    lab = json.loads((rec.sidecar / "labels.jsonl").read_text().splitlines()[0])
+    assert lab["inspection_frame"] == marked and lab["inspection_marked_by"] == "operator"
+    assert lab["classifier_inview_frame"] == clf < marked
+
+    from lerobot.datasets import LeRobotDataset
+
+    ds = LeRobotDataset("local/test_teleop", root=rec.root)
+    probs = [float(ds[i]["inspect.prob"].reshape(-1)[0]) for i in range(ds.num_frames)]
+    assert probs[0] == 0.0 and max(probs) == 1.0  # colour detector: 0/1 in-view as the per-frame signal
+    assert ds[marked]["task"] == "place the brick in the blue bowl"
+    assert ds[marked - 1]["task"].startswith("pick up")
 
 
 def test_bowl_choice_resets_after_save(rec):

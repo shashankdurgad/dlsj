@@ -7,8 +7,8 @@ Open http://localhost:8000.
 
 One take is one continuous demo:
 1. Pick the brick and hold it in front of the inspection camera.
-2. When it is fully in view (detected automatically, with a chime), pause for about half a second, as
-   the deployed system will while it inspects.
+2. When it is properly in front of the inspection camera, tap space to mark the moment (the classifier's
+   green "In view" is a guide). Pause for about half a second, as the deployed system will while it inspects.
 3. Place the brick in the bowl of your choice. Choose the bowl with 1/2/3 at any point before saving.
 
 Every frame stores a task string:
@@ -22,9 +22,9 @@ The policy never sees good or defective. At deployment the controller turns the 
 bowl colour and prompts "place the brick in the <colour> bowl".
 
 Keys while the page is focused:
-  space     start, stop, save        1 2 3   choose bowl         i   mark in view by hand
+  space     start, mark in view, stop, save                    1 2 3   choose bowl         i   mark in view
   f         save as failed           h       discard             e   engage or hold the arm
-  d         show what the in-view detector sees
+  d         show what the in-view detector sees                 v   one or two camera views
 """
 
 import argparse
@@ -61,7 +61,7 @@ class EpisodeRecorder:
                  episode_time_s: float = 60.0, operator: str = "", vcodec: str = "h264", resume: bool = False,
                  bowls: list[str] | None = None, pick_task: str = PICK_TASK, place_task: str = PLACE_TASK,
                  inspect_camera: str | None = "inspect", detector: BrickInViewDetector | None = None,
-                 record_depth: bool = True):
+                 record_depth: bool = True, auto_split: bool = False):
         self.teleop, self.streams = teleop, streams
         self.repo_id, self.fps = repo_id, fps
         self.root = Path(root) if root else Path("data") / repo_id.split("/")[-1]
@@ -72,6 +72,8 @@ class EpisodeRecorder:
             raise ValueError("--place-task must contain {colour}")
         self.inspect_camera = inspect_camera if inspect_camera in streams else None
         self.detector = detector or BrickInViewDetector()
+        # By default the operator marks the in-view moment (space). With auto_split the classifier does.
+        self.auto_split = auto_split
         # RealSense streams carry aligned depth; it is recorded as observation.images.<cam>_depth (uint16 mm)
         self.depth_cams = [n for n, s in streams.items() if record_depth and getattr(s, "use_depth", False)]
         self.depth_shapes: dict[str, tuple[int, int, int]] = {}
@@ -96,6 +98,7 @@ class EpisodeRecorder:
         self.stage = "pick"
         self.split_frame: int | None = None
         self.split_auto = False
+        self.classifier_frame: int | None = None  # first frame the classifier said "in view", for comparison
 
     # ------------------------------------------------------------------ dataset
     def _wait_for_cameras(self, timeout_s: float = 20.0) -> None:
@@ -119,6 +122,8 @@ class EpisodeRecorder:
         return {
             **hw_to_dataset_features(joints, ACTION, use_video=True),
             **hw_to_dataset_features({**joints, **self.cam_shapes, **self.depth_shapes}, OBS_STR, use_video=True),
+            **({"inspect.prob": {"dtype": "float32", "shape": (1,), "names": ["p_in_view"]}}
+               if self.inspect_camera else {}),
         }
 
     def open_dataset(self) -> None:
@@ -168,7 +173,10 @@ class EpisodeRecorder:
 
     def _handle(self, c: str) -> None:
         if c == "space":
-            c = {"idle": "start", "recording": "stop", "review": "accept"}.get(self.phase, "")
+            if self.phase == "recording":
+                c = "inview" if self.stage == "pick" else "stop"
+            else:
+                c = {"idle": "start", "review": "accept"}.get(self.phase, "")
         if c.startswith("bowl") and c[4:].isdigit():
             i = int(c[4:]) - 1
             if 0 <= i < len(self.bowls) and self.phase != "saving":
@@ -222,7 +230,9 @@ class EpisodeRecorder:
         label = {
             "episode_index": ep, "success": success, "duration_s": round(self._take_duration, 3),
             "n_frames": self._frames, "paused_ticks": self._paused_ticks, "method": "teleop",
-            "inspection_frame": self.split_frame, "inspection_auto": self.split_auto, "bowl": self.bowl,
+            "inspection_frame": self.split_frame, "inspection_auto": self.split_auto,
+            "inspection_marked_by": None if self.split_frame is None else ("classifier" if self.split_auto else "operator"),
+            "classifier_inview_frame": self.classifier_frame, "bowl": self.bowl,
             "pick_task": self.pick_task, "place_task": place, "operator": self.operator,
             "recorded_at": datetime.now().isoformat(timespec="seconds"),
         }
@@ -246,6 +256,8 @@ class EpisodeRecorder:
             "action": np.asarray(latest["cmd"], dtype=np.float32),
             "task": self._current_task(),
         }
+        if self.inspect_camera:
+            frame["inspect.prob"] = np.array([self._prob()], dtype=np.float32)
         for name, stream in self.streams.items():
             lock = getattr(stream, "cond", None) or contextlib.nullcontext()
             with lock:  # colour and depth from the same RealSense frameset
@@ -263,6 +275,9 @@ class EpisodeRecorder:
                 frame[f"observation.images.{name}_depth"] = np.ascontiguousarray(depth, dtype=np.uint16).reshape(dh, dw, 1)
         return frame
 
+    def _prob(self) -> float:
+        return float(getattr(self.detector, "prob", float(self.detector.last.in_view)))
+
     def _detect(self) -> None:
         if self.inspect_camera is None:
             return
@@ -279,7 +294,9 @@ class EpisodeRecorder:
             self._detect()
             if self.phase != "recording":
                 return
-            if self.stage == "pick" and self.detector.last.in_view:
+            if self.detector.last.in_view and self.classifier_frame is None:
+                self.classifier_frame = self._frames
+            if self.auto_split and self.stage == "pick" and self.detector.last.in_view:
                 self._split(auto=True)
             frame = self._frame()
             if frame is None:
@@ -337,7 +354,7 @@ class EpisodeRecorder:
                 "prob": round(float(getattr(self.detector, "prob", d.area)), 3),
                 "threshold": getattr(self.detector, "threshold", None),
                 "guide": "square" if hasattr(self.detector, "prob") else list(self.detector.cfg.roi),
-                "depth_cams": self.depth_cams,
+                "depth_cams": self.depth_cams, "auto_split": self.auto_split,
                 "teleop_live": self._teleop_live(), "root": str(self.root),
                 "task": self._current_task() if self.phase == "recording" else None,
             }
@@ -376,7 +393,10 @@ html,body{height:100%}
 body{background:var(--bg);color:var(--fg);font:400 15px/1.35 Barlow,ui-sans-serif,system-ui,sans-serif;-webkit-font-smoothing:antialiased;overflow:hidden}
 .app{display:grid;grid-template-columns:minmax(0,1fr) 380px;grid-template-rows:minmax(0,1fr) auto;height:100vh}
 .view{padding:20px 0 12px 20px;display:flex;flex-direction:column;gap:12px;min-height:0}
+.panes{flex:1;min-height:0;display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.single .panes{grid-template-columns:1fr}.single .pane:nth-child(2){display:none}
 .main{position:relative;flex:1;min-height:0;border-radius:18px;overflow:hidden;background:#000}
+.pane{height:100%;min-width:0}
 .main img{width:100%;height:100%;object-fit:contain;display:block}
 .main .name{position:absolute;left:16px;bottom:12px;color:var(--mute);font-size:13px}
 .thumbs{display:flex;gap:12px;height:112px}
@@ -425,14 +445,14 @@ body{background:var(--bg);color:var(--fg);font:400 15px/1.35 Barlow,ui-sans-seri
 .mbar b{position:absolute;top:-5px;bottom:-5px;width:1.5px;background:var(--fg);opacity:.6}
 .inview .mbar i{background:var(--ok)}
 .main{transition:box-shadow .12s}
-.iv .main{box-shadow:inset 0 0 0 8px var(--ok),0 0 60px rgba(47,210,122,.55)}
+.iv .pane.insp{box-shadow:inset 0 0 0 8px var(--ok),0 0 60px rgba(47,210,122,.55)}
 .ivbadge{position:absolute;left:50%;top:22px;transform:translate(-50%,-8px) scale(.96);opacity:0;pointer-events:none;
  background:var(--ok);color:#06200f;font:600 40px/1 Barlow,ui-sans-serif,system-ui,sans-serif;padding:16px 34px;border-radius:999px;
  box-shadow:0 10px 40px rgba(47,210,122,.5);transition:opacity .12s,transform .12s}
-.iv .ivbadge{opacity:1;transform:translate(-50%,0) scale(1)}
+.iv .insp .ivbadge{opacity:1;transform:translate(-50%,0) scale(1)}
 .iv .thumb.seen{outline-color:var(--ok);box-shadow:0 0 22px rgba(47,210,122,.6)}
 .iv .guide.hit{border-color:var(--ok);box-shadow:0 0 24px rgba(47,210,122,.55),inset 0 0 24px rgba(47,210,122,.3)}
-@media (max-width:900px){.ivbadge{font-size:26px;padding:10px 22px}}
+@media (max-width:900px){.ivbadge{font-size:26px;padding:10px 22px}.panes{grid-template-columns:1fr}.pane{height:56vw}}
 .tally{margin-top:auto;display:flex;justify-content:space-between;color:var(--mute);font-size:14px}
 .tally b{display:block;color:var(--fg);font-weight:300;font-size:30px;font-variant-numeric:tabular-nums}
 .keys{grid-column:1/-1;display:flex;gap:26px;padding:12px 20px 16px;color:var(--mute);font-size:13px;border-top:1px solid var(--line)}
@@ -442,7 +462,7 @@ body{background:var(--bg);color:var(--fg);font:400 15px/1.35 Barlow,ui-sans-seri
 @media (prefers-reduced-motion:reduce){*{transition:none!important}}
 </style></head>
 <body><div class="app" id="app">
-<section class="view"><div class="main" id="mainbox"><img id="mainimg" alt=""><div class="guide" id="mguide"></div><div class="ivbadge" aria-live="polite">In view</div><div class="name" id="mainname"></div></div><div class="thumbs" id="thumbs"></div></section>
+<section class="view"><div class="panes" id="panes"></div><div class="thumbs" id="thumbs"></div></section>
 <aside class="cluster">
  <div class="state" id="state"><span><span class="dot"></span><b id="arm">Connecting</b></span><span id="eps"></span></div>
  <div class="gauge"><svg viewBox="0 0 300 300"><circle class="ring" cx="150" cy="150" r="140"/><circle class="arc" id="arc" cx="150" cy="150" r="140" stroke-dasharray="0 880"/></svg>
@@ -453,21 +473,29 @@ body{background:var(--bg);color:var(--fg);font:400 15px/1.35 Barlow,ui-sans-seri
  <div class="msg" id="msg"></div>
  <div class="tally"><span><b id="ok">0</b>Saved</span><span><b id="bad">0</b>Failed</span><span><b id="med">–</b>Median time</span></div>
 </aside>
-<footer class="keys"><span><kbd>Space</kbd><span id="kspace">Start</span></span><span><kbd>1–3</kbd>Bowl</span><span><kbd>I</kbd>In view</span><span><kbd>F</kbd>Failed</span><span><kbd>H</kbd>Discard</span><span class="grow"></span><span><kbd>E</kbd><span id="keng">Engage</span></span><span><kbd>D</kbd>Detector</span></footer>
+<footer class="keys"><span><kbd>Space</kbd><span id="kspace">Start</span></span><span><kbd>1–3</kbd>Bowl</span><span><kbd>I</kbd>In view</span><span><kbd>F</kbd>Failed</span><span><kbd>H</kbd>Discard</span><span class="grow"></span><span><kbd>E</kbd><span id="keng">Engage</span></span><span><kbd>V</kbd>Views</span><span><kbd>D</kbd>Detector</span></footer>
 </div>
 <script>
 const TARGET=__TARGET__,C=2*Math.PI*140,SW={red:'#e0393e',blue:'#2f6fe0',green:'#2fb36b',yellow:'#f5c518',orange:'#f2711c',white:'#e8e8e8',black:'#2a2a2a',purple:'#8e44d9',pink:'#e86aa6',grey:'#8d939b',gray:'#8d939b'};
-let main=null,last={},debug=false,teleLive=false,ac=null;const thumbs={};
+let panes=[null,null],split=true,last={},debug=false,teleLive=false,ac=null;const thumbs={};
 const $=id=>document.getElementById(id),app=$('app');
 function tone(seq){try{ac=ac||new(window.AudioContext||window.webkitAudioContext)();let t=ac.currentTime;for(const[f,d]of seq){if(f){const o=ac.createOscillator(),g=ac.createGain();o.type='sine';o.frequency.value=f;o.connect(g);g.connect(ac.destination);g.gain.setValueAtTime(1e-4,t);g.gain.exponentialRampToValueAtTime(.25,t+.012);g.gain.exponentialRampToValueAtTime(1e-4,t+d);o.start(t);o.stop(t+d+.02)}t+=d}}catch(e){}}
 const BEEP={start:[[880,.08],[0,.04],[1320,.12]],stop:[[660,.1],[0,.03],[330,.22]],view:[[1568,.18]]};
 const rec=c=>fetch('/rec/'+c,{method:'POST'}),tele=c=>fetch('/cmd/'+c,{method:'POST'});
-function setMain(n){main=n;if(!(debug&&n===last.inspect_camera))$('mainimg').src='/stream/'+encodeURIComponent(n);$('mainname').textContent=n;for(const k in thumbs)thumbs[k].classList.toggle('active',k===n)}
-setInterval(()=>{if(debug&&main&&main===last.inspect_camera)$('mainimg').src='/rec/inspect.jpg?'+Date.now()},120);
+(function(){const P=$('panes');for(let i=0;i<2;i++){const d=document.createElement('div');d.className='main pane';
+ d.innerHTML='<img alt=""><div class="guide"></div><div class="ivbadge" aria-live="polite">In view</div><div class="name"></div>';P.appendChild(d)}})();
+const pane=i=>$('panes').children[i],visible=()=>panes.slice(0,split?2:1);
+function show(i,n){panes[i]=n;const d=pane(i),ic=last.inspect_camera;
+ if(!(debug&&n===ic))d.querySelector('img').src='/stream/'+encodeURIComponent(n);
+ d.querySelector('.name').textContent=n;d.classList.toggle('insp',n===ic);
+ for(const k in thumbs)thumbs[k].classList.toggle('active',visible().includes(k))}
+function pick(n){if(visible().includes(n))return;show(split?1:0,n)}
+setInterval(()=>{if(debug)visible().forEach((n,i)=>{if(n&&n===last.inspect_camera)pane(i).querySelector('img').src='/rec/inspect.jpg?'+Date.now()})},120);
 document.addEventListener('keydown',e=>{if(e.repeat||e.metaKey||e.ctrlKey)return;const k=e.key.toLowerCase();
  if(k===' '){e.preventDefault();rec('space')}else if(k.length===1&&'123'.includes(k))rec('bowl'+k);else if(k==='i')rec('inview');
  else if(k==='f')rec('fail');else if(k==='h'||k==='backspace'){e.preventDefault();rec('discard')}else if(k==='e')tele(teleLive?'hold':'engage');
- else if(k==='d'){debug=!debug;if(last.inspect_camera)setMain(last.inspect_camera)}});
+ else if(k==='d'){debug=!debug;panes.forEach((n,i)=>{if(n)show(i,n)})}
+ else if(k==='v'){split=!split;app.classList.toggle('single',!split);panes.forEach((n,i)=>{if(n)show(i,n)})}});
 function bowls(r){const b=$('bowls');if(b.dataset.k!==r.bowls.join()){b.dataset.k=r.bowls.join();b.innerHTML='';
  r.bowls.forEach((c,i)=>{const x=document.createElement('button');x.className='bowl';x.style.setProperty('--c',SW[c]||c);x.setAttribute('aria-label',c+' bowl');x.innerHTML='<kbd>'+(i+1)+'</kbd>';x.onclick=()=>rec('bowl'+(i+1));b.appendChild(x)})}
  [...b.children].forEach((x,i)=>x.classList.toggle('sel',r.bowl===r.bowls[i]))}
@@ -476,13 +504,15 @@ function place(g,box,img,f){const cw=box.clientWidth,ch=box.clientHeight,nw=img.
  const k=g.dataset.cover?Math.max(cw/nw,ch/nh):Math.min(cw/nw,ch/nh),rw=nw*k,rh=nh*k,ox=(cw-rw)/2,oy=(ch-rh)/2;
  g.style.left=(ox+f[0]*rw)+'px';g.style.top=(oy+f[1]*rh)+'px';g.style.width=((f[2]-f[0])*rw)+'px';g.style.height=((f[3]-f[1])*rh)+'px'}
 function guides(r){const ic=r.inspect_camera;const state=g=>{g.classList.toggle('hit',r.in_view);g.classList.toggle('near',r.candidate&&!r.in_view)};
- const mg=$('mguide'),mi=$('mainimg');mg.classList.toggle('show',!!ic&&main===ic&&!debug);
- if(ic&&main===ic){place(mg,$('mainbox'),mi,fracs(r,mi));state(mg)}
+ panes.forEach((n,i)=>{const d=pane(i),g=d.querySelector('.guide'),im=d.querySelector('img'),on=!!ic&&n===ic&&!debug;
+  d.classList.toggle('insp',!!ic&&n===ic);g.classList.toggle('show',on);if(on){place(g,d,im,fracs(r,im));state(g)}});
  const t=ic&&thumbs[ic];if(t){let g=t.querySelector('.guide');if(!g){g=document.createElement('div');g.className='guide show';g.dataset.cover=1;t.appendChild(g)}
   const im=t.querySelector('img');place(g,t,im,fracs(r,im));state(g)}}
 async function tick(){try{
  const [s,r]=await Promise.all([fetch('/state').then(x=>x.json()),fetch('/rec/state').then(x=>x.json())]);
- for(const c of s.cameras){if(!thumbs[c.name]){const t=document.createElement('button');t.className='thumb';t.innerHTML='<img alt="" src="/stream/'+encodeURIComponent(c.name)+'"><span>'+c.name+'</span>';t.onclick=()=>setMain(c.name);$('thumbs').appendChild(t);thumbs[c.name]=t;if(!main)setMain(c.name)}}
+ for(const c of s.cameras){if(!thumbs[c.name]){const t=document.createElement('button');t.className='thumb';t.innerHTML='<img alt="" src="/stream/'+encodeURIComponent(c.name)+'"><span>'+c.name+'</span>';t.onclick=()=>pick(c.name);$('thumbs').appendChild(t);thumbs[c.name]=t}}
+ if(!panes[0]&&s.cameras.length){last=r;const names=s.cameras.map(c=>c.name),a=r.inspect_camera&&names.includes(r.inspect_camera)?r.inspect_camera:names[0];
+  show(0,a);const b=names.includes('top')&&a!=='top'?'top':names.find(n=>n!==a);if(b)show(1,b);else{split=false;app.classList.add('single')}}
  const t=s.teleop;teleLive=!!(t&&(t.phase==='live'||t.phase==='engaging'));
  $('arm').textContent=!t?'No arm':t.phase==='live'?'Live':t.phase==='engaging'?'Engaging':t.phase==='ready'?'Holding':t.phase[0].toUpperCase()+t.phase.slice(1);
  $('state').classList.toggle('live',!!t&&t.phase==='live');$('keng').textContent=teleLive?'Hold':'Engage';
@@ -502,8 +532,8 @@ async function tick(){try{
  $('meter').style.display=(r.inspect_camera&&r.threshold)?'':'none';$('meter').classList.toggle('inview',r.in_view);app.classList.toggle('iv',!!r.in_view);
  $('mfill').style.width=Math.min(100,100*(r.prob||0))+'%';$('mthr').style.left=r.threshold?(100*r.threshold)+'%':'-9px';
  const cue=recording&&r.stage==='place';app.classList.toggle('cue',cue);
- $('msg').textContent=cue?(r.bowl?'Place in the '+r.bowl+' bowl':'In view. Choose a bowl (1\u20133)'):(r.message||(r.phase==='review'?'Space to save':(recording?'Centre the brick in the dashed square':'')));
- $('kspace').textContent={idle:'Start',recording:'Stop',review:'Save',saving:'Saving'}[r.phase]||'';
+ $('msg').textContent=cue?(r.bowl?'Place in the '+r.bowl+' bowl':'In view. Choose a bowl (1\u20133)'):(r.message||(r.phase==='review'?'Space to save':(recording?'Space when the brick is properly in front of the inspection camera':'')));
+ $('kspace').textContent={idle:'Start',recording:r.stage==='pick'?'Mark in view':'Stop',review:'Save',saving:'Saving'}[r.phase]||'';
  $('ok').textContent=r.saved.success;$('bad').textContent=r.saved.failure;$('med').textContent=r.median_s===null?'–':r.median_s+'s';
  last=r;
 }catch(e){$('arm').textContent='Disconnected'}}
@@ -581,6 +611,8 @@ def main() -> None:
     p.add_argument("--realsense", default="",
                    help="RealSense cameras by serial, name=serial,... e.g. top=346422061366,inspect=243722062690")
     p.add_argument("--no-depth", action="store_true", help="don't record RealSense depth")
+    p.add_argument("--auto-split", action="store_true",
+                   help="let the classifier mark the in-view moment instead of the operator's space press")
     p.add_argument("--width", type=int, default=640)
     p.add_argument("--height", type=int, default=480)
     p.add_argument("--cam-fps", type=int, default=30)
@@ -617,7 +649,7 @@ def main() -> None:
     recorder = EpisodeRecorder(teleop, streams, args.repo_id, args.record_fps, args.root, args.episode_time,
                                args.operator, args.vcodec, args.resume, [b.strip() for b in args.bowls.split(",")],
                                args.pick_task, args.place_task, args.inspect_camera, detector,
-                               record_depth=not args.no_depth)
+                               record_depth=not args.no_depth, auto_split=args.auto_split)
     server = None
     worker = rec_thread = None
     try:
