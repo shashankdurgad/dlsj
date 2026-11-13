@@ -11,10 +11,10 @@ The full plan, commands, code snippets and sources are in **[docs/PLAYBOOK.md](d
 | **PERCEIVE** | Cameras `wrist`, `top`, `inspect`; the arm picks a brick and presents it to `inspect` | CPU |
 | **DETECT** | Anomalib PaDiM/PatchCore (OpenVINO) on the `inspect` crop → `{label, score, region}` | **NPU** |
 | **REASON** | Kickoff rules + defect result + colour → which plate → language instruction | CPU |
-| **ACT** | π0.5 fine-tuned via Physical AI Studio, OpenVINO INT8, `physicalai` runtime with RTC | **GPU** |
+| **ACT** | ACT picks the brick and presents it; π0.5 places it on the chosen plate (OpenVINO, `physicalai` runtime) | **GPU** |
 | **OPTIMIZE** | Baseline (PyTorch-XPU) vs OpenVINO FP16 / INT8 / NPU latency, tasks/min | all |
 
-Training runs on cloud RTX GPUs; ACT is the baseline policy and SmolVLA the fallback VLA.
+Same split as Intel's reference (ACT → Anomalib → VLA), with π0.5 instead of SmolVLA for the place step; SmolVLA is the fallback. Training runs on cloud RTX GPUs.
 
 ## Timeline
 

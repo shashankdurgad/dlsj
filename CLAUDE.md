@@ -12,7 +12,7 @@ Hackathon repo for **Intel's challenge at Junction**: end-to-end robotic defect 
 - **Training:** cloud/team NVIDIA RTX GPUs.
 
 ## Decisions already made (don't re-litigate without a reason)
-- **VLA:** **π0.5 trained via Physical AI Studio** on cloud RTX, exported to OpenVINO INT8, run with the `physicalai` runtime on the XPS GPU. SmolVLA is the fallback; **ACT is the baseline**. No Chinese VLA beats π0.5 in independent tests (PLAYBOOK §2.1, `reports/XPU kernels and Chinese VLAs.md`).
+- **Policies (Intel's reference split):** **ACT** for pick-and-present, and **π0.5** (team choice; Intel's reference uses SmolVLA, which is our fallback) for the language-conditioned place on a plate. Train via Physical AI Studio on cloud RTX; export to OpenVINO (ACT FP16, π0.5 INT8); run on the XPS GPU.
 - **Device split:** Anomalib on the **NPU** (static shapes); π0.5 on the **GPU**; cameras, rules and control on the **CPU**. Stretch: π0.5 action expert on the NPU.
 - **REASON:** a rule table maps (label, score, region, brick colour/type, kickoff rules) to a plate and a fixed instruction string, which conditions π0.5. Use identical strings in training demos and at run time.
 - **Defect detection:** Anomalib PaDiM/PatchCore on the `inspect` crop of the brick the arm presents, output as a structured `{label, score, region}` signal. The anomaly-map `region` is the **localization signal** consumed by REASON.

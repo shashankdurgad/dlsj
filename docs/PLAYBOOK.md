@@ -20,6 +20,7 @@
 
 - The demo setup has **two plates (orange/red and blue)**. In the slide's photos the perfect brick ends on the blue plate. ⚠️ Confirm the plate-to-label mapping in the kickoff rules.
 - Intel's own split: **ACT does the pick-and-present skill, SmolVLA does the language-conditioned place** ("place the brick on the … plate"). This is the two-skill design from Section 3.1b.
+- **Our choice (team decision):** same split, but **π0.5 instead of SmolVLA** for the place step, for robustness. SmolVLA remains the fallback.
 
 **What teams must deliver** (same slide):
 1. **Working Physical AI prototype:** a closed-loop SO-101 solution from perception to action.
@@ -86,13 +87,13 @@
 | **PERCEIVE** | Cameras | `wrist`, `top`, `inspect` at 640×480@30, exposure/WB locked; the arm picks a brick and **presents it to `inspect`** | CPU |
 | **DETECT** | Defect detection | **Anomalib PaDiM/PatchCore** on the **`inspect` view of the presented brick**, OpenVINO, **static shapes**; anomaly map → **defect localization** (region on the brick) | **NPU** |
 | **REASON** | Decision | Kickoff rules + defect result (+ brick colour/type) → **which plate** → a **language instruction**, e.g. "place the brick on the reject plate" | CPU |
-| **ACT** | Manipulation | **π0.5 fine-tuned via Physical AI Studio** on cloud RTX, exported to OpenVINO **INT8**, `physicalai` runtime with RTC/async | **GPU** |
+| **ACT** | Manipulation | **Two skills:** (1) pick a brick and present it to `inspect` = **ACT**; (2) place the brick on the chosen plate = **π0.5** (language-conditioned). Both trained via Physical AI Studio on cloud RTX, exported to OpenVINO (ACT FP16, π0.5 **INT8**), `physicalai` runtime with RTC/async | **GPU** |
 | **OPTIMIZE** | Evidence | Latency table: PyTorch-XPU vs OpenVINO FP16 vs INT8 vs NPU; per-stage timings; tasks/min (Section 8.1) | all |
 
 | Component | Choice | Why |
 |---|---|---|
-| VLA (primary) | **π0.5** via Physical AI Studio. Fallback **SmolVLA** (also in Studio) | Required "VLA through Studio"; best independent results; Intel-measured OpenVINO path (172 ms/chunk on Panther Lake). Section 2.1 |
-| Baseline | **ACT** (also in Studio) | Trains in <1 h; safety net and comparison point |
+| Pick & present | **ACT** (as in Intel's reference) | One fixed skill, no language needed; trains in <1 h; exported with `dlsj.deploy.act_export` |
+| Place (VLA) | **π0.5** via Physical AI Studio (team choice). Fallback **SmolVLA** (Intel's reference choice) | Required "VLA through Studio"; language picks the plate; best independent results; Intel-measured OpenVINO path (172 ms/chunk on Panther Lake). Section 2.1 |
 | Training | **Cloud RTX** (CUDA, bf16), Studio CLI or Studio trainer container | π0.5 needs ≥24 GB to fine-tune; XPU training is fallback only |
 | Deployment | **OpenVINO export** + `physicalai` runtime on the XPS, **AsyncExecution**, **no temporal ensembling** | Required stack; low latency |
 | Data | ~150 brisk demos over **6–10 lighting/background conditions**, idle frames trimmed; demos **with language instructions** per bin | Diversity beats quantity; π0.5 learns the instruction → bin mapping |
@@ -228,7 +229,7 @@ pip install "physicalai[so101,realsense]"
 
 **SO-101 benchmark** ([arXiv 2606.08881](https://arxiv.org/html/2606.08881)), average success: **π0.5 56.25%**, ACT 33.75%, SmolVLA 32.5%. Selective colour sorting was **0–10% for all three**, which is why sorting needs a separate perception step (Section 5.6).
 
-**Decision (after kickoff):** the brief requires a VLA trained through Physical AI Studio, so **π0.5 is the primary policy**. SmolVLA is the fallback (also in Studio), and **ACT is the baseline** to compare against and fall back to. All three train on cloud RTX.
+**Decision (after kickoff):** follow Intel's reference split. **ACT for pick-and-present**, and a VLA for the language-conditioned **place**: **π0.5** (team choice), with **SmolVLA** (Intel's reference) as fallback. All train on cloud RTX via Studio.
 
 ### 2.1 Which VLA (updated after research, see `reports/XPU kernels and Chinese VLAs.md`)
 
@@ -741,20 +742,20 @@ The same "fully closed = nothing grasped" override improved disturbance recovery
 | Device | Work | Why |
 |---|---|---|
 | **NPU** | Anomalib PaDiM/PatchCore on the `inspect` crop | Small, static-shape CNN; frees the GPU for the VLA; low power |
-| **GPU** (Arc B390) | π0.5 (or ACT) policy: vision encoder + VLM + action expert | Compute-bound VLM needs XMX; INT8 weights |
+| **GPU** (Arc B390) | ACT (pick & present) and π0.5 (place) | Compute-bound VLM needs XMX; INT8 weights for π0.5, FP16 for ACT |
 | **CPU** | Camera capture, crop/pre-processing, rules → instruction, arm control, grasp check | Light, latency-tolerant logic |
 | Stretch | π0.5 **action expert on the NPU**, KV cache shared zero-copy (Intel's split, Section 4.5 step 9) | Overlaps VLM and expert under RTC |
 
 **Task state machine:**
-1. `PICK`: run the policy with `"pick the brick and present it to the inspection camera"` (or the first half of a full-sequence instruction) until the brick is held at the `inspect` spot. → `VERIFY_GRASP` (gripper current; on EMPTY, retry up to 2).
+1. `PICK`: run **ACT** (pick-and-present skill) until the brick is held at the `inspect` spot. → `VERIFY_GRASP` (gripper current; on EMPTY, retry up to 2).
 2. `DETECT`: wait for `Moving` = 0, grab 3 `inspect` frames, crop the brick, run Anomalib on the **NPU** (median score). Output a **structured signal** `{label: perfect|defective, score, region}`:
    - `region` = the anomaly map thresholded → connected components → bounding box on the brick: the **localization signal** the brief requires;
    - also log it and draw it as a heatmap overlay.
 3. `REASON`: apply the **kickoff rules** to (label, score, region, brick colour/type via HSV on the `inspect` crop, anything else the rules use) → **which plate** → one of a fixed set of instruction strings, e.g. `"place the brick on the reject plate"`. Keep the strings **identical** to the training demos. A rule table is enough; an LLM is optional narration only.
-4. `PLACE`: run the policy with that instruction until the brick is released on the plate.
+4. `PLACE`: run **π0.5** with that instruction until the brick is released on the plate.
 5. Loop. Log per-stage timings every iteration.
 
-If π0.5 isn't ready, the same loop works with **ACT**: one policy for pick+present and one per plate (instruction → policy lookup), exported with `dlsj.deploy.act_export`.
+If π0.5 isn't ready: SmolVLA for the place step (Intel's reference), or one ACT policy per plate (instruction → policy lookup).
 
 ### 8.1 OPTIMIZE: the numbers to show
 
