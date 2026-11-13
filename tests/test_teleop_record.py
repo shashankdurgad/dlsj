@@ -93,9 +93,9 @@ def test_detector_splits_take_and_tasks_follow_the_chosen_bowl(rec):
     rec.streams["inspect"].show_brick(False)
     step(rec, 3)  # placing; bowl not chosen yet
     press(rec, "space")  # stop -> review
-    press(rec, "space")  # save refused: no bowl
-    assert rec.phase == "review" and "bowl" in rec.message.lower()
-    press(rec, "bowl3", "space")  # choose green, save
+    press(rec, "save")  # save refused: no plate chosen
+    assert rec.phase == "review" and "plate" in rec.message.lower()
+    press(rec, "bowl3", "save")  # choose green, save
     rec.close()
 
     assert rec.dataset.num_episodes == 1
@@ -119,7 +119,7 @@ def test_failure_without_marking_and_discard(rec):
     step(rec, 2)
     press(rec, "fail")  # failures can be saved without an in-view moment
     assert rec.saved == {"success": 0, "failure": 1}
-    press(rec, "space")
+    assert rec.phase == "recording"  # continuous: the next take is already running
     step(rec, 2)
     press(rec, "inview", "bowl1")
     assert rec.stage == "place" and not rec.split_auto
@@ -137,7 +137,7 @@ def test_space_marks_in_view_and_classifier_frame_is_kept_separately(rec):
     assert rec.stage == "pick" and rec.classifier_frame is not None
     clf = rec.classifier_frame
     step(rec, 2)
-    press(rec, "space")  # operator marks in view
+    press(rec, "inview")  # operator presses m
     assert rec.stage == "place" and rec.split_frame is not None and not rec.split_auto
     marked = rec.split_frame
     rec.streams["inspect"].show_brick(False)
@@ -145,7 +145,9 @@ def test_space_marks_in_view_and_classifier_frame_is_kept_separately(rec):
     step(rec, 2)
     press(rec, "space")  # stop
     assert rec.phase == "review"
-    press(rec, "space")  # save
+    press(rec, "space")  # space does nothing in review
+    assert rec.phase == "review"
+    press(rec, "save")  # s
     rec.close()
     lab = json.loads((rec.sidecar / "labels.jsonl").read_text().splitlines()[0])
     assert lab["inspection_frame"] == marked and lab["inspection_marked_by"] == "operator"
@@ -160,14 +162,19 @@ def test_space_marks_in_view_and_classifier_frame_is_kept_separately(rec):
     assert ds[marked - 1]["task"].startswith("pick up")
 
 
-def test_bowl_choice_resets_after_save(rec):
+def test_plate_choice_persists_across_takes_and_restarts(rec):
     rec.teleop.go_live()
     press(rec, "bowl2", "space")
     step(rec, 1)
     press(rec, "inview")
     step(rec, 1)
-    press(rec, "space", "space")
-    assert rec.saved["success"] == 1 and rec.bowl is None
+    press(rec, "space", "save")
+    assert rec.saved["success"] == 1 and rec.bowl == "blue"  # stays selected for the next take
+    rec.close()
+    again = EpisodeRecorder(FakeTeleop(), rec.streams, "local/test_teleop", root=rec.root, resume=True,
+                            bowls=["red", "blue", "green"])
+    again.open_dataset()
+    assert again.bowl == "blue"  # and after a restart
 
 
 def test_frames_skipped_while_not_live_and_time_limit(rec):
@@ -243,7 +250,7 @@ def test_realsense_depth_is_recorded_as_depth_video(tmp_path):
     step(r, 3)
     press(r, "inview", "bowl1")
     step(r, 2)
-    press(r, "space", "space")
+    press(r, "space", "save")
     r.close()
     assert r.saved["success"] == 1
 
@@ -268,10 +275,10 @@ def test_continuous_chains_takes_and_enter_pauses(rec):
     rec.teleop.go_live()
     press(rec, "space")  # start take 1
     step(rec, 2)
-    press(rec, "space", "bowl1")  # mark in view, choose yellow
+    press(rec, "inview", "bowl1")  # m, choose the first plate
     step(rec, 2)
     press(rec, "space")  # stop
-    press(rec, "space")  # save and next
+    press(rec, "save")  # s: save and next
     assert rec.saved["success"] == 1 and rec.phase == "recording" and rec.stage == "pick"  # take 2 running
     step(rec, 2)
     press(rec, "inview", "bowl3")
@@ -284,3 +291,20 @@ def test_continuous_chains_takes_and_enter_pauses(rec):
     rec.close()
     labels = [json.loads(x) for x in (rec.sidecar / "labels.jsonl").read_text().splitlines()]
     assert [lab["bowl"] for lab in labels] == ["red", "green"]  # this fixture's bowls
+
+
+def test_keys_space_starts_and_stops_s_saves_d_discards(rec):
+    rec.teleop.go_live()
+    press(rec, "space")
+    assert rec.phase == "recording" and rec.stage == "pick"
+    step(rec, 2)
+    press(rec, "space")  # space stops even before the mark
+    assert rec.phase == "review" and rec.split_frame is None
+    press(rec, "discard")
+    assert rec.phase == "idle"
+    press(rec, "space")
+    step(rec, 2)
+    press(rec, "save")  # s while recording stops and tries to save: needs the mark first
+    assert rec.phase == "review" and "(m)" in rec.message
+    press(rec, "fail")  # f saves as failed, then the next take starts
+    assert rec.saved["failure"] == 1 and rec.phase == "recording"
