@@ -177,11 +177,12 @@ def calibrate_from_rest(device) -> None:
     print("Calibration saved to", device.calibration_fpath)
 
 
-def ensure_calibrated(device, label: str, force: bool = False) -> bool:
+def ensure_calibrated(device, label: str, force: bool = False, after_calibration=None) -> bool:
     """Connect `device` (LeRobot robot or teleop), calibrating until the result passes `calibration_problems`.
 
     Unlike plain `connect()`, a stored file that is valid is used without the "press ENTER" prompt, and a bad
-    one (or `force`) triggers a fresh calibration.
+    one (or `force`) triggers a fresh calibration. `after_calibration(device)` runs right after a fresh
+    calibration, while torque is still off (e.g. to capture the home pose by hand).
     """
     device.bus.connect()
     stored = device.calibration if device.calibration_fpath.exists() else {}
@@ -196,6 +197,8 @@ def ensure_calibrated(device, label: str, force: bool = False) -> bool:
         print(f"\n=== Calibrating {label.upper()} from its REST pose ===")
         calibrate_from_rest(device)
         recalibrated = True
+        if after_calibration is not None:
+            after_calibration(device)
     # Advisory only: with use_degrees the range just sets the centre and the clamp, so we never block.
     warn = calibration_problems(_as_plain(device.calibration))
     if warn:
@@ -238,6 +241,21 @@ def home_pose_path(follower_id: str) -> Path:
 def load_home(follower_id: str) -> dict[str, float] | None:
     p = home_pose_path(follower_id)
     return json.loads(p.read_text()) if p.exists() else None
+
+
+def capture_home(device, follower_id: str, prompt=input) -> Path:
+    """Ask for the folded REST pose with torque off and save it as the follower's home pose.
+
+    Any previous home (in the old calibration's angles) is set aside first.
+    """
+    stale = retire_home(follower_id)
+    if stale:
+        log.info("old home pose moved to %s", stale.name)
+    prompt("\nLast step: fold the follower back into its REST pose (this becomes HOME) and press ENTER...")
+    pos = device.bus.sync_read("Present_Position", num_retry=5)  # normalised with the new calibration
+    p = save_home(follower_id, {f"{m}.pos": float(v) for m, v in pos.items()})
+    print("Home pose saved to", p)
+    return p
 
 
 def retire_home(follower_id: str) -> Path | None:

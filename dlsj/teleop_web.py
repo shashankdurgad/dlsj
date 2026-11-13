@@ -17,6 +17,7 @@ import argparse
 import json
 import logging
 import queue
+import signal
 import sys
 import threading
 import time
@@ -184,11 +185,10 @@ class Teleop:
 
     # ------------------------------------------------------------------ lifecycle
     def connect(self) -> None:
-        if arms.ensure_calibrated(self.robot, "follower", force=self.args.calibrate in ("follower", "both")):
-            stale = arms.retire_home(self.args.follower_id)
-            if stale:
-                log.warning("follower recalibrated: old home pose moved to %s; save a new one", stale.name)
-            self.home = None
+        fid = self.args.follower_id
+        if arms.ensure_calibrated(self.robot, "follower", force=self.args.calibrate in ("follower", "both"),
+                                  after_calibration=lambda dev: arms.capture_home(dev, fid)):
+            self.home = arms.load_home(fid)  # captured at the end of calibration
         if arms.ensure_calibrated(self.leader, "leader", force=self.args.calibrate in ("leader", "both")):
             p = arms.align_path(self.args.leader_id)
             if p.exists():
@@ -485,6 +485,16 @@ def make_handler(streams: dict[str, CameraStream], teleop: Teleop | None):
 
 
 # ----------------------------------------------------------------------------- main
+def install_stop_signals() -> None:
+    """Treat SIGTERM and SIGHUP (e.g. the SSH session closing) like Ctrl+C: home the follower, then stop."""
+
+    def _stop(signum, frame):
+        raise KeyboardInterrupt
+
+    for sig in (signal.SIGTERM, signal.SIGHUP):
+        signal.signal(sig, _stop)
+
+
 def main() -> None:
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--follower-port", default="auto", help="'auto' = the arm with a ~12 V servo supply")
@@ -515,6 +525,7 @@ def main() -> None:
     p.add_argument("--host", default="127.0.0.1")
     p.add_argument("--port", type=int, default=8000)
     args = p.parse_args()
+    install_stop_signals()
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 
     if not args.no_robot and "auto" in (args.follower_port, args.leader_port):

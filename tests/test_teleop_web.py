@@ -240,3 +240,19 @@ def test_hold_present_goal_clears_stale_zero_goals():
     bus = FakeBus(present, {"elbow_flex": 0, "gripper": 0})
     arms.hold_present_goal(bus, "follower")
     assert bus.regs["Goal_Position"] == present
+
+
+def test_capture_home_retires_old_and_saves_rest_pose(tmp_path, monkeypatch):
+    monkeypatch.setattr(arms, "FOLLOWER_CAL_DIR", tmp_path)
+    arms.save_home("f", {"elbow_flex.pos": 1.0})
+
+    class Bus:
+        def sync_read(self, name, num_retry=0):
+            assert name == "Present_Position"
+            return {"shoulder_lift": -99.5, "elbow_flex": 96.0}
+
+    prompts = []
+    arms.capture_home(SimpleNamespace(bus=Bus()), "f", prompt=prompts.append)
+    assert prompts and "REST" in prompts[0]
+    assert arms.load_home("f") == {"shoulder_lift.pos": -99.5, "elbow_flex.pos": 96.0}
+    assert (tmp_path / "f.home.json.stale").exists()
