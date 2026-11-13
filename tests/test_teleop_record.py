@@ -261,3 +261,26 @@ def test_depth_off_records_colour_only(tmp_path):
     r = EpisodeRecorder(FakeTeleop(), streams, "local/test_nodepth", root=tmp_path / "ds", record_depth=False)
     r.open_dataset()
     assert r.depth_cams == [] and "observation.images.top_depth" not in r.dataset.features
+
+
+def test_continuous_chains_takes_and_enter_pauses(rec):
+    assert rec.continuous and rec.streaming_encoding
+    rec.teleop.go_live()
+    press(rec, "space")  # start take 1
+    step(rec, 2)
+    press(rec, "space", "bowl1")  # mark in view, choose yellow
+    step(rec, 2)
+    press(rec, "space")  # stop
+    press(rec, "space")  # save and next
+    assert rec.saved["success"] == 1 and rec.phase == "recording" and rec.stage == "pick"  # take 2 running
+    step(rec, 2)
+    press(rec, "inview", "bowl3")
+    step(rec, 2)
+    press(rec, "space")  # stop
+    press(rec, "enter")  # save and pause
+    assert rec.saved["success"] == 2 and rec.phase == "idle"
+    press(rec, "fail")  # nothing to save while idle
+    assert rec.saved["failure"] == 0
+    rec.close()
+    labels = [json.loads(x) for x in (rec.sidecar / "labels.jsonl").read_text().splitlines()]
+    assert [lab["bowl"] for lab in labels] == ["red", "green"]  # this fixture's bowls

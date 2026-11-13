@@ -22,7 +22,8 @@ The policy never sees good or defective. At deployment the controller turns the 
 bowl colour and prompts "place the brick in the <colour> bowl".
 
 Keys while the page is focused:
-  space     start, mark in view, stop, save                    1 2 3   choose bowl         i   mark in view
+  space     start, mark in view, stop, save and start the next take (--no-continuous: just save)
+  enter     save and pause                                     1 2 3   choose bowl         i   mark in view
   f         save as failed           h       discard             e   engage or hold the arm
   d         show what the in-view detector sees                 v   one or two camera views
 """
@@ -61,7 +62,8 @@ class EpisodeRecorder:
                  episode_time_s: float = 60.0, operator: str = "", vcodec: str = "h264", resume: bool = False,
                  bowls: list[str] | None = None, pick_task: str = PICK_TASK, place_task: str = PLACE_TASK,
                  inspect_camera: str | None = "inspect", detector: BrickInViewDetector | None = None,
-                 record_depth: bool = True, auto_split: bool = False):
+                 record_depth: bool = True, auto_split: bool = False, continuous: bool = True,
+                 streaming_encoding: bool = True):
         self.teleop, self.streams = teleop, streams
         self.repo_id, self.fps = repo_id, fps
         self.root = Path(root) if root else Path("data") / repo_id.split("/")[-1]
@@ -74,6 +76,8 @@ class EpisodeRecorder:
         self.detector = detector or BrickInViewDetector()
         # By default the operator marks the in-view moment (space). With auto_split the classifier does.
         self.auto_split = auto_split
+        # continuous: saving a take immediately starts the next one, so takes chain without pausing
+        self.continuous, self.streaming_encoding = continuous, streaming_encoding
         # RealSense streams carry aligned depth; it is recorded as observation.images.<cam>_depth (uint16 mm)
         self.depth_cams = [n for n, s in streams.items() if record_depth and getattr(s, "use_depth", False)]
         self.depth_shapes: dict[str, tuple[int, int, int]] = {}
@@ -132,7 +136,9 @@ class EpisodeRecorder:
 
         self._wait_for_cameras()
         n = max(1, len(self.streams))
-        kw = dict(root=self.root, image_writer_threads=4 * n, rgb_encoder=RGBEncoderConfig(vcodec=self.vcodec))
+        # streaming encoding: videos are encoded while recording, so saving a take is near-instant
+        kw = dict(root=self.root, image_writer_threads=4 * n, rgb_encoder=RGBEncoderConfig(vcodec=self.vcodec),
+                  streaming_encoding=self.streaming_encoding)
         if self.resume and (self.root / "meta" / "info.json").exists():
             self.dataset = LeRobotDataset.resume(self.repo_id, **kw)
             want = set(self.features())
@@ -172,6 +178,8 @@ class EpisodeRecorder:
         self.message = ""  # the stage track and the chime show it
 
     def _handle(self, c: str) -> None:
+        if c == "enter":
+            c = "accept_pause" if self.phase == "review" else ""
         if c == "space":
             if self.phase == "recording":
                 c = "inview" if self.stage == "pick" else "stop"
@@ -194,16 +202,19 @@ class EpisodeRecorder:
             self.phase, self.message = "recording", ""
         elif c == "stop" and self.phase == "recording":
             self._to_review()
-        elif c in ("accept", "fail") and self.phase in ("recording", "review"):
+        elif c in ("accept", "accept_pause", "fail") and self.phase in ("recording", "review"):
             if self.phase == "recording":
                 self._to_review()
-            if c == "accept" and self.split_frame is None:
-                self.message = "Mark the in-view moment first (i), or save as failed (f)"
+            success = c != "fail"
+            if success and self.split_frame is None:
+                self.message = "Mark the in-view moment first (space or i), or save as failed (f)"
                 return
-            if c == "accept" and self.bowl is None:
+            if success and self.bowl is None:
                 self.message = "Choose a bowl (1–3)"
                 return
-            self._save(success=c == "accept")
+            self._save(success=success)
+            if self.continuous and c != "accept_pause" and self.phase == "idle":
+                self._handle("start")  # chain straight into the next take
         elif c == "discard" and self.phase in ("recording", "review"):
             self.dataset.clear_episode_buffer()
             self.phase, self.message = "idle", "Discarded"
@@ -354,7 +365,7 @@ class EpisodeRecorder:
                 "prob": round(float(getattr(self.detector, "prob", d.area)), 3),
                 "threshold": getattr(self.detector, "threshold", None),
                 "guide": "square" if hasattr(self.detector, "prob") else list(self.detector.cfg.roi),
-                "depth_cams": self.depth_cams, "auto_split": self.auto_split,
+                "depth_cams": self.depth_cams, "auto_split": self.auto_split, "continuous": self.continuous,
                 "teleop_live": self._teleop_live(), "root": str(self.root),
                 "task": self._current_task() if self.phase == "recording" else None,
             }
@@ -473,7 +484,7 @@ body{background:var(--bg);color:var(--fg);font:400 15px/1.35 Barlow,ui-sans-seri
  <div class="msg" id="msg"></div>
  <div class="tally"><span><b id="ok">0</b>Saved</span><span><b id="bad">0</b>Failed</span><span><b id="med">–</b>Median time</span></div>
 </aside>
-<footer class="keys"><span><kbd>Space</kbd><span id="kspace">Start</span></span><span><kbd>1–3</kbd>Bowl</span><span><kbd>I</kbd>In view</span><span><kbd>F</kbd>Failed</span><span><kbd>H</kbd>Discard</span><span class="grow"></span><span><kbd>E</kbd><span id="keng">Engage</span></span><span><kbd>V</kbd>Views</span><span><kbd>D</kbd>Detector</span></footer>
+<footer class="keys"><span><kbd>Space</kbd><span id="kspace">Start</span></span><span><kbd>Enter</kbd><span id="kenter">Save and pause</span></span><span><kbd>1–3</kbd>Bowl</span><span><kbd>I</kbd>In view</span><span><kbd>F</kbd>Failed</span><span><kbd>H</kbd>Discard</span><span class="grow"></span><span><kbd>E</kbd><span id="keng">Engage</span></span><span><kbd>V</kbd>Views</span><span><kbd>D</kbd>Detector</span></footer>
 </div>
 <script>
 const TARGET=__TARGET__,C=2*Math.PI*140,SW={red:'#e0393e',blue:'#2f6fe0',green:'#2fb36b',yellow:'#f5c518',orange:'#f2711c',white:'#e8e8e8',black:'#2a2a2a',purple:'#8e44d9',pink:'#e86aa6',grey:'#8d939b',gray:'#8d939b'};
@@ -493,7 +504,7 @@ function pick(n){if(visible().includes(n))return;show(split?1:0,n)}
 setInterval(()=>{if(debug)visible().forEach((n,i)=>{if(n&&n===last.inspect_camera)pane(i).querySelector('img').src='/rec/inspect.jpg?'+Date.now()})},120);
 document.addEventListener('keydown',e=>{if(e.repeat||e.metaKey||e.ctrlKey)return;const k=e.key.toLowerCase();
  if(k===' '){e.preventDefault();rec('space')}else if(k.length===1&&'123'.includes(k))rec('bowl'+k);else if(k==='i')rec('inview');
- else if(k==='f')rec('fail');else if(k==='h'||k==='backspace'){e.preventDefault();rec('discard')}else if(k==='e')tele(teleLive?'hold':'engage');
+ else if(k==='enter'){e.preventDefault();rec('enter')}else if(k==='f')rec('fail');else if(k==='h'||k==='backspace'){e.preventDefault();rec('discard')}else if(k==='e')tele(teleLive?'hold':'engage');
  else if(k==='d'){debug=!debug;panes.forEach((n,i)=>{if(n)show(i,n)})}
  else if(k==='v'){split=!split;app.classList.toggle('single',!split);panes.forEach((n,i)=>{if(n)show(i,n)})}});
 function bowls(r){const b=$('bowls');if(b.dataset.k!==r.bowls.join()){b.dataset.k=r.bowls.join();b.innerHTML='';
@@ -532,8 +543,9 @@ async function tick(){try{
  $('meter').style.display=(r.inspect_camera&&r.threshold)?'':'none';$('meter').classList.toggle('inview',r.in_view);app.classList.toggle('iv',!!r.in_view);
  $('mfill').style.width=Math.min(100,100*(r.prob||0))+'%';$('mthr').style.left=r.threshold?(100*r.threshold)+'%':'-9px';
  const cue=recording&&r.stage==='place';app.classList.toggle('cue',cue);
- $('msg').textContent=cue?(r.bowl?'Place in the '+r.bowl+' bowl':'In view. Choose a bowl (1\u20133)'):(r.message||(r.phase==='review'?'Space to save':(recording?'Space when the brick is properly in front of the inspection camera':'')));
- $('kspace').textContent={idle:'Start',recording:r.stage==='pick'?'Mark in view':'Stop',review:'Save',saving:'Saving'}[r.phase]||'';
+ $('msg').textContent=cue?(r.bowl?'Place in the '+r.bowl+' bowl':'In view. Choose a bowl (1\u20133)'):(r.message||(r.phase==='review'?(r.continuous?'Space saves and starts the next take':'Space to save'):(recording?'Space when the brick is properly in front of the inspection camera':'')));
+ $('kspace').textContent={idle:'Start',recording:r.stage==='pick'?'Mark in view':'Stop',review:r.continuous?'Save and next':'Save',saving:'Saving'}[r.phase]||'';
+ $('kenter').parentNode.style.display=(r.phase==='review'&&r.continuous)?'':'none';
  $('ok').textContent=r.saved.success;$('bad').textContent=r.saved.failure;$('med').textContent=r.median_s===null?'–':r.median_s+'s';
  last=r;
 }catch(e){$('arm').textContent='Disconnected'}}
@@ -544,7 +556,8 @@ setInterval(tick,100);tick();
 def make_handler(streams: dict, teleop, recorder: EpisodeRecorder, target_s: float | None):
     base = teleop_web.make_handler(streams, teleop)
     page = PAGE.replace("__TARGET__", json.dumps(target_s)).encode()
-    commands = {"space", "start", "stop", "accept", "fail", "discard", "inview"} | {f"bowl{i}" for i in range(1, 10)}
+    commands = ({"space", "enter", "start", "stop", "accept", "accept_pause", "fail", "discard", "inview"}
+                | {f"bowl{i}" for i in range(1, 10)})
 
     class Handler(base):
         def do_GET(self):
@@ -611,6 +624,10 @@ def main() -> None:
     p.add_argument("--realsense", default="",
                    help="RealSense cameras by serial, name=serial,... e.g. top=346422061366,inspect=243722062690")
     p.add_argument("--no-depth", action="store_true", help="don't record RealSense depth")
+    p.add_argument("--no-continuous", action="store_true",
+                   help="after saving, wait for space instead of starting the next take straight away")
+    p.add_argument("--no-streaming", action="store_true",
+                   help="encode videos when a take is saved instead of while recording (slower saves)")
     p.add_argument("--auto-split", action="store_true",
                    help="let the classifier mark the in-view moment instead of the operator's space press")
     p.add_argument("--width", type=int, default=640)
@@ -649,7 +666,8 @@ def main() -> None:
     recorder = EpisodeRecorder(teleop, streams, args.repo_id, args.record_fps, args.root, args.episode_time,
                                args.operator, args.vcodec, args.resume, [b.strip() for b in args.bowls.split(",")],
                                args.pick_task, args.place_task, args.inspect_camera, detector,
-                               record_depth=not args.no_depth, auto_split=args.auto_split)
+                               record_depth=not args.no_depth, auto_split=args.auto_split,
+                               continuous=not args.no_continuous, streaming_encoding=not args.no_streaming)
     server = None
     worker = rec_thread = None
     try:
