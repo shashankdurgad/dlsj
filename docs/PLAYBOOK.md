@@ -1,10 +1,24 @@
 # SO-101 Robot Learning Hackathon Playbook (Intel XPU)
 
-*Compiled 13 Nov 2026 from the official links plus four research threads: anomaly detection, robustness, speed, and force sensing. Updated the same day with XPU inference optimisation and a VLA comparison (Sections 2.1, 4.5; full report in `reports/XPU kernels and Chinese VLAs.md`).*
+*Compiled 13 Nov 2026 from the official links plus research threads on anomaly detection, robustness, speed, force sensing, XPU inference optimisation and VLAs (full report in `reports/XPU kernels and Chinese VLAs.md`). Updated after kickoff with Intel's official challenge brief and the real hardware.*
 
-**Hardware:** SO-101 leader/follower arms; **two cameras**: a fixed **overhead Intel RealSense** RGB-D camera (likely D405, ~7–50 cm range; mounted <50 cm from the workspace) and a **plain RGB webcam on the wrist**. Intel GPU ("XPU"), optional force sensor from a friend.
-**Tasks:** pick-and-place, sorting, anomaly detection.
-**Judged on (assumed):** success, robustness to lighting/texture/colour, speed.
+## Challenge brief (Intel @ Junction, from the kickoff slide)
+
+- Build an **end-to-end Physical AI solution for robotic defect detection and intelligent manipulation** using **Intel Physical AI Studio, Anomalib and OpenVINO**.
+- Combine **VLA capabilities through Physical AI Studio** with **Anomalib-based visual anomaly and defect detection**.
+- The robot must **perceive objects, identify defects, reason about the required action, and execute the manipulation**.
+- **Optimise and deploy on Intel Core Ultra Series 3 using OpenVINO**, leveraging **CPU, GPU and NPU** to improve inference performance, latency and deployment efficiency.
+- **Primary task:** distinguish acceptable ("perfect") from anomalous ("defective") objects, then physically sort or respond according to the **rules revealed at kickoff**. ⚠️ Fill in the rules here: _TBD_.
+- **Closed loop:** **PERCEIVE → DETECT → REASON → ACT → OPTIMIZE**, demonstrated end to end.
+
+**What this means for us:** the judged stack is Studio + Anomalib + OpenVINO. Plain LeRobot is fine for data and baselines, but the final policy is trained via Physical AI Studio and deployed with the `physicalai` runtime on OpenVINO. The NPU must visibly do real work, and we must show before/after optimisation numbers.
+
+**Hardware:**
+- **Robot:** SO-101 leader/follower arms.
+- **Cameras:** a fixed **overhead Intel RealSense** RGB-D (likely D405, ~7–50 cm range, mounted <50 cm from the workspace) and a **plain RGB webcam on the wrist**.
+- **Deploy machine:** **Dell XPS 16 DA16260**: Core Ultra **X9 388H** (Panther Lake, Core Ultra Series 3), **Arc B390** iGPU, **NPU** ("Intel AI Boost"), **64 GB** RAM, Ubuntu 26.04. Reach it with `ssh xps` over Tailscale (Section 1.0).
+- **Training:** **cloud / team NVIDIA RTX GPUs** (CUDA).
+- Optional force sensor from a friend.
 
 > Items marked ⚠️ **Unverified** come from docs/source reading or from extrapolation and were not tested on hardware. Smoke-test them first.
 
@@ -12,29 +26,66 @@
 
 ## 0. TL;DR: the plan
 
+| Loop step | Component | Choice | Device |
+|---|---|---|---|
+| **PERCEIVE** | Cameras | Overhead RealSense RGB-D + wrist webcam, 640×480@30, exposure/WB locked | CPU |
+| **DETECT** | Defect detection | **Anomalib PaDiM/PatchCore** on the overhead view (arm parked), OpenVINO, **static shapes**; plus **depth height-map check** | **NPU** |
+| **REASON** | Decision | Kickoff rules + defect result + HSV colour → a **language instruction**, e.g. "put the defective part in the red bin" | CPU |
+| **ACT** | Manipulation | **π0.5 fine-tuned via Physical AI Studio** on cloud RTX, exported to OpenVINO **INT8**, `physicalai` runtime with RTC/async | **GPU** |
+| **OPTIMIZE** | Evidence | Latency table: PyTorch-XPU vs OpenVINO FP16 vs INT8 vs NPU; per-stage timings; tasks/min (Section 8.1) | all |
+
 | Component | Choice | Why |
 |---|---|---|
-| Motor policy | **ACT**, trained in **bf16 on XPU**, 20–40k steps | Smallest, fastest to train, recommended first by LeRobot |
-| Deployment | **OpenVINO export** + `physicalai` runtime with **AsyncExecution**, chunk 50–100, **no temporal ensembling** | Low latency, smooth, hides inference time |
-| Data | ~150 brisk demos over **6–10 lighting/background conditions**, idle frames trimmed | Diversity beats quantity; fast demos give a fast policy |
-| Robustness | LeRobot image augmentation (brightness/contrast/shadow/white-balance), **hue jitter ≈ 0**; depth-based background replacement on the overhead view if time allows | Lighting robustness without destroying colour info |
-| Sorting | **HSV colour selector (or tiny classifier) → per-bin ACT policy** (or language-conditioned SmolVLA) | All policies score 0–10% on selective colour sorting end-to-end |
-| Anomaly detection | **Anomalib PaDiM/PatchCore** on the **fixed overhead RealSense view** (arm parked out of frame), OpenVINO export; **AnomalyDINO** if few images; plus **depth height-map check** | Intel-native, millisecond inference, works with ~100 good images |
-| Force | **Gripper `Present_Current`** in `observation.state` + rule-based grasp verification; friend's sensor as a stretch | One SO-101 project reported 77.5% → 95% success |
-| VLA track (parallel) | **π0.5** (SnapFlow 1-step distil → OpenVINO INT8 + RTC) if ≥24 GB; else **SmolVLA**. X-VLA only as a 30-min smoke test | Only VLA with a measured Intel path (172 ms/chunk on Panther Lake); no Chinese VLA beats π0.5 in independent tests (Section 2.1) |
-| Stretch | DINOv2 encoder, green-screen-style augmentation, NPU offload of the action expert | Only with spare hours |
+| VLA (primary) | **π0.5** via Physical AI Studio. Fallback **SmolVLA** (also in Studio) | Required "VLA through Studio"; best independent results; Intel-measured OpenVINO path (172 ms/chunk on Panther Lake). Section 2.1 |
+| Baseline | **ACT** (also in Studio) | Trains in <1 h; safety net and comparison point |
+| Training | **Cloud RTX** (CUDA, bf16), Studio CLI or Studio trainer container | π0.5 needs ≥24 GB to fine-tune; XPU training is fallback only |
+| Deployment | **OpenVINO export** + `physicalai` runtime on the XPS, **AsyncExecution**, **no temporal ensembling** | Required stack; low latency |
+| Data | ~150 brisk demos over **6–10 lighting/background conditions**, idle frames trimmed; demos **with language instructions** per bin | Diversity beats quantity; π0.5 learns the instruction → bin mapping |
+| Robustness | Image augmentation (brightness/contrast/shadow/white-balance), **hue jitter ≈ 0** | Lighting robustness without destroying colour info |
+| Force | **Gripper `Present_Current`** + rule-based grasp verification | One SO-101 project reported 77.5% → 95% success |
+| Stretch | π0.5 action expert on the NPU (Intel's split), SnapFlow 1-step distillation, depth background swap | Only with spare hours |
 
 ### Suggested timeline (adapt to remaining hours)
-1. **Hour 0–1:** environment setup (Section 1) and verify the arm and both cameras (lock exposure/WB, fix the overhead mount); one person starts collecting demos.
-2. **Hour 1–3:** collect diverse demos (Section 3); in parallel, capture good and bad images for anomaly detection (Section 6).
-3. **Hour 3–5:** trim data (Section 4.4), train ACT on XPU (Section 4); train Anomalib (Section 6).
-4. **Hour 5–7:** export to OpenVINO, deploy with async runtime, add the HSV selector and grasp check.
-5. **Hour 7+:** test on held-out lighting/background, then iterate on failures (more demos of the failure condition beats more training).
-6. **Final:** demo video with the anomaly heatmap overlay, live score readout, and a lighting-change test on camera.
+1. **Hour 0–1:** XPS is already set up (Section 1.0). Verify the arm and both cameras (lock exposure/WB, fix the overhead mount). Write the kickoff rules into the brief above. One person starts collecting demos.
+2. **Hour 1–3:** collect diverse demos with language instructions (Section 3); in parallel, capture good and defective images from the overhead camera (Section 6).
+3. **Hour 3–5:** push the dataset to the Hub; **train π0.5 and ACT on cloud RTX** via Studio; **train Anomalib on the XPS** and export to the NPU.
+4. **Hour 5–7:** export π0.5 to OpenVINO INT8, deploy with the `physicalai` runtime; wire the REASON step and the grasp check.
+5. **Hour 7+:** test on held-out lighting/background; iterate on failures (more demos of the failure condition beats more training); fill in the OPTIMIZE table.
+6. **Final:** demo of the full loop with the anomaly heatmap, live per-stage latency readout, and the OPTIMIZE table.
 
 ---
 
 ## 1. Toolchain & environment setup
+
+### 1.0 The XPS deploy machine (already set up)
+
+**Access:** the XPS is on a teammate's Tailscale network (`iuredce@gmail.com`). Switch to it with `tailscale switch`, then `ssh xps`, which logs in as user `intel` at 100.77.191.42. Only `intel` is allowed by that network's SSH policy.
+
+**System (installed 13 Nov):**
+- Intel GPU compute runtime (`libze1`, `libze-intel-gpu1`, `intel-opencl-icd`).
+- **NPU driver v1.38.0** (`intel-level-zero-npu`, `intel-driver-compiler-npu`, `intel-fw-npu`).
+- Docker, plus `build-essential`.
+- `intel` is in the `render`, `video`, `dialout` and `docker` groups, and has linger enabled.
+- OpenVINO sees **CPU, GPU, NPU**.
+
+**Python environments** (in `~/inference`, all Python 3.12 via `uv`). They are separate because the packages pin conflicting versions:
+
+| Env | Contents | Use |
+|---|---|---|
+| `physical-ai-studio/library/.venv` | Physical AI Studio library from the repo lock (`uv sync --extra xpu`): `physicalai` CLI, torch 2.11+xpu, OpenVINO 2026.4 | Studio export and the `physicalai` runtime on the XPS |
+| `.venv-anomalib` | Anomalib 2.7.0, OpenVINO 2026.4.1, torch 2.15+xpu | Defect detection (train and export to NPU) |
+| `.venv` | LeRobot 0.7.0 (π0.5, SmolVLA, Feetech, RealSense, policy server), torch 2.15+xpu | Recording, dataset tools, the **unoptimised PyTorch baseline** for the OPTIMIZE table |
+
+**Studio UI:** runs in Docker on the XPS (`~/inference/physical-ai-studio/application/docker`, profile `xpu`) at **http://100.77.191.42:7860**.
+
+**Install gotchas we hit:**
+- `pip install physicalai-train[xpu]==0.3.0` is unresolvable: it pins `lerobot==0.6.0` (torchvision <0.27) but `xpu` needs torchvision 0.29. **Install from the repo lock** instead.
+- Anomalib 2.7 and physicalai-train 0.3 conflict on `jsonargparse`.
+- physicalai 0.4 and LeRobot 0.7 `[pi]` conflict on `transformers`.
+- LeRobot 0.7's policy-server extra is `remote` (`async` no longer exists). Its `hardware` extra needs a C compiler (`evdev`).
+- π0.5 needs a Hugging Face token with access to the gated `google/paligemma-3b-pt-224` (tokenizer). Set `HF_TOKEN`.
+
+**Measured on the XPS** (ResNet-18, 256², batch 1, `bench/device_smoke.py`): CPU 12.6 ms, **GPU FP16 0.59 ms, NPU 0.88 ms**, PyTorch-XPU eager fp32 2.17 ms. **The NPU only accepts static shapes:** export with a fixed `input=[1,3,H,W]`, or it fails with "Upper bounds are not specified".
 
 ### 1.1 Provided Intel tools and what each is for
 
@@ -110,7 +161,7 @@ pip install "physicalai[so101,realsense]"
 
 **SO-101 benchmark** ([arXiv 2606.08881](https://arxiv.org/html/2606.08881)), average success: **π0.5 56.25%**, ACT 33.75%, SmolVLA 32.5%. Selective colour sorting was **0–10% for all three**, which is why sorting needs a separate perception step (Section 5.6).
 
-**Decision:** ACT for everything you need working (guaranteed baseline). Run a VLA as a parallel track (Section 2.1); it earns the demo only if it beats ACT on held-out lighting.
+**Decision (after kickoff):** the brief requires a VLA trained through Physical AI Studio, so **π0.5 is the primary policy**. SmolVLA is the fallback (also in Studio), and **ACT is the baseline** to compare against and fall back to. All three train on cloud RTX.
 
 ### 2.1 Which VLA (updated after research, see `reports/XPU kernels and Chinese VLAs.md`)
 
@@ -141,6 +192,11 @@ pip install "physicalai[so101,realsense]"
 - **Record the most likely judging conditions first.**
 - **Hold out one lighting setup and one background** that you never train on, as your own robustness test.
 
+### 3.1b Language instructions (for π0.5)
+- Every demo gets a **task string** naming where the object goes, e.g. `"place the object in the reject bin"`, `"place the object in the left bin"`. Use **one fixed string per destination** from the kickoff rules, and the exact same strings at run time (REASON step, Section 8).
+- **Balance the demos across instructions**, and vary which object goes where, so the policy listens to the instruction instead of guessing from the object's look.
+- In LeRobot recording this is `--dataset.single_task="..."`. Record each instruction as its own batch of episodes and merge the datasets.
+
 ### 3.2 Demo quality = policy speed
 - The policy copies your speed and hesitation. **Demo at the speed you want the robot to move**, decisively, with no fumbling. (Lesson from [Flash ALOHA](https://flash-aloha.github.io), which reached >80% success at near-human speed with 50 demos per task.)
 - **Keep your hands and arms out of the camera view.** Flash ALOHA masks the operator because operator appearance hurts visual alignment. The wrist camera mostly avoids this, but **the overhead RealSense will see you**: teleoperate from outside its frame.
@@ -155,6 +211,13 @@ pip install "physicalai[so101,realsense]"
 ---
 
 ## 4. Training & speed on Intel XPU
+
+### 4.0 Train on cloud RTX, deploy on the XPS
+- **Flow:** record on the XPS → push the dataset to the HF Hub → **train on cloud/team RTX** (CUDA, bf16) → download the checkpoint → `physicalai export --backend openvino` (INT8) → run on the XPS.
+- **Studio on CUDA:** the Studio configs default to `accelerator: gpu`, which is what you want on RTX. The XPU flags in 4.2 are only needed when training on Intel. Studio also ships a trainer container (`application/docker/docker-compose.trainer.yaml`).
+- **π0.5 GPU size:** ≥24 GB to fine-tune; 48–80 GB (RTX 6000 Ada / L40S / A100 / H100) is comfortable. Plain fine-tune first; SnapFlow 1-step distillation is optional (~12 GPU-h).
+- **Pin versions:** use the **same Physical AI Studio commit** on the cloud box and the XPS (the XPS has commit `8f13241`), so exports load in the runtime.
+- Sections 4.1–4.2 (training on XPU) are now the **fallback** if cloud GPUs are unavailable.
 
 ### 4.1 LeRobot on XPU
 LeRobot detects `torch.xpu` automatically and accepts `--policy.device=xpu`; AMP is allowed on xpu ([device_utils.py](https://github.com/huggingface/lerobot/blob/main/src/lerobot/utils/device_utils.py)).
@@ -371,6 +434,7 @@ class DepthBackgroundSwap:
 - Cheaper: feed **overhead depth (or depth-masked overhead RGB) as an extra image** into ACT. This adds a third image stream (~one extra view of latency for a VLA), so try RGB-only first.
 
 ### 5.6 Colour sorting: keep the decision outside the policy
+This is the **REASON** step of the loop (Section 8): defect result + colour + kickoff rules → instruction → π0.5.
 - VLAs often grasp fine but pick the wrong object. SmolVLA dropped from 44% to 0% on unseen object–region pairings, and more data barely helped ([source](https://www.alphaxiv.org/abs/2602.24143.md)).
 - **Recipe:**
   1. **Perception:** HSV threshold or a tiny classifier picks the target object and bin. Calibrate HSV ranges per lighting condition, or use a small CNN trained on crops under varied lighting.
@@ -403,6 +467,8 @@ def dominant_colour(bgr, roi=None, min_px=400):
 ## 6. Anomaly detection
 
 ### 6.1 Recommended approach
+**Run it on the NPU** (the brief requires using the NPU): export to OpenVINO with a **fixed input shape** and compile on `"NPU"` (`OpenVINOInferencer(path=..., device="NPU")`). PaDiM/PatchCore with a ResNet-18 backbone is a natural NPU fit (~0.9 ms for the backbone on this NPU). Train in `~/inference/.venv-anomalib` on the XPS: the model is tiny and needs on-site images.
+
 **Anomalib PaDiM or PatchCore**, trained on **50–200 "good" crops from the fixed overhead RealSense**, exported to OpenVINO, gating a reject/sort action. Runs **separately from the policy**. Because the overhead camera is fixed, there is no inspection pose to reach: park the arm out of frame and inspect the object where it sits (or at a taped inspection spot on the table, which gives the tightest crop).
 
 - Intel's own robot demo: a Dobot arm with **PaDiM, resnet18, 256×256, 1 epoch, F1AdaptiveThreshold** ([Intel article](https://www.intel.com/content/www/us/en/developer/articles/training/defect-detection-with-anomalib.html)), which is almost exactly this setup.
@@ -580,33 +646,57 @@ The same "fully closed = nothing grasped" override improved disturbance recovery
 
 ---
 
-## 8. Putting it together: system architecture
+## 8. Putting it together: the closed loop on the XPS
 
 ```
-             ┌─────────────────────────────── perception (outside policy) ───────────────────────────────┐
-Overhead ───►│ HSV/classifier → target colour & bin     Anomalib (OpenVINO) + depth height check → OK/NG │
-RealSense    └──────────────┬───────────────────────────────────────────────┬────────────────────────────┘
- (RGB+D)                    │                                               │
-                            │ task id / prompt                              │ route decision
-                            ▼                                               ▼
- overhead RGB + wrist RGB +
- joint state + ──► ACT policy (OpenVINO, AsyncExecution, chunk 50–100) ──► SO-101 follower
- gripper current             ▲                                               │
-                             └──── grasp check (current + position) ◄───────┘  → retry if EMPTY / SLIP
+ PERCEIVE (CPU)            DETECT (NPU)                     REASON (CPU)                     ACT (GPU)                    
+ overhead RealSense ──►  Anomalib (OpenVINO, static)  ──►  kickoff rules + defect flag  ──►  π0.5 (OpenVINO INT8,      ──► SO-101
+ RGB + depth             + depth height check → OK/NG      + HSV colour → instruction        physicalai runtime, RTC)      follower
+ wrist webcam RGB ─────────────────────────────────────────────────────────────────────────►  "put the defective part   ▲
+ joint state + gripper current ────────────────────────────────────────────────────────────►   in the red bin"         │
+                                                                                               grasp check (current) ◄─┘ → retry
+ OPTIMIZE: per-stage timers on every loop → live latency readout + Section 8.1 table
 ```
 
-**Task state machine (sorting + anomaly):**
-1. `DETECT`: with the arm parked out of frame, find the next object in the overhead view (depth mask) and its colour (HSV) → choose policy/prompt.
-2. `INSPECT`: in the same overhead frames, run 3-frame anomaly scoring + depth height check on that object. No arm motion needed.
-3. `PICK`: run the pick policy until the gripper closes.
-4. `VERIFY_GRASP`: current check; on EMPTY, retry (max 2).
-5. `PLACE`: route to the colour bin, or the reject bin if anomalous.
-6. Loop.
+**Device split (the brief asks for CPU + GPU + NPU):**
+
+| Device | Work | Why |
+|---|---|---|
+| **NPU** | Anomalib PaDiM/PatchCore | Small, static-shape CNN; frees the GPU for the VLA; low power |
+| **GPU** (Arc B390) | π0.5 vision encoder + VLM + action expert | Compute-bound VLM needs XMX; INT8 weights |
+| **CPU** | Camera capture, depth height check, HSV, rules → instruction, arm control, grasp check | Light, latency-tolerant logic |
+| Stretch | π0.5 **action expert on the NPU**, KV cache shared zero-copy (Intel's split, Section 4.5 step 9) | Overlaps VLM and expert under RTC |
+
+**Task state machine:**
+1. `PERCEIVE`: arm parked out of the overhead view; grab overhead RGB + depth and find the next object with the depth mask.
+2. `DETECT`: 3-frame Anomalib scoring on the **NPU** + depth height check → `perfect` / `defective` (+ score and heatmap).
+3. `REASON`: apply the **kickoff rules** to (defect flag, colour/type, anything else the rules use) → one of a fixed set of **instructions**, e.g. `"place the object in the reject bin"` / `"place the object in the left bin"`. Keep the instruction strings **identical** to the ones used in the training demos. A rule table is enough; an LLM is optional narration only.
+4. `ACT`: run π0.5 with that instruction until the gripper closes → `VERIFY_GRASP` (current check; on EMPTY, retry up to 2) → continue until placed.
+5. Loop. Log per-stage timings every iteration.
+
+If π0.5 isn't ready, the same loop works with **one ACT policy per instruction** (instruction → policy lookup).
+
+### 8.1 OPTIMIZE: the numbers to show
+
+Measure on the XPS (median and p99 over ≥100 runs, after warmup, on mains power):
+
+| Stage | Baseline | Optimised | Gain |
+|---|---|---|---|
+| Anomalib | PyTorch-XPU eager | OpenVINO on **NPU** (and GPU FP16 for comparison) | |
+| π0.5 chunk | LeRobot PyTorch-XPU (`~/inference/.venv`, policy server) | OpenVINO FP16 → **INT8** → (stretch) 1-step distilled / expert on NPU | |
+| End-to-end loop | sum of baselines | sum of optimised + async overlap | |
+| Throughput | tasks/min, baseline | tasks/min, optimised | |
+
+Reference points:
+- Intel's π0.5 on a Core Ultra X7 358H: 555 → 172 ms per chunk (3 cameras, 10 steps).
+- Our ResNet-18 smoke test on this XPS: GPU FP16 0.59 ms, NPU 0.88 ms, PyTorch-XPU 2.17 ms, CPU 12.6 ms.
 
 ---
 
 ## 9. Evaluation checklist
-- [ ] `torch.xpu.is_available()` is True; Studio/LeRobot runs a `fast_dev_run` on XPU.
+- [ ] Kickoff rules written into the Challenge brief; instruction strings fixed and used identically in demos and the REASON step.
+- [ ] XPS: OpenVINO lists CPU, GPU, NPU; `HF_TOKEN` set (PaliGemma access); Studio UI reachable on :7860.
+- [ ] Cloud RTX training run for π0.5 (and ACT) uses the same Studio commit as the XPS; first 200 steps timed.
 - [ ] Overhead RealSense (640×480@30) and wrist webcam both streaming at 30 fps with **auto-exposure/WB locked**; overhead mount fixed and marked; empty-table depth captured.
 - [ ] ≥150 demos across ≥6 conditions; one lighting + one background **held out**.
 - [ ] Idle frames trimmed; slow/retry episodes dropped.
@@ -615,7 +705,8 @@ RealSense    └──────────────┬──────�
 - [ ] Async execution working, with no jerks at chunk boundaries.
 - [ ] OpenVINO IR is static-shape; `benchmark_app -pc` shows SDPA/GatedMLP fusions; median + p99 latency logged.
 - [ ] VLA track: first 200 training steps timed; go/no-go on π0.5 vs SmolVLA within the first hour; VLA beats ACT on held-out lighting before it's used in the demo.
-- [ ] Anomaly threshold calibrated **on site**; false-positive rate checked on 20+ good samples.
+- [ ] Anomaly threshold calibrated **on site**; false-positive rate checked on 20+ good samples; model **runs on the NPU**.
+- [ ] OPTIMIZE table (Section 8.1) filled with measured baseline vs optimised numbers; per-stage latency shown live in the demo.
 - [ ] Grasp check triggers retries correctly.
 - [ ] **10+ trials per condition** for any claim (WARP authors: 1/20 differences are noise).
 - [ ] Demo video: heatmap overlay, live lighting change, throughput (tasks/min).
@@ -624,6 +715,10 @@ RealSense    └──────────────┬──────�
 
 | Risk | Fallback |
 |---|---|
+| Cloud GPU unavailable | Train ACT/SmolVLA on the XPS GPU (Section 4.1–4.2); 64 GB shared RAM may even fit π0.5, but slowly |
+| π0.5 fails on gated tokenizer (401 on `google/paligemma-3b-pt-224`) | Set `HF_TOKEN` from an account that accepted PaliGemma's terms |
+| Anomalib export fails on NPU ("Upper bounds are not specified") | Export with a static input shape; else run it on GPU and use the NPU for the π0.5 action expert instead |
+| Studio export not loadable by the runtime | Use the same Studio commit for training and deploy; fall back to the LeRobot policy server on PyTorch-XPU (baseline env) |
 | `bf16-mixed` / XPU strategy errors in Studio | `precision: 32`; or train with LeRobot `--policy.device=xpu` |
 | LeRobot version lacks new augmentations | Use `ColorJitter` + `SharpnessJitter` only, or pass torchvision v2 transforms |
 | OpenVINO export fails | PyTorch on XPU with `torch.compile(mode="max-autotune-no-cudagraphs")` + manual `torch.xpu.graph` (not `reduce-overhead`, a no-op on XPU); or ONNX backend in `InferenceModel` |
