@@ -1,0 +1,263 @@
+"""Run the closed loop: pick -> inspect -> decide -> place, brick after brick.
+
+Laptop dry run (fake robot, cameras, inspector and scripted policy; status page on :8001):
+
+    uv run python -m dlsj.loop.run --dry-run --bricks plain,cross,faint,hidden_cross --enable-reshow
+
+On the XPS (once the pi0.5 export and the Anomalib inspector exist):
+
+    uv run python -m dlsj.loop.run --cameras wrist=0,top=2,inspect=4 \
+        --policy openvino --policy-path exports/pi05_ov --inspector anomalib --inspector-path exports/anomalib
+
+Hardware smoke test without the VLA (scripted motion between poses saved with --save-pose):
+
+    uv run python -m dlsj.loop.run --save-pose inspect      # pose the arm by hand, press Enter
+    uv run python -m dlsj.loop.run --cameras ... --policy fake --inspector anomalib ... --step
+
+Logs: outputs/loop/<timestamp>/{timings.jsonl, events.jsonl, summary.json}. Ctrl+C or STOP on the page
+aborts at the next control tick and ramps home (like teleop_web).
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import logging
+import sys
+import threading
+import time
+from datetime import datetime
+from pathlib import Path
+
+import numpy as np
+
+from dlsj.loop import poses as P
+from dlsj.loop.controller import Controller, ControllerConfig
+from dlsj.loop.executor import ExecConfig, SkillExecutor
+from dlsj.loop.planner import AnyBrickPlanner
+from dlsj.loop.reasoner import ReasonConfig
+from dlsj.loop.skills import RESHOW, SkillLibrary
+from dlsj.loop.telemetry import RunLog
+
+log = logging.getLogger("loop")
+
+SCRIPTED_POSES = ["home", "grasp", "inspect", "blue", "pink"]
+
+
+class BrickGate:
+    """--step: wait for Enter in the terminal or NEXT BRICK on the status page before each brick."""
+
+    def __init__(self):
+        self.cond = threading.Condition()
+        self.answer: bool | None = None
+        threading.Thread(target=self._stdin, daemon=True).start()
+
+    def _stdin(self) -> None:
+        for line in sys.stdin:
+            self.set(line.strip().lower() not in ("q", "quit"))
+
+    def set(self, go: bool) -> None:
+        with self.cond:
+            self.answer = go
+            self.cond.notify_all()
+
+    def __call__(self, task) -> bool:
+        print(f"\nbrick #{task.id}: put a brick on the table, then Enter (q = quit) or NEXT BRICK on the page")
+        with self.cond:
+            self.answer = None
+            self.cond.wait_for(lambda: self.answer is not None)
+            return bool(self.answer)
+
+
+def parse_args(argv=None) -> argparse.Namespace:
+    p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    p.add_argument("--dry-run", action="store_true", help="fake robot, cameras, inspector and policy")
+    p.add_argument("--robot", choices=["so101", "fake"], default="so101")
+    p.add_argument("--follower-port", default="auto")
+    p.add_argument("--follower-id", default="follower")
+    p.add_argument("--max-relative-target", type=float, default=None, help="LeRobot per-step cap (deg)")
+    p.add_argument("--cameras", default="fake", help='"fake" or name=index,... e.g. wrist=0,top=2,inspect=4')
+    p.add_argument("--policy-cameras", default=None, help="cameras fed to the policy (default: all)")
+    p.add_argument("--inspector", choices=["fake", "anomalib"], default="fake")
+    p.add_argument("--inspector-path", default=None)
+    p.add_argument("--policy", choices=["fake", "openvino", "lerobot-server"], default="fake")
+    p.add_argument("--policy-path", default=None, help="OpenVINO export dir")
+    p.add_argument("--policy-device", default="GPU")
+    p.add_argument("--policy-server", default="127.0.0.1:8080")
+    p.add_argument("--fake-latency-ms", type=float, default=170.0, help="simulated chunk latency of --policy fake")
+    p.add_argument("--bricks", default="plain,cross,faint,hidden_cross", help="dry-run bricks on the fake table")
+    p.add_argument("--max-bricks", type=int, default=None, help="stop after this many bricks (dry run: #bricks)")
+    p.add_argument("--fps", type=float, default=30.0)
+    p.add_argument("--max-speed", type=float, default=90.0, help="arm joint cap, deg/s (step_toward per tick)")
+    p.add_argument("--ramp-speed", type=float, default=30.0, help="homing speed, deg/s")
+    p.add_argument("--sync-inference", action="store_true", help="baseline: no background inference thread")
+    p.add_argument("--request-threshold", type=float, default=0.5)
+    p.add_argument("--skills-config", default=None, help="JSON overrides for skill strings / termination")
+    p.add_argument("--enable-reshow", action="store_true", help="use the RESHOW skill on uncertain inspections")
+    p.add_argument("--max-uncertain", type=int, default=2)
+    p.add_argument("--extra-margin", type=float, default=0.0)
+    p.add_argument("--grasp-current-min", type=float, default=None)
+    p.add_argument("--step", action="store_true", help="wait for Enter / NEXT BRICK before every brick")
+    p.add_argument("--no-home", action="store_true", help="don't ramp to the home pose at start / end")
+    p.add_argument("--log-dir", default=None)
+    p.add_argument("--status-port", type=int, default=8001, help="0 = no status page")
+    p.add_argument("--save-pose", default=None, metavar="NAME",
+                   help="release the follower, pose it by hand, Enter saves calibration/.../<id>.<NAME>.json")
+    args = p.parse_args(argv)
+    if args.dry_run:
+        args.robot, args.cameras, args.inspector, args.policy = "fake", "fake", "fake", "fake"
+    return args
+
+
+def save_pose_interactive(args) -> None:
+    from dlsj.loop.hardware import LeRobotArm
+
+    arm = LeRobotArm(args.follower_port, args.follower_id, calibrate=False)
+    arm.connect()
+    try:
+        arm.release_for_posing()
+        input(f"Torque off. Pose the follower at the '{args.save_pose}' pose and press Enter...")
+        path = P.save_pose(args.follower_id, args.save_pose, arm.read_state())
+        print("saved", path, json.loads(path.read_text()))
+    finally:
+        arm.disconnect()
+
+
+def build(args):
+    """Wire real or fake components. Returns (controller, executor, cameras, cleanup callables)."""
+    from dlsj.loop import fakes
+
+    cleanup = []
+    library = SkillLibrary()
+    if args.skills_config:
+        library.load_overrides(args.skills_config)
+    if args.enable_reshow:
+        library.enabled_optional.add(RESHOW)
+
+    world = robot = None
+    if args.robot == "fake":
+        world = fakes.FakeWorld(bricks=[b.strip() for b in args.bricks.split(",") if b.strip()])
+        robot = fakes.FakeRobot(world)
+        poses = dict(world.poses)
+        home = poses["home"]
+    else:
+        from dlsj.loop.hardware import LeRobotArm
+
+        robot = LeRobotArm(args.follower_port, args.follower_id, args.max_relative_target)
+        robot.connect()
+        cleanup.append(robot.disconnect)
+        poses = P.load_poses(args.follower_id, SCRIPTED_POSES)
+        home = poses.get("home")
+        if home is None:
+            log.warning("no home pose saved for %s (teleop_web 'save home'); not homing", args.follower_id)
+
+    if args.cameras == "fake":
+        if world is None:
+            raise SystemExit("--cameras fake needs --robot fake (the fake cameras render the fake world)")
+        cameras = fakes.FakeCameras(world, robot)
+    else:
+        from dlsj.loop.hardware import StreamCameras
+
+        cameras = StreamCameras.open(args.cameras)
+        cleanup.append(cameras.stop)
+        cameras.wait_ready()
+
+    if args.inspector == "fake":
+        if not isinstance(cameras, fakes.FakeCameras):
+            raise SystemExit("--inspector fake only understands the fake cameras' rendering; use --inspector anomalib")
+        inspector = fakes.FakeInspector(cameras.roi)
+    else:
+        from dlsj.loop.hardware import load_inspector
+
+        inspector = load_inspector(args.inspector_path)
+
+    if args.policy == "fake":
+        missing = [n for n in SCRIPTED_POSES if n not in poses]
+        if missing:
+            raise SystemExit(f"--policy fake on the real arm needs saved poses {missing} (--save-pose NAME)")
+        if args.robot != "fake":
+            log.warning("SCRIPTED policy on the REAL arm: it moves between your saved poses. Keep a hand on the e-stop.")
+        policy = fakes.ScriptedPolicy(poses, latency_s=args.fake_latency_ms / 1000.0)
+    elif args.policy == "openvino":
+        from dlsj.loop.hardware import OpenVINOPi05Policy
+
+        policy = OpenVINOPi05Policy(args.policy_path, args.policy_device)
+    else:
+        from dlsj.loop.hardware import LeRobotServerPolicy
+
+        policy = LeRobotServerPolicy(args.policy_server)
+
+    run_dir = Path(args.log_dir or Path("outputs") / "loop" / datetime.now().strftime("%Y%m%d-%H%M%S"))
+    runlog = RunLog(run_dir)
+    ecfg = ExecConfig(fps=args.fps, max_speed_deg_s=args.max_speed, ramp_speed_deg_s=args.ramp_speed,
+                      async_inference=not args.sync_inference, request_threshold=args.request_threshold,
+                      camera_names=tuple(args.policy_cameras.split(",")) if args.policy_cameras else None)
+    executor = SkillExecutor(robot, cameras, policy, library, ecfg, poses, runlog)
+    cleanup.insert(0, executor.close)
+    max_bricks = args.max_bricks if args.max_bricks is not None else (len(world.bricks) if world else None)
+    planner = AnyBrickPlanner(max_tasks=max_bricks)
+    ccfg = ControllerConfig(go_home=not args.no_home, grasp_current_min=args.grasp_current_min,
+                            reason=ReasonConfig(max_uncertain=args.max_uncertain,
+                                                reshow_available=library.available(RESHOW),
+                                                extra_margin=args.extra_margin))
+    gate = BrickGate() if args.step else None
+    controller = Controller(executor, cameras, inspector, planner, runlog, ccfg, home, wait_for_brick=gate)
+    runlog.event("config", args=vars(args), run_dir=str(run_dir), poses={k: v.tolist() for k, v in poses.items()})
+    return controller, executor, cameras, runlog, world, gate, cleanup
+
+
+def main(argv=None) -> int:
+    args = parse_args(argv)
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+    if args.save_pose:
+        save_pose_interactive(args)
+        return 0
+
+    controller, executor, cameras, runlog, world, gate, cleanup = build(args)
+    status = None
+    if args.status_port:
+        from dlsj.loop.status import StatusServer
+
+        status = StatusServer(controller, cameras, port=args.status_port,
+                              on_next=gate.set if gate else None).start()
+
+    worker = threading.Thread(target=controller.run, name="controller", daemon=True)
+    worker.start()
+    try:
+        while worker.is_alive():
+            worker.join(0.5)
+    except KeyboardInterrupt:
+        log.warning("Ctrl+C: aborting, then returning home")
+        controller.abort()
+        if gate:
+            gate.set(False)
+        try:
+            worker.join(30)
+        except KeyboardInterrupt:
+            log.warning("second Ctrl+C: exiting now")
+    finally:
+        summary = runlog.close()
+        for fn in cleanup:
+            try:
+                fn()
+            except Exception as e:  # noqa: BLE001
+                log.warning("cleanup: %s", e)
+        if status:
+            status.stop()
+
+    print("\n=== bricks ===")
+    for r in controller.reports:
+        print(f"  #{r.task_id}: {r.status:12s} label={r.label.value if r.label else '-':10s} forced={r.forced!s:5s} "
+              f"-> {r.place_skill or '-':10s} inspections={len(r.inspections)} {r.duration_s:.1f}s")
+    if world is not None:
+        print("  fake world placed:", world.placed)
+    print("\n=== latency (ms) ===")
+    for stage, s in summary.items():
+        if s.get("n"):
+            print(f"  {stage:22s} n={s['n']:4d}  median={s['median']:9.2f}  p90={s['p90']:9.2f}  p99={s['p99']:9.2f}")
+    print(f"\nlogs: {runlog.run_dir}")
+    return 0 if controller.state.value == "done" else 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
