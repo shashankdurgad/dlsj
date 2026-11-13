@@ -28,6 +28,7 @@ Keys while the page is focused:
 """
 
 import argparse
+import contextlib
 import json
 import logging
 import queue
@@ -59,7 +60,8 @@ class EpisodeRecorder:
     def __init__(self, teleop, streams: dict, repo_id: str, fps: int = 30, root: str | Path | None = None,
                  episode_time_s: float = 60.0, operator: str = "", vcodec: str = "h264", resume: bool = False,
                  bowls: list[str] | None = None, pick_task: str = PICK_TASK, place_task: str = PLACE_TASK,
-                 inspect_camera: str | None = "inspect", detector: BrickInViewDetector | None = None):
+                 inspect_camera: str | None = "inspect", detector: BrickInViewDetector | None = None,
+                 record_depth: bool = True):
         self.teleop, self.streams = teleop, streams
         self.repo_id, self.fps = repo_id, fps
         self.root = Path(root) if root else Path("data") / repo_id.split("/")[-1]
@@ -70,6 +72,9 @@ class EpisodeRecorder:
             raise ValueError("--place-task must contain {colour}")
         self.inspect_camera = inspect_camera if inspect_camera in streams else None
         self.detector = detector or BrickInViewDetector()
+        # RealSense streams carry aligned depth; it is recorded as observation.images.<cam>_depth (uint16 mm)
+        self.depth_cams = [n for n, s in streams.items() if record_depth and getattr(s, "use_depth", False)]
+        self.depth_shapes: dict[str, tuple[int, int, int]] = {}
         self.joints = list(teleop.joints)
         self.phase = "idle"
         self.message = ""
@@ -97,8 +102,10 @@ class EpisodeRecorder:
         t_end = time.monotonic() + timeout_s
         while time.monotonic() < t_end:
             frames = {n: s.frame for n, s in self.streams.items()}
-            if all(f is not None for f in frames.values()):
+            depths = {n: self.streams[n].depth for n in self.depth_cams}
+            if all(f is not None for f in frames.values()) and all(d is not None for d in depths.values()):
                 self.cam_shapes = {n: f.shape for n, f in frames.items()}
+                self.depth_shapes = {f"{n}_depth": (d.shape[0], d.shape[1], 1) for n, d in depths.items()}
                 return
             time.sleep(0.1)
         missing = [n for n, s in self.streams.items() if s.frame is None]
@@ -111,7 +118,7 @@ class EpisodeRecorder:
         joints = {j: float for j in self.joints}
         return {
             **hw_to_dataset_features(joints, ACTION, use_video=True),
-            **hw_to_dataset_features({**joints, **self.cam_shapes}, OBS_STR, use_video=True),
+            **hw_to_dataset_features({**joints, **self.cam_shapes, **self.depth_shapes}, OBS_STR, use_video=True),
         }
 
     def open_dataset(self) -> None:
@@ -240,13 +247,20 @@ class EpisodeRecorder:
             "task": self._current_task(),
         }
         for name, stream in self.streams.items():
-            img = stream.frame
-            if img is None:
+            lock = getattr(stream, "cond", None) or contextlib.nullcontext()
+            with lock:  # colour and depth from the same RealSense frameset
+                img, depth = stream.frame, (stream.depth if name in self.depth_cams else None)
+            if img is None or (name in self.depth_cams and depth is None):
                 return None
             h, w, _ = self.cam_shapes[name]
             if img.shape[:2] != (h, w):
                 img = cv2.resize(img, (w, h))
             frame[f"observation.images.{name}"] = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+            if depth is not None:
+                dh, dw, _ = self.depth_shapes[f"{name}_depth"]
+                if depth.shape[:2] != (dh, dw):
+                    depth = cv2.resize(depth, (dw, dh), interpolation=cv2.INTER_NEAREST)
+                frame[f"observation.images.{name}_depth"] = np.ascontiguousarray(depth, dtype=np.uint16).reshape(dh, dw, 1)
         return frame
 
     def _detect(self) -> None:
@@ -320,6 +334,10 @@ class EpisodeRecorder:
                 "bowls": self.bowls, "bowl": self.bowl, "split_frame": self.split_frame,
                 "inspect_camera": self.inspect_camera,
                 "in_view": d.in_view, "candidate": d.candidate, "detect_reason": d.reason,
+                "prob": round(float(getattr(self.detector, "prob", d.area)), 3),
+                "threshold": getattr(self.detector, "threshold", None),
+                "guide": "square" if hasattr(self.detector, "prob") else list(self.detector.cfg.roi),
+                "depth_cams": self.depth_cams,
                 "teleop_live": self._teleop_live(), "root": str(self.root),
                 "task": self._current_task() if self.phase == "recording" else None,
             }
@@ -396,7 +414,16 @@ body{background:var(--bg);color:var(--fg);font:400 15px/1.35 Barlow,ui-sans-seri
 .bowl.sel{opacity:1;transform:scale(1);box-shadow:0 0 0 3px var(--bg),0 0 0 5px var(--fg)}
 .bowl kbd{position:absolute;right:-6px;bottom:-6px;background:var(--panel);color:var(--fg);border:1px solid var(--line);border-radius:6px;padding:1px 6px;font:500 12px Barlow,sans-serif}
 .bowl:focus-visible{box-shadow:0 0 0 3px var(--bg),0 0 0 5px var(--glow)}
-.msg{min-height:22px;text-align:center;color:var(--mute);font-size:15px}
+.msg{min-height:22px;text-align:center;color:var(--mute);font-size:15px;transition:color .2s}
+.cue .msg{color:var(--fg);font-size:20px;font-weight:500}
+.guide{position:absolute;border:1.5px dashed rgba(241,242,244,.55);border-radius:10px;pointer-events:none;display:none;transition:border-color .15s,box-shadow .15s}
+.guide.show{display:block}.guide.near{border-color:var(--fg);border-style:solid}
+.guide.hit{border:2.5px solid var(--glow);box-shadow:0 0 24px rgba(233,242,255,.45),inset 0 0 24px rgba(233,242,255,.25)}
+.meter{display:grid;grid-template-columns:auto 1fr;align-items:center;gap:12px;color:var(--mute);font-size:13px}
+.mbar{position:relative;height:6px;border-radius:4px;background:var(--line)}
+.mbar i{position:absolute;inset:0 auto 0 0;width:0;border-radius:4px;background:var(--mute);transition:width .1s}
+.mbar b{position:absolute;top:-5px;bottom:-5px;width:1.5px;background:var(--fg);opacity:.6}
+.inview .mbar i{background:var(--glow)}
 .tally{margin-top:auto;display:flex;justify-content:space-between;color:var(--mute);font-size:14px}
 .tally b{display:block;color:var(--fg);font-weight:300;font-size:30px;font-variant-numeric:tabular-nums}
 .keys{grid-column:1/-1;display:flex;gap:26px;padding:12px 20px 16px;color:var(--mute);font-size:13px;border-top:1px solid var(--line)}
@@ -406,13 +433,14 @@ body{background:var(--bg);color:var(--fg);font:400 15px/1.35 Barlow,ui-sans-seri
 @media (prefers-reduced-motion:reduce){*{transition:none!important}}
 </style></head>
 <body><div class="app" id="app">
-<section class="view"><div class="main"><img id="mainimg" alt=""><div class="name" id="mainname"></div></div><div class="thumbs" id="thumbs"></div></section>
+<section class="view"><div class="main" id="mainbox"><img id="mainimg" alt=""><div class="guide" id="mguide"></div><div class="name" id="mainname"></div></div><div class="thumbs" id="thumbs"></div></section>
 <aside class="cluster">
  <div class="state" id="state"><span><span class="dot"></span><b id="arm">Connecting</b></span><span id="eps"></span></div>
  <div class="gauge"><svg viewBox="0 0 300 300"><circle class="ring" cx="150" cy="150" r="140"/><circle class="arc" id="arc" cx="150" cy="150" r="140" stroke-dasharray="0 880"/></svg>
   <div class="time"><span class="n" id="t">0.0</span><span class="u" id="unit">Ready</span></div></div>
  <div class="stages"><span class="node"><i></i>Pick</span><span class="seg" id="s1"></span><span class="node"><i></i>In view</span><span class="seg" id="s2"></span><span class="node"><i></i>Place</span></div>
  <div class="bowls" id="bowls"></div>
+ <div class="meter" id="meter"><span>Inspection</span><div class="mbar"><i id="mfill"></i><b id="mthr"></b></div></div>
  <div class="msg" id="msg"></div>
  <div class="tally"><span><b id="ok">0</b>Saved</span><span><b id="bad">0</b>Failed</span><span><b id="med">–</b>Median time</span></div>
 </aside>
@@ -434,6 +462,15 @@ document.addEventListener('keydown',e=>{if(e.repeat||e.metaKey||e.ctrlKey)return
 function bowls(r){const b=$('bowls');if(b.dataset.k!==r.bowls.join()){b.dataset.k=r.bowls.join();b.innerHTML='';
  r.bowls.forEach((c,i)=>{const x=document.createElement('button');x.className='bowl';x.style.setProperty('--c',SW[c]||c);x.setAttribute('aria-label',c+' bowl');x.innerHTML='<kbd>'+(i+1)+'</kbd>';x.onclick=()=>rec('bowl'+(i+1));b.appendChild(x)})}
  [...b.children].forEach((x,i)=>x.classList.toggle('sel',r.bowl===r.bowls[i]))}
+function fracs(r,img){if(Array.isArray(r.guide))return r.guide;const w=img.naturalWidth||4,h=img.naturalHeight||3,s=Math.min(w,h);return[(w-s)/2/w,(h-s)/2/h,(w+s)/2/w,(h+s)/2/h]}
+function place(g,box,img,f){const cw=box.clientWidth,ch=box.clientHeight,nw=img.naturalWidth||4,nh=img.naturalHeight||3;
+ const k=g.dataset.cover?Math.max(cw/nw,ch/nh):Math.min(cw/nw,ch/nh),rw=nw*k,rh=nh*k,ox=(cw-rw)/2,oy=(ch-rh)/2;
+ g.style.left=(ox+f[0]*rw)+'px';g.style.top=(oy+f[1]*rh)+'px';g.style.width=((f[2]-f[0])*rw)+'px';g.style.height=((f[3]-f[1])*rh)+'px'}
+function guides(r){const ic=r.inspect_camera;const state=g=>{g.classList.toggle('hit',r.in_view);g.classList.toggle('near',r.candidate&&!r.in_view)};
+ const mg=$('mguide'),mi=$('mainimg');mg.classList.toggle('show',!!ic&&main===ic&&!debug);
+ if(ic&&main===ic){place(mg,$('mainbox'),mi,fracs(r,mi));state(mg)}
+ const t=ic&&thumbs[ic];if(t){let g=t.querySelector('.guide');if(!g){g=document.createElement('div');g.className='guide show';g.dataset.cover=1;t.appendChild(g)}
+  const im=t.querySelector('img');place(g,t,im,fracs(r,im));state(g)}}
 async function tick(){try{
  const [s,r]=await Promise.all([fetch('/state').then(x=>x.json()),fetch('/rec/state').then(x=>x.json())]);
  for(const c of s.cameras){if(!thumbs[c.name]){const t=document.createElement('button');t.className='thumb';t.innerHTML='<img alt="" src="/stream/'+encodeURIComponent(c.name)+'"><span>'+c.name+'</span>';t.onclick=()=>setMain(c.name);$('thumbs').appendChild(t);thumbs[c.name]=t;if(!main)setMain(c.name)}}
@@ -452,7 +489,11 @@ async function tick(){try{
  document.querySelectorAll('.node').forEach((n,i)=>{n.classList.toggle('on',active&&i<=now);n.classList.toggle('now',active&&i===now)});
  $('s1').classList.toggle('on',active&&now>=1);$('s2').classList.toggle('on',active&&now>=2);
  if(r.inspect_camera&&thumbs[r.inspect_camera])thumbs[r.inspect_camera].classList.toggle('seen',r.in_view);
- bowls(r);$('msg').textContent=r.message||(r.phase==='review'?'Space to save':'');
+ bowls(r);guides(r);
+ $('meter').style.display=(r.inspect_camera&&r.threshold)?'':'none';$('meter').classList.toggle('inview',r.in_view);
+ $('mfill').style.width=Math.min(100,100*(r.prob||0))+'%';$('mthr').style.left=r.threshold?(100*r.threshold)+'%':'-9px';
+ const cue=recording&&r.stage==='place';app.classList.toggle('cue',cue);
+ $('msg').textContent=cue?(r.bowl?'Place in the '+r.bowl+' bowl':'In view. Choose a bowl (1\u20133)'):(r.message||(r.phase==='review'?'Space to save':(recording?'Centre the brick in the dashed square':'')));
  $('kspace').textContent={idle:'Start',recording:'Stop',review:'Save',saving:'Saving'}[r.phase]||'';
  $('ok').textContent=r.saved.success;$('bad').textContent=r.saved.failure;$('med').textContent=r.median_s===null?'–':r.median_s+'s';
  last=r;
@@ -527,7 +568,10 @@ def main() -> None:
     p.add_argument("--fps", type=int, default=60, help="teleop control loop rate")
     p.add_argument("--max-relative-target", type=float, default=None)
     p.add_argument("--auto-engage", action="store_true")
-    p.add_argument("--cameras", required=True, help="name=index,... e.g. top=2,wrist=0,inspect=4")
+    p.add_argument("--cameras", default="", help="OpenCV cameras, name=index_or_path,... e.g. wrist=/dev/video38")
+    p.add_argument("--realsense", default="",
+                   help="RealSense cameras by serial, name=serial,... e.g. top=346422061366,inspect=243722062690")
+    p.add_argument("--no-depth", action="store_true", help="don't record RealSense depth")
     p.add_argument("--width", type=int, default=640)
     p.add_argument("--height", type=int, default=480)
     p.add_argument("--cam-fps", type=int, default=30)
@@ -547,16 +591,24 @@ def main() -> None:
         if not (args.follower_port and args.leader_port):
             p.error("could not find both arms; check USB cables and the follower's 12 V supply")
 
-    cams = teleop_web.parse_cameras(args.cameras, 8)
-    if args.inspect_camera not in cams:
-        log.warning("no camera named %r: the in-view detector is off, mark the moment with i", args.inspect_camera)
+    from dlsj.realsense_stream import RealSenseStream
+
+    cams = teleop_web.parse_cameras(args.cameras, 8) if args.cameras else {}
+    rs_cams = dict(part.split("=", 1) for part in filter(None, (x.strip() for x in args.realsense.split(","))))
+    if not cams and not rs_cams:
+        p.error("give at least one camera with --cameras and/or --realsense")
     streams = {n: teleop_web.CameraStream(n, i, args.width, args.height, args.cam_fps, args.jpeg_quality).start()
                for n, i in cams.items()}
+    streams |= {n: RealSenseStream(n, sn, args.width, args.height, args.cam_fps, depth=not args.no_depth,
+                                   quality=args.jpeg_quality).start() for n, sn in rs_cams.items()}
+    if args.inspect_camera not in streams:
+        log.warning("no camera named %r: the in-view detector is off, mark the moment with i", args.inspect_camera)
     detector = make_detector(args)
     teleop = teleop_web.Teleop(args)
     recorder = EpisodeRecorder(teleop, streams, args.repo_id, args.record_fps, args.root, args.episode_time,
                                args.operator, args.vcodec, args.resume, [b.strip() for b in args.bowls.split(",")],
-                               args.pick_task, args.place_task, args.inspect_camera, detector)
+                               args.pick_task, args.place_task, args.inspect_camera, detector,
+                               record_depth=not args.no_depth)
     server = None
     worker = rec_thread = None
     try:
@@ -569,7 +621,8 @@ def main() -> None:
         server = ThreadingHTTPServer((args.host, args.port), make_handler(streams, teleop, recorder, args.target_s))
         server.daemon_threads = True
         threading.Thread(target=server.serve_forever, name="http", daemon=True).start()
-        log.info("record UI: http://localhost:%d  (cameras: %s)", args.port, ", ".join(cams))
+        log.info("record UI: http://localhost:%d  (cameras: %s; depth: %s)", args.port, ", ".join(streams),
+                 ", ".join(recorder.depth_cams) or "none")
         while worker.is_alive():
             worker.join(0.5)
     except KeyboardInterrupt:

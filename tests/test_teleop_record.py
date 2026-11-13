@@ -187,3 +187,47 @@ def test_page_javascript_parses(tmp_path):
     js.write_text(re.search(r"<script>(.*)</script>", PAGE.replace("__TARGET__", "6"), re.S).group(1))
     r = subprocess.run([node, "--check", str(js)], capture_output=True, text=True)
     assert r.returncode == 0, r.stderr
+
+
+class FakeRealSense(FakeStream):
+    use_depth = True
+
+    def __init__(self, name, h=48, w=64):
+        super().__init__(name, h, w)
+        self.depth = np.full((h, w), 700, dtype=np.uint16)  # 0.7 m everywhere
+        self.depth[:8, :8] = 0  # no reading
+
+
+def test_realsense_depth_is_recorded_as_depth_video(tmp_path):
+    teleop = FakeTeleop()
+    streams = {"top": FakeRealSense("top"), "inspect": FakeStream("inspect")}
+    r = EpisodeRecorder(teleop, streams, "local/test_depth", fps=30, root=tmp_path / "ds", vcodec="h264",
+                        bowls=["yellow"], detector=BrickInViewDetector(DetectorConfig(stable_frames=2, downscale=1)))
+    r.open_dataset()
+    assert r.depth_cams == ["top"]
+    ft = r.dataset.features["observation.images.top_depth"]
+    assert ft["shape"] == (48, 64, 1) and ft["info"]["is_depth_map"]
+    assert "observation.images.inspect_depth" not in r.dataset.features  # plain webcam: colour only
+    teleop.go_live()
+    press(r, "space")
+    step(r, 3)
+    press(r, "inview", "bowl1")
+    step(r, 2)
+    press(r, "space", "space")
+    r.close()
+    assert r.saved["success"] == 1
+
+    from lerobot.datasets import LeRobotDataset
+
+    ds = LeRobotDataset("local/test_depth", root=r.root)
+    d = ds[2]["observation.images.top_depth"]
+    assert tuple(d.shape[-2:]) == (48, 64)
+    mid = float(d.flatten()[d.numel() // 2])
+    assert 0.6 < mid < 0.8 or 600 < mid < 800  # 0.7 m back (metres or mm, depending on the decoder)
+
+
+def test_depth_off_records_colour_only(tmp_path):
+    streams = {"top": FakeRealSense("top")}
+    r = EpisodeRecorder(FakeTeleop(), streams, "local/test_nodepth", root=tmp_path / "ds", record_depth=False)
+    r.open_dataset()
+    assert r.depth_cams == [] and "observation.images.top_depth" not in r.dataset.features
