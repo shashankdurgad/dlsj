@@ -473,13 +473,13 @@ Full evidence in `reports/XPU kernels and Chinese VLAs.md`. **Key lesson:** on I
 | 0 ✓ | Pin the stack | PyTorch ≥2.11 XPU, OpenVINO 2026.1+, `xe` kernel driver (not i915) on iGPUs, no IPEX, pin P-cores with `taskset` | Avoids regressions, `CL_OUT_OF_RESOURCES` |
 | 1 ✓ | Shrink the input | 3 cameras (`wrist`, `top`, `inspect`) at 224², fixed 64 language tokens, chunk 50. If latency is tight, test dropping `inspect` from the **policy** input (it's mainly for Anomalib). Don't add depth images | ~7–9 ms per view on a 4090; more on iGPU. 3 views ≈ 37 ms vs 27 ms for 2 on a 4090 |
 | 2 | Distil to 1 step | `configs/physicalai/pi05/so101/snapflow.yaml`; SmolVLA: test 3–5 Euler steps | Expert cost ~10× less; LIBERO 98.75% vs 97.75% (10-step) |
-| 3 ✓ | Static-shape OpenVINO IR (+RTC baked in); for ACT use `python -m dlsj.deploy.act_export --precision fp16` (normalisation in-graph, static) | π0.5: `convert_ov_rtc.py` in robotics-ai-suite `pi05-rtc-ov`, **set `-c 3`** (`--camera_num` defaults to 4 and is baked into the IR). ACT/SmolVLA: `physicalai export --backend openvino` | Base of 555 → 172 ms |
-| 4 | INT8 weight-only | `--compress_int8` / `compress_weights_openvino_int8_sym`; validate trajectory MSE/cosine vs PyTorch | >30% faster, half size. **Skip for ACT** (launch-bound, keep FP16) |
+| 3 ✓ | Static-shape OpenVINO IR with RTC baked in | π0.5: **Studio export** via `deploy/pi05/studio_export.py` (`physicalai.policies.Pi05`; keep `use_random_input_noise=True`; OpenVINO **2026.4.x**, not 2026.3). Intel's `pi05-rtc-ov` is pinned to LeRobot 0.4.3 / OV 2026.0 and measured no faster | Measured 469 → 283 ms (FP16) |
+| 4 | INT8 weight-only (SYM) | `studio_export.py --compress_from <fp16 export>` (Studio's `compress_weights_openvino_int8_sym` hook); validate against FP16 on real episodes | Measured 283 → 212 ms; weights 6.25 → 3.13 GB |
 | 5 | One batched vision call | Exported vision IR has batch = 3 (all cameras), not 3 calls | −67% vision weight traffic with 3 cameras |
-| 6 ✓ | Make fusions fire | Export attention via `F.scaled_dot_product_attention`, standard RMSNorm/SwiGLU. Check `benchmark_app -m model.xml -d GPU -hint latency -pc` shows `sdpa` + GatedMLP kernels and oneDNN GEMMs | Fixes the ~104 µs/launch expert cost |
+| 6 ✓ | Check fusions (no GatedMLP in release OV; SDPA/RoPE/RMSNorm fuse by default) | Export attention via `F.scaled_dot_product_attention`, standard RMSNorm/SwiGLU. Check `benchmark_app -m model.xml -d GPU -hint latency -pc` shows `sdpa` + GatedMLP kernels and oneDNN GEMMs | Fixes the ~104 µs/launch expert cost |
 | 7 ✓ | Latency config | `{"PERFORMANCE_HINT":"LATENCY","INFERENCE_PRECISION_HINT":"f16","NUM_STREAMS":"1","CACHE_DIR":"./ovcache"}`; pre-allocate and reuse tensors; leave queue throttle default | Full blob caching only for static shapes |
 | 8 ✓ | Async (+ RTC for VLA) | `AsyncExecution(request_threshold=0.5)`, `execution_horizon ≤ chunk/2` | Hides remaining latency (~30% faster tasks for SmolVLA) |
-| 9 | iGPU only: action expert on NPU | Separate compiled models, KV cache shared zero-copy as USM-host tensors; not HETERO. Useless on discrete Arc (PCIe) | Refill ≈ max(VE+LE, AE); power/overlap |
+| 9 | iGPU only: action expert on NPU (⚠️ measured **slower** by Nota on an X7 358H: 330 vs 250 ms; present only as a power experiment) | Separate compiled models, KV cache shared zero-copy as USM-host tensors; not HETERO. Useless on discrete Arc (PCIe) | Refill ≈ max(VE+LE, AE); power/overlap |
 | 10 | INT4 on VLM only | NNCF `INT4_ASYM`, group 64–128, AWQ + scale estimation; keep expert INT8 | Risky: generic full-stack INT4 collapses π0.5 to 11–16% |
 
 **OpenVINO gotchas:**
@@ -842,6 +842,29 @@ Measure on the XPS (median and p99 over ≥100 runs, after warmup, on mains powe
 | PyTorch-XPU, 1 step | 313 ms | Same caveat |
 
 ⇒ ~17 ms per denoising step, and **~296 ms is the vision encoder + VLM prefix**. Step reduction alone caps out at ~1.5×. The VLM prefix is where OpenVINO INT8, fused SDPA and batched cameras must win.
+
+**OpenVINO on the same XPS** (`deploy/pi05/`, Studio export, OpenVINO 2026.4.1, GPU, 3 cameras 224², chunk 50, fresh noise per call, 30 iterations; run 3, 13 Nov; baseline re-measured back to back at 469 ms):
+
+| Config | Median / p90 | vs baseline |
+|---|---|---|
+| PyTorch-XPU bf16, 10 steps | 469 / 471 ms | 1.0× |
+| Studio export **FP16**, 10 steps, `physicalai` `InferenceModel` | 283 / 285 ms | 1.66× |
+| Studio export **INT8_SYM**, 10 steps | **212 / 215 ms** | **2.21×** |
+| INT8, 5 steps (accuracy untested) | 175 / 177 ms | 2.68× |
+| INT8, 1 step (needs SnapFlow distillation) | 147 / 149 ms | 3.19× |
+| INT8 with a 64-token prompt instead of 200 | −7% on the raw model | |
+| Intel pi05-rtc-ov INT8 on OV 2026.4.1 (comparison) | 212 ms | same as Studio |
+
+- **Paired findings:**
+  - INT8 is 25–30% faster than FP16 on a quiet machine.
+  - OV 2026.4.1 beats 2026.0 by 10–25%.
+  - The f16 hint and `GPU_ENABLE_SDPA_OPTIMIZATION` made no difference.
+  - `benchmark_app -pc` shows fused SDPA (224), RoPE and RMSNorm; INT8 matmuls take ~61% of the time, SDPA ~20%. There is no GatedMLP fusion in release builds.
+- **Contention matters a lot:** the same INT8 config measured 177–285 ms while other jobs ran. Take final numbers on an idle XPS: `BASELINE=1 bash ~/inference/deploy/pi05/run_benchmarks.sh`.
+- **Export gotchas:**
+  - An export peaks at ~42 GB RAM and leaves a 13 GB `/tmp/*.onnx.data`, and `/tmp` is in RAM. Export with `TMPDIR=~/inference/tmp`; `studio_export.py` cleans up.
+  - With pi05_base, the 64-token prompt fails because its 32-d state is written into the prompt; it works with our 6-d state (longest instruction 42 tokens). **Set `tokenizer_max_length: 64` in `training/pi05/full.json`.**
+- INT8 parity vs PyTorch on dummy inputs: max abs diff 0.108, cosine 0.999. **Validate INT8 against FP16 on real held-out episodes before using it on the robot.**
 
 Reference points:
 - Intel's π0.5 on a Core Ultra X7 358H: 555 → 172 ms per chunk (3 cameras, 10 steps).
