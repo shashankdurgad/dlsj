@@ -22,12 +22,28 @@
 - Intel's own reference split: **ACT does the pick-and-present skill, SmolVLA does the language-conditioned place** ("place the brick on the … plate").
 - Plate mapping in the slide photos: **perfect → blue plate**, **defective → pink/red plate**. ⚠️ Confirm in the kickoff rules.
 
-**Our concrete task (team decision): "defective" = a brick marked with a cross.**
-- We draw a **cross (✗) on some bricks** and leave the others **plain**.
-- **Anomalib is trained only on plain bricks**, so a cross is the anomaly. Anomalib decides; π0.5 only moves:
-  - **plain → "perfect" → blue plate**: `"place the brick on the blue plate"`;
-  - **cross → "defective" → pink plate**: `"place the brick on the pink plate"`.
-- The anomaly map's hot region is the cross itself, which gives the **localization signal** for free (show it as the heatmap in the demo).
+**Our concrete task (team decision): three classes, three plates, two-stage detection.**
+
+| Brick | Meaning | Plate (⚠️ colours are placeholders, configurable) | π0.5 instruction |
+|---|---|---|---|
+| **Plain** | good | blue | `"place the brick on the blue plate"` |
+| **Circle** drawn on it | minor defect | yellow | `"place the brick on the yellow plate"` |
+| **Cross** drawn on it | defective | pink | `"place the brick on the pink plate"` |
+
+```
+inspect frames ─► Stage 1: Anomalib PaDiM (NPU), trained on plain bricks ── plain ──► good plate
+                     │ marked + region (bbox of the mark = the localization signal)
+                     ▼
+                  crop region ─► Stage 2: mark classifier (shape rules on CPU, or a small CNN on the NPU) ─► circle → minor plate
+                                                                                                              cross  → defective plate
+                  any stage uncertain ─► re-inspect ─► after 2 tries: defective plate (safe default)
+```
+
+- **Anomalib (required by the challenge) decides plain vs marked** and localizes the mark. It is one-class (trained only on plain bricks), so it cannot tell a cross from a circle on its own.
+- **Stage 2 classifies the mark inside Anomalib's region:**
+  - **Shape rules (default):** a circle is a closed ring (has a hole, high circularity); a cross is two crossing strokes (low solidity, no hole). No training, about 1 ms.
+  - **A small CNN on the NPU (upgrade):** trained on cross/circle crops, including **iPhone photos** from many environments.
+- **The decision tree** lives in the loop's REASON step (`dlsj/loop/reasoner.py`). The VLA only executes the chosen place instruction, which keeps sorting deterministic for the reliability criterion.
 - Further extension: numbered bricks (Section 8.2).
 - **Our choice (team decision): no ACT. One VLA, π0.5, does every movement**, switched by instruction:
   - `"pick up the brick and show it to the inspection camera"`;
@@ -288,12 +304,13 @@ pip install "physicalai[so101,realsense]"
 ### 3.1b Language instructions (for π0.5)
 - One π0.5 model learns **three skills**, recorded as separate episodes, each with its own **task string**:
   1. `"pick up the brick and show it to the inspection camera"`: from a brick on the table to holding it still at the `inspect` spot;
-  2. `"place the brick on the blue plate"`: from the `inspect` spot to the blue plate;
-  3. `"place the brick on the pink plate"`: from the `inspect` spot to the pink plate. Use **one fixed string per destination** from the kickoff rules, and the exact same strings at run time (REASON step, Section 8).
+  2. `"place the brick on the blue plate"`: from the `inspect` spot to the blue (good) plate;
+  3. `"place the brick on the yellow plate"`: from the `inspect` spot to the yellow (minor-defect) plate;
+  4. `"place the brick on the pink plate"`: from the `inspect` spot to the pink (defective) plate. Use **one fixed string per destination** from the kickoff rules, and the exact same strings at run time (REASON step, Section 8).
 - **Balance the demos across instructions**, and vary which object goes where, so the policy listens to the instruction instead of guessing from the object's look.
 - With `dlsj.teleop_record` / `dlsj.kinesthetic_web` this is `--task "..."`. Record each instruction as its own `--repo-id`, or as a `--resume` batch, and merge.
-- **Mix plain and cross-marked bricks in every skill's demos.** The policy must not learn "cross → go pink" by itself: the plate comes only from the instruction, which Anomalib's result chooses. Place demos for each plate should use both kinds of brick.
-- Splitting at the `inspect` spot is what lets Anomalib + REASON choose skill 2 or 3. Record roughly **as many pick demos as place demos combined**, and the two place skills equally.
+- **Mix plain, circled and crossed bricks in every skill's demos.** The policy must not learn "cross → go pink" or "circle → go yellow" by itself: the plate comes only from the instruction, which Anomalib's result chooses. Place demos for each plate should use both kinds of brick.
+- Splitting at the `inspect` spot is what lets Anomalib + REASON choose skill 2 or 3. Record roughly **as many pick demos as place demos combined**, and the three place skills equally.
 - Optional fourth skill for recovery: `"turn the brick and show it to the inspection camera again"` (Section 8, uncertainty band).
 
 ### 3.2 Demo quality = policy speed
@@ -581,10 +598,14 @@ def dominant_colour(bgr, roi=None, min_px=400):
 **Run it on the NPU** (the brief requires using the NPU): export to OpenVINO with a **fixed input shape** and compile on `"NPU"` (`OpenVINOInferencer(path=..., device="NPU")`). PaDiM/PatchCore with a ResNet-18 backbone is a natural NPU fit (~0.9 ms for the backbone on this NPU). Train in `~/inference/.venv-anomalib` on the XPS: the model is tiny and needs on-site images.
 
 **Our anomaly = a hand-drawn cross on the brick** (Challenge brief). What that means for data and setup:
-- **Train only on plain bricks**: 50–200 `inspect` crops, covering **every brick colour and size** in the kit, several grasp orientations, and the lighting you'll demo under. Anything not in the plain set (a new colour, a new orientation) will also look anomalous, so cover the normal variation well.
-- **Make the cross visible to `inspect`:** decide which face gets the cross, and record pick demos so that face ends up facing the camera. Simpler: **draw the cross on every face** of a marked brick (or at least the top and two long sides).
+- **Data sources:**
+  - **Stage 1 (Anomalib):** plain bricks from the **real `inspect` camera** under several lighting setups. Anomalib learns exactly what its training camera sees, so iPhone photos in its "normal" set would make the webcam's plain bricks look anomalous. If you add any, crop and downscale them to match, and keep them a minority.
+  - **Stage 2 (mark classifier):** **iPhone photos** of circle- and cross-marked bricks in many environments, lighting, angles and brick colours, cropped to the mark at the live crop scale, plus crops from the real camera. A supervised classifier benefits from this variety.
+  - **Robustness test set:** iPhone photos of all three classes.
+- **Train Anomalib only on plain bricks**: 50–200 `inspect` crops, covering **every brick colour and size** in the kit, several grasp orientations, and the lighting you'll demo under. Anything not in the plain set (a new colour, a new orientation) will also look anomalous, so cover the normal variation well.
+- **Make the mark visible to `inspect`:** decide which face gets the cross, and record pick demos so that face ends up facing the camera. Simpler: **draw the mark on every face** of a marked brick (or at least the top and two long sides).
 - **Cross style:** a thick, high-contrast marker (black on light bricks, white paint pen on dark bricks), at least a third of the face. Thin or tiny crosses are what PaDiM/PatchCore miss.
-- **Test set:** 20+ crossed bricks of mixed colours, plus 20+ held-out plain bricks. Calibrate the threshold so all plain bricks pass with margin. False "defective" calls are the usual failure (Section 6.5).
+- **Test set:** 20+ crossed and 20+ circled bricks of mixed colours, plus 20+ held-out plain bricks. Draw circles and crosses at similar size and thickness, so the mark's shape, not its amount of ink, separates them. Calibrate the threshold so all plain bricks pass with margin. False "defective" calls are the usual failure (Section 6.5).
 - **Don't put crosses in the training set**, not even by accident. One crossed brick in `good/` teaches Anomalib that crosses are normal.
 
 **Anomalib PaDiM or PatchCore**, trained on **50–200 "good" crops from the fixed `inspect` camera, of plain bricks held at the present pose**, exported to OpenVINO, gating which plate the brick goes to. Runs **separately from the policy**. The policy brings the brick to roughly the same spot in front of `inspect` every time, which is exactly the fixed viewpoint memory-bank methods need. Crop tightly around the brick and keep the gripper fingers' position consistent.
@@ -602,7 +623,8 @@ Dataset layout:
 ```
 data/
   good/   # 50–200 `inspect` crops of PLAIN bricks (no cross) at the present pose, all colours/orientations
-  bad/    # crossed bricks: used only for threshold calibration and evaluation, never for training
+  bad/    # marked bricks (crosses and circles): used only for threshold calibration and evaluation, never for training
+marks/     # stage-2 classifier data: cross/ and circle/ crops (iPhone + inspect camera)
 ```
 ```python
 from anomalib.data import Folder
@@ -881,7 +903,8 @@ Reference points:
 - [ ] OpenVINO IR is static-shape; `benchmark_app -pc` shows SDPA/GatedMLP fusions; median + p99 latency logged.
 - [ ] Go/no-go on π0.5 vs SmolVLA within the first hour of training.
 - [ ] Uncertain detections trigger re-inspection, and fall back to the defective plate after 2 tries.
-- [ ] Anomalib trained only on plain bricks (all colours/orientations); threshold calibrated on 20+ crossed vs 20+ held-out plain bricks; crosses visible to `inspect` from the presented face.
+- [ ] Anomalib trained only on plain bricks from the real `inspect` camera (all colours/orientations); threshold calibrated on 20+ marked vs 20+ held-out plain bricks.
+- [ ] Stage-2 classifier: cross vs circle accuracy measured on held-out real-camera and iPhone crops; per-stage latency logged.
 - [ ] Anomaly threshold calibrated **on site**; false-positive rate checked on 20+ good samples; model **runs on the NPU**.
 - [ ] Defect output is a structured signal `{label, score, box, table_xyz}` and is logged per object.
 - [ ] Pitch ready: **concise architecture + optimization decisions** explanation (loop diagram, device split and why, OPTIMIZE table), per expectation 6.

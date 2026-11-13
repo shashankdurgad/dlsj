@@ -1,6 +1,6 @@
 # dlsj: Intel Physical AI challenge (SO-101, Junction)
 
-End-to-end robotic **defect detection and manipulation**: an SO-101 arm picks a brick, shows it to an inspection camera, and Anomalib decides whether it is **plain (perfect)** or **marked with a cross (defective)**. The VLA then places plain bricks on the blue plate and crossed bricks on the pink plate. Built on **Intel Physical AI Studio + Anomalib + OpenVINO**, deployed on a **Core Ultra Series 3** laptop (Dell XPS 16, X9 388H) using **CPU, GPU and NPU**.
+End-to-end robotic **defect detection and manipulation**: an SO-101 arm picks a brick and shows it to an inspection camera. **Anomalib** decides whether the brick is plain or marked and finds the mark; a **classifier** tells a **circle** (minor defect) from a **cross** (defective); a decision tree then has the VLA place it on the good, minor-defect or defective plate.
 
 The full plan, commands, code snippets and sources are in **[docs/PLAYBOOK.md](docs/PLAYBOOK.md)**.
 
@@ -9,8 +9,8 @@ The full plan, commands, code snippets and sources are in **[docs/PLAYBOOK.md](d
 | Step | What | Where |
 |---|---|---|
 | **PERCEIVE** | Cameras `wrist`, `top`, `inspect`; the arm picks a brick and presents it to `inspect` | CPU |
-| **DETECT** | Anomalib PaDiM/PatchCore (OpenVINO) on the `inspect` crop → `{label, score, region}` | **NPU** |
-| **REASON** | Kickoff rules + defect result + colour → which plate → language instruction | CPU |
+| **DETECT** | Stage 1: Anomalib PaDiM (OpenVINO) → plain vs marked + region; stage 2: cross vs circle classifier on the region | **NPU** / CPU |
+| **REASON** | Decision tree: plain → good, circle → minor, cross → defective plate; uncertain → re-inspect → defective | CPU |
 | **ACT** | π0.5 does every movement: pick and show to `inspect`, then place on the blue or pink plate (OpenVINO INT8, `physicalai` runtime) | **GPU** |
 | **OPTIMIZE** | Baseline (PyTorch-XPU) vs OpenVINO FP16 / INT8 / NPU latency, tasks/min | all |
 
