@@ -1,14 +1,14 @@
 """Task queue. The controller asks for the next Task and reports how it ended.
 
 Phase 1 (`AnyBrickPlanner`): "whatever brick is there": an endless (or `max_tasks`-long) stream of
-identical tasks: PICK_AND_SHOW, then PLACE_BLUE / PLACE_PINK. Stops after `max_consecutive_failures`
+identical tasks: PICK_AND_SHOW, then PLACE_BLUE (good) / PLACE_MINOR (circle) / PLACE_PINK (cross). Stops after `max_consecutive_failures`
 failed picks in a row (an empty table looks exactly like that).
 
 Phase 2 (`OrderedPlanner`, PLAYBOOK 8.2): a number reader on the `top` image produces detections
 `[{number, confidence, box, table_xy}]`; `replan(detections)` turns them into tasks sorted by number,
 skipping numbers already placed. Each task picks with PICK_MARKED (the target is the `target` signal the
 policy observation must be marked with) and places perfect bricks with PLACE_SLOT(slot=k); defective
-bricks still go to the pink plate. `expected_number` is there for the inspect-camera number re-check.
+bricks still go to the pink plate (and minor-defect bricks to the minor plate; they take no slot). `expected_number` is there for the inspect-camera number re-check.
 """
 
 from __future__ import annotations
@@ -17,7 +17,7 @@ import itertools
 from collections import deque
 from dataclasses import dataclass, field
 
-from dlsj.loop.skills import PICK_AND_SHOW, PICK_MARKED, PLACE_BLUE, PLACE_PINK, PLACE_SLOT
+from dlsj.loop.skills import PICK_AND_SHOW, PICK_MARKED, PLACE_BLUE, PLACE_MINOR, PLACE_PINK, PLACE_SLOT
 
 
 @dataclass
@@ -29,13 +29,15 @@ class Task:
     perfect_params: dict = field(default_factory=dict)
     defective_skill: str = PLACE_PINK
     defective_params: dict = field(default_factory=dict)
+    minor_skill: str = PLACE_MINOR
+    minor_params: dict = field(default_factory=dict)
     target: dict | None = None  # phase 2 perception signal: {number, confidence, box, table_xy}
     expected_number: int | None = None
     attempts: int = 0
 
     def brief(self) -> dict:
         return {"id": self.id, "pick": self.pick_skill, "perfect": self.perfect_skill, "defective": self.defective_skill,
-                "target": self.target, "expected_number": self.expected_number, "attempts": self.attempts}
+                "minor": self.minor_skill, "target": self.target, "expected_number": self.expected_number, "attempts": self.attempts}
 
 
 class TaskQueue:
@@ -110,7 +112,7 @@ class OrderedPlanner(TaskQueue):
         return list(self.pending)
 
     def complete(self, task: Task, outcome: str) -> None:
-        """`outcome` is the label acted on ("perfect" fills the next slot, "defective" goes to the pink plate)."""
+        """`outcome` is the label acted on ("perfect" fills the next slot; "minor"/"defective" go to their plates)."""
         super().complete(task, outcome)
         if task.expected_number is not None:
             self.handled_numbers.append(task.expected_number)

@@ -1,16 +1,18 @@
 """Fakes for dry runs and tests: a tiny simulated workcell that closes the whole loop on a laptop.
 
-* `FakeWorld`: a queue of bricks ("plain", "cross", "faint", "hidden_cross", "glare"), the brick on the table,
-  the brick in the gripper, and where each brick ended up. "faint" shows a low-contrast cross (the inspector
-  is unsure every time); "hidden_cross" / "glare" look faint until the brick is turned (RESHOW), then show a
-  clear cross / a plain face.
+* `FakeWorld`: a queue of bricks ("plain", "cross", "circle", "blob", "faint", "hidden_cross", "glare"), the brick
+  on the table, the brick in the gripper, and where each brick ended up. "circle" is a ring (minor defect);
+  "blob" is a solid dot: clearly marked for stage 1 but neither ring nor cross for stage 2 (stage-2 uncertain).
+  "faint" shows a low-contrast cross (stage 1 is unsure every time); "hidden_cross" / "glare" look faint until
+  the brick is turned (RESHOW), then show a clear cross / a plain face.
 * `FakeRobot`: joints track the command with a first-order lag; the gripper stalls on a brick when it closes
   near the grasp pose (so "closed then held" and the EMPTY grasp check behave like the real arm).
 * `FakeCameras`: renders `wrist` / `top` / `inspect` frames; `inspect` shows the held brick's face when the
   arm is at the inspect pose.
 * `FakeInspector`: a real image computation on the rendered `inspect` frames (colour distance to the brick
-  colour -> heatmap, p99 score, threshold, uncertainty band, bounding-box region).
-* `ScriptedInspector`: returns a fixed sequence of labels (unit tests).
+  colour -> heatmap, p99 score, threshold, uncertainty band, bounding-box region), then stage 2 on the region
+  crop: the real shape-rule classifier (`dlsj.inspect.classify`, needs OpenCV) or a NumPy stand-in without it.
+* `ScriptedInspector`: returns a fixed sequence of labels / (label, mark, confidence) (unit tests).
 * `ScriptedPolicy`: a reactive "VLA" that maps (state, instruction) to a straight-line chunk toward the
   current sub-goal, so it behaves sensibly no matter how stale its observation is (async-safe).
 """
@@ -23,9 +25,9 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
-from dlsj.contracts import InspectionResult, Label, Observation
+from dlsj.contracts import InspectionResult, Label, MarkType, Observation
 from dlsj.loop.poses import ARM, GRIPPER
-from dlsj.loop.skills import default_skills
+from dlsj.loop.skills import PLACE_BLUE, PLACE_MINOR, PLACE_PINK, Plates, default_skills
 
 # Fake joint-space poses (degrees; gripper 0 = closed .. 100 = open)
 DEFAULT_POSES = {
@@ -34,7 +36,9 @@ DEFAULT_POSES = {
     "inspect": np.array([60, -40, 50, 0, 0, 0], dtype=np.float32),
     "blue": np.array([-50, -20, 40, 50, 0, 0], dtype=np.float32),
     "pink": np.array([-90, -20, 40, 50, 0, 0], dtype=np.float32),
+    "yellow": np.array([-130, -20, 40, 50, 0, 0], dtype=np.float32),
 }
+NOT_PLATES = ("home", "grasp", "inspect")
 BRICK_RGB = np.array([235, 200, 40], dtype=np.float32)  # yellow brick
 BG_RGB = np.array([90, 90, 95], dtype=np.float32)
 HOLD_GRIP = 22.0  # where the jaws stall on a brick
@@ -103,7 +107,8 @@ class FakeRobot:
                 if abs(self.state[4] - w.poses["inspect"][4]) >= TURN_DEG - 5:
                     w.held.turned = True
                 if g > 32.0:  # opened: release
-                    where = next((p for p in ("blue", "pink") if _near(self.state, w.poses[p], 8.0)), "table")
+                    plates = [p for p in w.poses if p not in NOT_PLATES]
+                    where = next((p for p in plates if _near(self.state, w.poses[p], 8.0)), "table")
                     w.placed.append((w.held.id, w.held.kind, where))
                     w.held = None
                     w.feed()
@@ -140,6 +145,11 @@ class FakeCameras:
                         ys2 = (y1 - 15 - (xs - x0 - 20) * (y1 - y0 - 30) / (x1 - x0 - 40)).astype(int) + t
                         img[ys1, xs] = col
                         img[ys2, xs] = col
+                elif face in ("circle", "blob"):
+                    yy, xx = np.mgrid[y0:y1, x0:x1]
+                    r = np.hypot(xx - (x0 + x1) / 2, yy - (y0 + y1) / 2)
+                    m = np.abs(r - 45) <= 6 if face == "circle" else r <= 30
+                    img[y0:y1, x0:x1][m] = (25, 25, 30)
         elif name == "top" and w.on_table is not None:
             img[self.h // 2 - 20:self.h // 2 + 20, self.w // 2 - 30:self.w // 2 + 30] = BRICK_RGB
         elif name == "wrist" and w.held is not None:
@@ -165,9 +175,31 @@ class FakeInspector:
     """Colour-distance 'anomaly model' on the inspect ROI. Same output contract as the Anomalib inspector."""
 
     def __init__(self, roi: tuple[int, int, int, int], threshold: float = 0.5, band: float = 0.15,
-                 ref_rgb: np.ndarray = BRICK_RGB):
+                 ref_rgb: np.ndarray = BRICK_RGB, classifier="auto"):
         self.roi, self.threshold, self.band, self.ref = roi, threshold, band, ref_rgb.astype(np.float32)
         self.norm = float(np.linalg.norm(self.ref))  # distance from the brick colour to black
+        if classifier == "auto":
+            try:
+                from dlsj.inspect.classify import ShapeRuleClassifier
+
+                classifier = ShapeRuleClassifier()
+            except ImportError:  # no OpenCV: NumPy stand-in below
+                classifier = None
+        self.classifier = classifier  # stage 2; None -> `_np_mark`
+
+    @staticmethod
+    def _np_mark(heat: np.ndarray, region) -> tuple[MarkType, float]:
+        """NumPy stand-in for stage 2: ring = empty centre + filled rim; cross = filled centre + empty corners."""
+        x0, y0, x1, y1 = region
+        m = heat[y0:y1 + 1, x0:x1 + 1] > 0.5
+        h, w = m.shape
+        if h < 6 or w < 6:
+            return MarkType.UNKNOWN, 0.0
+        centre = m[h * 2 // 5:h * 3 // 5 + 1, w * 2 // 5:w * 3 // 5 + 1].mean()
+        fill = m.mean()
+        if fill > 0.6:
+            return MarkType.UNKNOWN, 0.5  # solid blob
+        return (MarkType.CROSS, 0.9) if centre > 0.5 else (MarkType.CIRCLE, 0.9)
 
     def _heat(self, frame: np.ndarray) -> np.ndarray:
         x0, y0, x1, y1 = self.roi
@@ -193,22 +225,44 @@ class FakeInspector:
             ys, xs = np.nonzero(heat > 0.5 * max(score, 1e-6))
             if len(xs):
                 region = (int(xs.min()), int(ys.min()), int(xs.max()), int(ys.max()))
+        t1 = time.perf_counter()
+        lat = {"stage1": (t1 - t0) * 1000.0}
+        mark, conf, mdev = None, 0.0, ""
+        if label is Label.DEFECTIVE:
+            if region is None:
+                mark = MarkType.UNKNOWN
+            elif self.classifier is not None:
+                from dlsj.inspect.classify import crop_box
+
+                bx0, by0, bx1, by1 = crop_box(region, frames[0].shape[:2], self.classifier.pad_frac)
+                pred = self.classifier.classify([f[by0:by1, bx0:bx1] for f in frames],
+                                                [heat[by0:by1, bx0:bx1]] * len(frames))
+                mark, conf, mdev = pred.mark, pred.confidence, self.classifier.device
+            else:
+                (mark, conf), mdev = self._np_mark(heat, region), "FAKE-NP"
+            lat["stage2"] = (time.perf_counter() - t1) * 1000.0
         return InspectionResult(label, score, self.threshold, region, heat, tuple(scores),
-                                (time.perf_counter() - t0) * 1000.0, "FAKE-CPU")
+                                (time.perf_counter() - t0) * 1000.0, "FAKE-CPU", mark, float(conf), mdev, lat)
 
 
 class ScriptedInspector:
-    """Returns the given labels in order (then repeats the last), with plausible scores."""
+    """Returns the given results in order (then repeats the last), with plausible scores.
 
-    def __init__(self, labels: list[Label], threshold: float = 0.5):
+    Each entry is a stage-1 `Label` (mark stays None: no stage 2) or `(Label.DEFECTIVE, MarkType, confidence)`.
+    """
+
+    def __init__(self, labels: list, threshold: float = 0.5):
         self.labels, self.threshold, self.calls = list(labels), threshold, 0
 
     def inspect(self, frames: list[np.ndarray]) -> InspectionResult:
-        label = self.labels[min(self.calls, len(self.labels) - 1)]
+        entry = self.labels[min(self.calls, len(self.labels) - 1)]
         self.calls += 1
+        label, mark, conf = (entry, None, 0.0) if isinstance(entry, Label) else (tuple(entry) + (0.95,))[:3]
         score = {Label.PERFECT: 0.1, Label.DEFECTIVE: 0.9, Label.UNCERTAIN: 0.48}[label]
         region = (10, 10, 50, 50) if label is not Label.PERFECT else None
-        return InspectionResult(label, score, self.threshold, region, None, (score,) * len(frames), 1.0, "SCRIPTED")
+        lat = {"stage1": 1.0, **({"stage2": 0.5} if mark is not None else {})}
+        return InspectionResult(label, score, self.threshold, region, None, (score,) * len(frames), 1.0, "SCRIPTED",
+                                mark, float(conf), "SCRIPTED" if mark is not None else "", lat)
 
 
 class ScriptedPolicy:
@@ -216,16 +270,20 @@ class ScriptedPolicy:
 
     PICK:   approach the grasp pose with the jaws open -> close -> carry to the inspect pose
             (back to approach if the jaws closed on nothing).
-    PLACE:  holding -> carry to the plate; at the plate -> open.
+    PLACE:  holding -> carry to the plate (pose named by the plate config); at the plate -> open.
     RESHOW: roll the wrist by TURN_DEG, then back to the inspect pose.
     """
 
     def __init__(self, poses: dict[str, np.ndarray] | None = None, chunk: int = 50, step_deg: float = 3.0,
-                 grip_step: float = 8.0, latency_s: float = 0.0):
+                 grip_step: float = 8.0, latency_s: float = 0.0, plates: Plates | None = None):
         self.poses = poses or DEFAULT_POSES
         self.n, self.step, self.grip_step, self.latency_s = chunk, step_deg, grip_step, latency_s
         lib = default_skills()
         self.kind = {lib[k].instruction: k for k in lib}
+        plates = plates or Plates()
+        for p in plates.all():  # configured plate strings -> place skill ids
+            self.kind[p.instruction] = p.skill
+        self.plate_pose = {p.skill: p.pose for p in plates.all()}
         self.calls: list[str] = []
         self.reset()
 
@@ -248,8 +306,8 @@ class ScriptedPolicy:
             goal = (P["inspect"] if self._phase == "carry" else P["grasp"]).copy()
             goal[GRIPPER] = 70.0 if self._phase == "approach" else 0.0
             return goal
-        if kind in ("PLACE_BLUE", "PLACE_PINK", "PLACE_SLOT"):
-            plate = P["pink"] if kind == "PLACE_PINK" else P["blue"]
+        if kind in (PLACE_BLUE, PLACE_PINK, PLACE_MINOR, "PLACE_SLOT"):
+            plate = P[self.plate_pose.get(kind, self.plate_pose[PLACE_BLUE])]
             goal = plate.copy()
             goal[GRIPPER] = 70.0 if (g > 30.0 or _near(s, plate, 2.0)) else 0.0
             return goal

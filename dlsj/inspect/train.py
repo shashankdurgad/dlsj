@@ -3,7 +3,8 @@
     python -m dlsj.inspect.train --data ~/inference/inspect_data/real --out ~/inference/exports/inspect/padim
 
 `--data` holds full `inspect` frames (what `capture.py` saves): `good/` (plain bricks, training + held-out
-calibration) and optionally `bad/` (cross-marked, ONLY used to calibrate the threshold, never trained on).
+calibration) and optionally `bad/` (cross-marked) and `minor/` (circle-marked): both are "marked" for stage 1 and
+are ONLY used to calibrate the threshold, never trained on.
 Files `<brick>_f<k>.png` are views of one brick; the held-out split is done per brick so views of one brick
 never land on both sides. The ROI comes from `--crop` or the dataset's `dataset.json`.
 
@@ -194,7 +195,8 @@ def score_groups(insp, groups: dict) -> tuple[list[float], list[tuple[float, ...
 
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--data", type=Path, required=True, help="folder with good/ (and optional bad/) inspect frames")
+    ap.add_argument("--data", type=Path, required=True,
+                    help="folder with good/ (and optional bad/ cross, minor/ circle) inspect frames")
     ap.add_argument("--out", type=Path, required=True, help="export folder: model.xml/.bin + manifest.json")
     ap.add_argument("--model", default="padim", choices=["padim", "patchcore"])
     ap.add_argument("--backbone", help="default resnet18")
@@ -226,7 +228,7 @@ def main() -> None:
         c = json.loads(meta.read_text()).get("crop")
         crop = tuple(c) if c else None
     good = core.list_images(data / "good")
-    bad = core.list_images(data / "bad")
+    bad = core.list_images(data / "bad") + core.list_images(data / "minor")  # stage 1: any mark = anomalous
     if not good:
         raise SystemExit(f"no images in {data / 'good'}")
     train_g, hold_g = split_bricks(good, args.holdout, args.seed)

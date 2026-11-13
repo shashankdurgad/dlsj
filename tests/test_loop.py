@@ -8,15 +8,15 @@ import urllib.request
 import numpy as np
 import pytest
 
-from dlsj.contracts import InspectionResult, Label, Observation
+from dlsj.contracts import InspectionResult, Label, MarkType, Observation
 from dlsj.loop import fakes
 from dlsj.loop.controller import Controller, ControllerConfig, grasp_state
 from dlsj.loop.executor import ExecConfig, SkillExecutor
 from dlsj.loop.planner import AnyBrickPlanner, OrderedPlanner
 from dlsj.loop.reasoner import ReasonConfig, decide
 from dlsj.loop.skills import (
-    PICK_AND_SHOW, PLACE_BLUE, PLACE_PINK, PLACE_SLOT, RESHOW, GripperCondition, Outcome, SkillLibrary, Termination,
-    TerminationMonitor,
+    PICK_AND_SHOW, PLACE_BLUE, PLACE_MINOR, PLACE_PINK, PLACE_SLOT, RESHOW, GripperCondition, Outcome, Plates,
+    SkillLibrary, Termination, TerminationMonitor,
 )
 from dlsj.loop.telemetry import RunLog
 
@@ -443,3 +443,117 @@ def test_cli_dry_run(tmp_path, capsys):
     assert rc == 0
     assert "(1, 'plain', 'blue'), (2, 'cross', 'pink')" in out
     assert (tmp_path / "run" / "summary.json").exists()
+
+
+# ----------------------------------------------------------------------------- three plates (stage 2)
+def _res2(mark, conf=0.95, label=Label.DEFECTIVE, score=0.9):
+    return InspectionResult(label, score, 0.5, (1, 2, 3, 4), mark=mark, mark_confidence=conf,
+                            stage_latency_ms={"stage1": 1.0, "stage2": 0.5})
+
+
+def test_decision_tree_three_plates():
+    assert decide(_res2(None, label=Label.PERFECT, score=0.1), 1).skill == PLACE_BLUE
+    d = decide(_res2(MarkType.CIRCLE), 1)
+    assert (d.kind, d.label, d.skill, d.forced) == ("place", Label.MINOR, PLACE_MINOR, False)
+    assert "circle" in d.reason
+    d = decide(_res2(MarkType.CROSS), 1)
+    assert (d.kind, d.label, d.skill) == ("place", Label.DEFECTIVE, PLACE_PINK)
+    d = decide(_res2(None), 1)  # stage 2 not configured: marked = defective (two-plate behaviour)
+    assert (d.label, d.skill) == (Label.DEFECTIVE, PLACE_PINK)
+    d = decide(_res2(MarkType.CIRCLE), 1, minor_skill="PLACE_X", minor_params={"k": 1})
+    assert d.skill == "PLACE_X" and d.params == {"k": 1}
+
+
+def test_decision_tree_uncertain_paths():
+    # stage 2 unsure -> re-inspect, then the safest plate
+    d1 = decide(_res2(MarkType.UNKNOWN, 0.55), 1)
+    assert (d1.kind, d1.skill, d1.stage) == ("reinspect", None, "stage2") and "stage 2" in d1.reason
+    d2 = decide(_res2(MarkType.UNKNOWN, 0.55), 2)
+    assert (d2.kind, d2.label, d2.skill, d2.forced, d2.stage) == ("place", Label.DEFECTIVE, PLACE_PINK, True,
+                                                                   "stage2")
+    # stage 2's own threshold in the reasoner: a 0.75 circle is uncertain when 0.8 is required
+    cfg = ReasonConfig(min_mark_confidence=0.8)
+    assert decide(_res2(MarkType.CIRCLE, 0.75), 1, cfg).kind == "reinspect"
+    assert decide(_res2(MarkType.CIRCLE, 0.85), 1, cfg).skill == PLACE_MINOR
+    # stage 1 unsure -> stage 2 is irrelevant
+    d = decide(_res2(MarkType.CIRCLE, label=Label.UNCERTAIN, score=0.48), 1)
+    assert (d.kind, d.stage) == ("reinspect", "stage1")
+    # a minor circle is never the fallback: forced decisions always go to the defective plate
+    d = decide(_res2(MarkType.UNKNOWN), 3, ReasonConfig(max_uncertain=3, reshow_available=True))
+    assert d.forced and d.skill == PLACE_PINK
+
+
+def test_plates_config(tmp_path):
+    p = Plates.parse(None)
+    assert (p.good.colour, p.minor.colour, p.defective.colour) == ("blue", "yellow", "pink")
+    assert p.minor.instruction == "place the brick on the yellow plate" and p.minor.skill == PLACE_MINOR
+    p = Plates.parse("good=green, minor=orange,defective=red")
+    assert p.good.instruction == "place the brick on the green plate" and p.good.pose == "green"
+    assert p.good.skill == PLACE_BLUE and p.defective.skill == PLACE_PINK  # ids fixed per role
+    cfg = tmp_path / "plates.json"
+    cfg.write_text(json.dumps({"minor": {"colour": "white", "instruction": "put it on the white tray",
+                                         "pose": "tray"}}))
+    p = Plates.parse(str(cfg))
+    assert (p.minor.instruction, p.minor.pose, p.good.colour) == ("put it on the white tray", "tray", "blue")
+    lib = SkillLibrary()
+    assert lib[PLACE_MINOR].instruction == "place the brick on the yellow plate"
+    p.apply(lib)
+    assert lib[PLACE_MINOR].instruction == "put it on the white tray"
+    with pytest.raises(ValueError):
+        Plates.parse("great=gold")
+
+
+def test_circle_brick_goes_to_minor_plate():
+    ctl, world, _, policy, runlog = make_loop(["circle"])
+    (r,) = ctl.run()
+    assert (r.status, r.label, r.place_skill, r.forced) == ("placed", Label.MINOR, PLACE_MINOR, False)
+    assert world.placed == [(1, "circle", "yellow")]
+    assert "place the brick on the yellow plate" in policy.calls
+    insp = events(runlog, "inspection")[0]
+    assert insp["label"] == "defective" and insp["mark"] == "circle" and insp["outcome"] == "circle"
+    assert set(insp["stage_latency_ms"]) == {"stage1", "stage2"}
+    assert ctl.counts == {"placed_minor": 1}
+
+
+def test_three_plates_in_one_run():
+    ctl, world, *_ = make_loop(["plain", "circle", "cross"])
+    ctl.run()
+    assert [(k, w) for _, k, w in world.placed] == [("plain", "blue"), ("circle", "yellow"), ("cross", "pink")]
+    assert ctl.counts == {"placed_perfect": 1, "placed_minor": 1, "placed_defective": 1}
+    summary = ctl.log.summary()
+    assert summary["inspector.stage1"]["n"] == 3 and summary["inspector.stage2"]["n"] == 2
+
+
+def test_stage2_uncertain_falls_back_to_defective():
+    ctl, world, _, _, runlog = make_loop(["blob"])  # clearly marked, but neither a ring nor a cross
+    (r,) = ctl.run()
+    assert [i["mark"] for i in r.inspections] == ["unknown", "unknown"]
+    assert (r.label, r.forced, r.place_skill) == (Label.DEFECTIVE, True, PLACE_PINK)
+    assert world.placed == [(1, "blob", "pink")]
+    (fb,) = events(runlog, "uncertain_fallback")
+    assert fb["stage"] == "stage2"
+
+
+def test_stage2_uncertain_then_resolved():
+    insp = fakes.ScriptedInspector([(Label.DEFECTIVE, MarkType.UNKNOWN, 0.55), (Label.DEFECTIVE, MarkType.CIRCLE)])
+    ctl, world, *_ = make_loop(["circle"], inspector=insp)
+    (r,) = ctl.run()
+    assert (r.label, r.forced, len(r.inspections)) == (Label.MINOR, False, 2)
+    assert world.placed == [(1, "circle", "yellow")]
+
+
+def test_cli_dry_run_three_plates_custom_colours(tmp_path, capsys):
+    from dlsj.loop import run
+
+    skills = tmp_path / "skills.json"
+    skills.write_text(json.dumps({n: {"min_duration_s": 0.05} for n in SkillLibrary().skills}))
+    rc = run.main(["--dry-run", "--bricks", "plain,circle,cross,blob", "--fps", str(FPS), "--max-speed",
+                   str(3 * FPS), "--ramp-speed", str(3 * FPS), "--fake-latency-ms", "5", "--status-port", "0",
+                   "--skills-config", str(skills), "--log-dir", str(tmp_path / "run"),
+                   "--plates", "good=green,minor=orange,defective=red"])
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "(1, 'plain', 'green'), (2, 'circle', 'orange'), (3, 'cross', 'red'), (4, 'blob', 'red')" in out
+    ev = [json.loads(x) for x in (tmp_path / "run" / "events.jsonl").read_text().splitlines()]
+    cfg = next(e for e in ev if e["event"] == "config")
+    assert cfg["plates"]["minor"]["instruction"] == "place the brick on the orange plate"

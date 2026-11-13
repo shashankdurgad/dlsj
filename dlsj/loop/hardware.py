@@ -134,6 +134,7 @@ def load_inspector(path: str | Path | None, **kwargs) -> Inspector:
 
     `AnomalibInspector.from_manifest(path, device="NPU", batch=3)` applies the uncertainty band itself (label
     UNCERTAIN), returns `region` in inspect-frame pixels and a frame-aligned `heatmap`, and expects RGB frames.
+    Stage 2 (mark type) runs inside it: `stage2="shape" | "none" | <CNN classifier.json>`, `stage2_device=...`.
     """
     if path is None:
         raise ValueError("--inspector-path must point at a manifest.json from dlsj.inspect.train")
@@ -141,7 +142,7 @@ def load_inspector(path: str | Path | None, **kwargs) -> Inspector:
         from dlsj.inspect.detector import AnomalibInspector
     except ImportError as e:
         raise RuntimeError("dlsj.inspect.detector needs openvino and opencv; use --inspector fake for a dry run") from e
-    return AnomalibInspector.from_manifest(path, **kwargs)
+    return AnomalibInspector.from_manifest(path, **{k: v for k, v in kwargs.items() if v is not None})
 
 
 # ----------------------------------------------------------------------------- policy back-ends

@@ -4,9 +4,15 @@
     insp = AnomalibInspector.from_manifest("~/inference/exports/inspect/padim/manifest.json", device="NPU")
     result = insp.inspect([f0, f1, f2])        # inspect-camera frames, HxWx3 uint8 RGB
 
-Evaluate on a folder of frames (`good/`, `bad/`, files `<brick>_f<k>.png` grouped per brick):
+Stage 2 (only when stage 1 says marked): the mark classifier (`classify.py`) runs on the stage-1 region crop of every
+frame and sets `mark` (CIRCLE / CROSS / UNKNOWN) and `mark_confidence`. The back-end comes from the `stage2`
+argument ("shape" | "none" | a CNN classifier.json) or the manifest's `stage2` entry; default: shape rules.
+`stage_latency_ms` holds {"stage1", "stage2"}; `latency_ms` is the total.
 
-    python -m dlsj.inspect.detector --manifest .../manifest.json --data ~/inference/inspect_data/synth_test --device NPU
+Evaluate on a folder of frames (`good/` plain, `bad/` cross, `minor/` circle; `<brick>_f<k>.png` grouped per brick):
+
+    python -m dlsj.inspect.detector --manifest .../manifest.json --data ~/inference/inspect_data/synth3_test --device NPU
+    python -m dlsj.inspect.detector ... --stage2 ~/inference/exports/inspect/mark_cnn/classifier.json --stage2-device NPU
 
 The exported IR (see `train.py`) takes a static uint8 NHWC RGB batch: the u8→f32 conversion, /255 and layout
 change are folded into the graph with `ov.preprocess.PrePostProcessor`, the Anomalib pre-processor (resize +
@@ -23,8 +29,8 @@ from pathlib import Path
 
 import numpy as np
 
-from dlsj.contracts import InspectionResult, Label
-from dlsj.inspect import core
+from dlsj.contracts import InspectionResult, Label, MarkType, mark_outcome
+from dlsj.inspect import classify, core
 from dlsj.inspect.core import Manifest
 
 log = logging.getLogger("inspect.detector")
@@ -100,21 +106,27 @@ class AnomalibInspector:
     (one call for 3 frames when batch=3; a short last chunk is padded by repeating its last frame).
     """
 
-    def __init__(self, manifest: Manifest, backend, batch: int = 1, device: str = "", heatmap: bool = True):
+    def __init__(self, manifest: Manifest, backend, batch: int = 1, device: str = "", heatmap: bool = True,
+                 classifier: "classify.MarkClassifier | None" = None):
         self.manifest = manifest
         self.backend = backend
         self.batch = batch
         self.device = device
         self.heatmap = heatmap
+        self.classifier = classifier  # stage 2; None = two-plate behaviour (mark stays None)
 
     @classmethod
     def from_manifest(cls, path: str | Path, device: str = "NPU", batch: int = 3,
                       fallback: tuple[str, ...] = DEFAULT_FALLBACK, heatmap: bool = True,
-                      cache_dir: str | Path | None = None) -> "AnomalibInspector":
+                      cache_dir: str | Path | None = None, stage2: str | dict | None = None,
+                      stage2_device: str | None = None) -> "AnomalibInspector":
+        """`stage2`: "shape" | "none" | path to a CNN classifier.json; None = the manifest's `stage2` (default shape)."""
         path = Path(path).expanduser()
         m = Manifest.load(path)
         backend = OpenVINOBackend(path.parent / m.model, m.input_size, batch, device, fallback, cache_dir)
-        return cls(m, backend, batch=backend.batch, device=backend.device, heatmap=heatmap)
+        spec = stage2 if stage2 is not None else (m.stage2 or "shape")
+        clf = classify.load_classifier(spec, device=stage2_device or device, base_dir=path.parent, cache_dir=cache_dir)
+        return cls(m, backend, batch=backend.batch, device=backend.device, heatmap=heatmap, classifier=clf)
 
     def score_crops(self, crops: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
         """(N,H,W,3) uint8 model-size crops → scores (N,), maps (N,h,w)."""
@@ -138,48 +150,99 @@ class AnomalibInspector:
         crops = np.stack([core.prepare(f, m.crop, m.input_size) for f in frames])
         scores, maps = self.score_crops(crops)
         result = core.build_result(scores, maps, m, frames[0].shape[:2], device=self.device, with_heatmap=self.heatmap)
+        t1 = time.perf_counter()
+        extra = {"stage_latency_ms": {"stage1": (t1 - t0) * 1e3}}
+        if self.classifier is not None and result.label is Label.DEFECTIVE:
+            extra.update(self.classify_mark(frames, result))
+            extra["stage_latency_ms"]["stage2"] = (time.perf_counter() - t1) * 1e3
         latency = (time.perf_counter() - t0) * 1e3
-        return InspectionResult(**{**result.__dict__, "latency_ms": latency})
+        return InspectionResult(**{**result.__dict__, "latency_ms": latency, **extra})
+
+    def classify_mark(self, frames: list[np.ndarray], result: InspectionResult) -> dict:
+        """Stage 2 on the region crop of every frame -> InspectionResult fields."""
+        clf = self.classifier
+        if result.region is None:
+            return {"mark": MarkType.UNKNOWN, "mark_confidence": 0.0, "mark_device": clf.device}
+        box = classify.crop_box(result.region, frames[0].shape[:2], clf.pad_frac)
+        x0, y0, x1, y1 = box
+        crops = [f[y0:y1, x0:x1] for f in frames]
+        heats = None
+        if result.heatmap is not None:
+            heats = [result.heatmap[y0:y1, x0:x1]] * len(crops)
+        pred = clf.classify(crops, heats)
+        return {"mark": pred.mark, "mark_confidence": float(pred.confidence), "mark_device": clf.device}
 
 
 # ----------------------------------------------------------------------------- evaluation CLI
-def evaluate(insp: AnomalibInspector, data: Path, overlays: Path | None = None) -> dict:
-    """Per-brick inspection over `data/good` and `data/bad`; prints a confusion table."""
+FOLDERS = {"good": MarkType.NONE, "minor": MarkType.CIRCLE, "bad": MarkType.CROSS}  # data folder -> truth
+
+
+def evaluate(insp: AnomalibInspector, data: Path, overlays: Path | None = None, min_mark_confidence: float = 0.0
+             ) -> dict:
+    """Per-brick inspection over `data/good` (plain), `data/minor` (circle) and `data/bad` (cross).
+
+    Prints the stage-1 table (plain vs marked) and the final 3-class confusion matrix (`contracts.mark_outcome`,
+    UNKNOWN = some stage uncertain -> the loop re-inspects, then falls back to the defective plate).
+    """
     rows = []
-    for kind in ("good", "bad"):
+    for kind in FOLDERS:
         for brick, paths in sorted(core.group_by_brick(core.list_images(data / kind)).items()):
             frames = [core.read_rgb(p) for p in paths]
             r = insp.inspect(frames)
             rows.append((kind, brick, r))
             if overlays is not None:
                 overlays.mkdir(parents=True, exist_ok=True)
-                core.write_rgb(overlays / f"{kind}_{brick}_{r.label.value}.jpg", core.overlay(frames[0], r))
-    expect = {"good": Label.PERFECT, "bad": Label.DEFECTIVE}
-    table = {k: {lab: 0 for lab in Label} for k in expect}
-    for kind, _, r in rows:
-        table[kind][r.label] += 1
+                tag = r.label.value if r.mark is None else f"{r.label.value}_{r.mark.value}"
+                core.write_rgb(overlays / f"{kind}_{brick}_{tag}.jpg", core.overlay(frames[0], r))
+    kinds = [k for k in FOLDERS if any(k == kk for kk, _, _ in rows)]
     n = len(rows)
-    correct = sum(r.label is expect[k] for k, _, r in rows)
-    wrong = sum(r.label not in (expect[k], Label.UNCERTAIN) for k, _, r in rows)
-    unc = sum(r.label is Label.UNCERTAIN for _, _, r in rows)
-    # Accuracy if UNCERTAIN falls back to DEFECTIVE (the loop's safe default after re-inspection fails).
-    safe = sum((Label.DEFECTIVE if r.label is Label.UNCERTAIN else r.label) is expect[k] for k, _, r in rows)
+    # stage 1
+    expect1 = {"good": Label.PERFECT, "minor": Label.DEFECTIVE, "bad": Label.DEFECTIVE}
+    t1 = {k: {lab: 0 for lab in (Label.PERFECT, Label.DEFECTIVE, Label.UNCERTAIN)} for k in kinds}
+    for kind, _, r in rows:
+        t1[kind][r.label] += 1
+    clf = insp.classifier
+    print(f"device={insp.device} stage2={clf.name if clf else 'none'}@{clf.device if clf else '-'} bricks={n} "
+          f"threshold={insp.manifest.threshold:.4g} band=[{insp.manifest.band_low:.4g}, {insp.manifest.band_high:.4g}]")
+    print("stage 1 (Anomalib): plain vs marked")
+    print(f"{'true':6s} {'perfect':>8s} {'marked':>8s} {'uncertain':>10s}")
+    for k in kinds:
+        print(f"{k:6s} {t1[k][Label.PERFECT]:8d} {t1[k][Label.DEFECTIVE]:8d} {t1[k][Label.UNCERTAIN]:10d}")
+    c1 = sum(r.label is expect1[k] for k, _, r in rows)
+    print(f"stage 1 correct {c1}/{n} ({100 * c1 / max(n, 1):.1f}%)")
+    # final 3-class
+    order = (MarkType.NONE, MarkType.CIRCLE, MarkType.CROSS, MarkType.UNKNOWN)
+    table = {k: {o: 0 for o in order} for k in kinds}
+    for kind, _, r in rows:
+        table[kind][mark_outcome(r, min_mark_confidence)] += 1
+    print("final 3-class (stage 1 + stage 2): rows = truth, unknown = re-inspect, then defective plate")
+    print(f"{'true':14s} {'plain':>6s} {'circle':>7s} {'cross':>6s} {'unknown':>8s}")
+    for k in kinds:
+        print(f"{k + '/' + FOLDERS[k].value:14s} {table[k][MarkType.NONE]:6d} {table[k][MarkType.CIRCLE]:7d} "
+              f"{table[k][MarkType.CROSS]:6d} {table[k][MarkType.UNKNOWN]:8d}")
+    correct = sum(mark_outcome(r, min_mark_confidence) is FOLDERS[k] for k, _, r in rows)
+    unc = sum(mark_outcome(r, min_mark_confidence) is MarkType.UNKNOWN for _, _, r in rows)
+    wrong = n - correct - unc
+
+    def safe(o):  # the loop's fallback: unknown -> defective plate (cross)
+        return MarkType.CROSS if o is MarkType.UNKNOWN else o
+
+    safe_ok = sum(safe(mark_outcome(r, min_mark_confidence)) is FOLDERS[k] for k, _, r in rows)
+    print(f"correct {correct}/{n} ({100 * correct / max(n, 1):.1f}%), wrong {wrong}, unknown {unc}; "
+          f"unknown->defective accuracy {100 * safe_ok / max(n, 1):.1f}%")
     lat = np.array([r.latency_ms for _, _, r in rows])
-    print(f"device={insp.device} bricks={n} threshold={insp.manifest.threshold:.4g} "
-          f"band=[{insp.manifest.band_low:.4g}, {insp.manifest.band_high:.4g}]")
-    print(f"{'true':6s} {'perfect':>8s} {'defective':>10s} {'uncertain':>10s}")
-    for k in expect:
-        print(f"{k:6s} {table[k][Label.PERFECT]:8d} {table[k][Label.DEFECTIVE]:10d} {table[k][Label.UNCERTAIN]:10d}")
-    print(f"correct {correct}/{n} ({100 * correct / max(n, 1):.1f}%), wrong {wrong}, uncertain {unc}; "
-          f"uncertain→defective accuracy {100 * safe / max(n, 1):.1f}%")
-    print(f"inspect() latency over {n} calls ({len(rows and rows[0][2].frame_scores)} frames each): "
-          f"median {np.median(lat):.2f} ms, p90 {np.percentile(lat, 90):.2f} ms")
+    s1 = np.array([r.stage_latency_ms.get("stage1", np.nan) for _, _, r in rows])
+    s2 = np.array([r.stage_latency_ms["stage2"] for _, _, r in rows if "stage2" in r.stage_latency_ms])
+    nf = len(rows and rows[0][2].frame_scores)
+    print(f"latency over {n} inspect() calls ({nf} frames each): total median {np.median(lat):.2f} ms "
+          f"p90 {np.percentile(lat, 90):.2f}; stage1 median {np.nanmedian(s1):.2f} p90 {np.nanpercentile(s1, 90):.2f}"
+          + (f"; stage2 (n={len(s2)}) median {np.median(s2):.2f} p90 {np.percentile(s2, 90):.2f} ms" if len(s2) else ""))
     gs = [r.score for k, _, r in rows if k == "good"]
-    bs = [r.score for k, _, r in rows if k == "bad"]
+    bs = [r.score for k, _, r in rows if k != "good"]
     if gs and bs:
-        print(f"scores: good max {max(gs):.4g} (median {np.median(gs):.4g}), bad min {min(bs):.4g} "
+        print(f"scores: good max {max(gs):.4g} (median {np.median(gs):.4g}), marked min {min(bs):.4g} "
               f"(median {np.median(bs):.4g})")
-    return {"table": table, "correct": correct, "n": n, "uncertain": unc, "wrong": wrong, "rows": rows}
+    return {"table": table, "stage1": t1, "correct": correct, "n": n, "uncertain": unc, "wrong": wrong, "rows": rows}
 
 
 def main() -> None:
@@ -189,10 +252,14 @@ def main() -> None:
     ap.add_argument("--device", default="NPU", choices=["NPU", "GPU", "CPU"])
     ap.add_argument("--batch", type=int, default=3, help="static batch compiled into the model (1 = sequential)")
     ap.add_argument("--overlays", type=Path, help="write heatmap/region overlays here")
+    ap.add_argument("--stage2", default=None, help='"shape" | "none" | CNN classifier.json (default: manifest, else shape)')
+    ap.add_argument("--stage2-device", default=None, help="OpenVINO device of the stage-2 CNN (default: --device)")
+    ap.add_argument("--min-mark-confidence", type=float, default=0.0, help="reasoner's extra stage-2 threshold")
     args = ap.parse_args()
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
-    insp = AnomalibInspector.from_manifest(args.manifest, device=args.device, batch=args.batch)
-    evaluate(insp, args.data.expanduser(), args.overlays)
+    insp = AnomalibInspector.from_manifest(args.manifest, device=args.device, batch=args.batch, stage2=args.stage2,
+                                           stage2_device=args.stage2_device)
+    evaluate(insp, args.data.expanduser(), args.overlays, args.min_mark_confidence)
 
 
 if __name__ == "__main__":

@@ -2,12 +2,19 @@
 
 Laptop dry run (fake robot, cameras, inspector and scripted policy; status page on :8001):
 
-    uv run python -m dlsj.loop.run --dry-run --bricks plain,cross,faint,hidden_cross --enable-reshow
+    uv run python -m dlsj.loop.run --dry-run --bricks plain,cross,circle,blob,faint,hidden_cross --enable-reshow
+
+Plates (three-class task; colours are configurable, the minor plate's yellow is a placeholder):
+
+    --plates good=blue,minor=yellow,defective=pink        # instruction "place the brick on the <colour> plate"
+    --plates plates.json                                  # {"minor": {"colour": "green", "instruction": "...",
+                                                          #   "pose": "green"}, ...}
 
 On the XPS (once the pi0.5 export and the Anomalib inspector exist):
 
     uv run python -m dlsj.loop.run --cameras wrist=0,top=2,inspect=4 \
-        --policy openvino --policy-path exports/pi05_ov --inspector anomalib --inspector-path exports/anomalib
+        --policy openvino --policy-path exports/pi05_ov --inspector anomalib --inspector-path exports/anomalib \
+        [--stage2 shape | --stage2 exports/inspect/mark_cnn/classifier.json --stage2-device NPU]
 
 Hardware smoke test without the VLA (scripted motion between poses saved with --save-pose):
 
@@ -36,12 +43,12 @@ from dlsj.loop.controller import Controller, ControllerConfig
 from dlsj.loop.executor import ExecConfig, SkillExecutor
 from dlsj.loop.planner import AnyBrickPlanner
 from dlsj.loop.reasoner import ReasonConfig
-from dlsj.loop.skills import RESHOW, SkillLibrary
+from dlsj.loop.skills import RESHOW, Plates, SkillLibrary
 from dlsj.loop.telemetry import RunLog
 
 log = logging.getLogger("loop")
 
-SCRIPTED_POSES = ["home", "grasp", "inspect", "blue", "pink"]
+SCRIPTED_POSES = ["home", "grasp", "inspect"]  # + one pose per plate (Plate.pose, default the colour)
 
 
 class BrickGate:
@@ -80,12 +87,19 @@ def parse_args(argv=None) -> argparse.Namespace:
     p.add_argument("--policy-cameras", default=None, help="cameras fed to the policy (default: all)")
     p.add_argument("--inspector", choices=["fake", "anomalib"], default="fake")
     p.add_argument("--inspector-path", default=None)
+    p.add_argument("--inspector-device", default="NPU", help="OpenVINO device of the stage-1 Anomalib model")
+    p.add_argument("--stage2", default=None,
+                   help='mark classifier: "shape" | "none" | CNN classifier.json (default: manifest, else shape)')
+    p.add_argument("--stage2-device", default=None, help="OpenVINO device of the stage-2 CNN (default NPU)")
+    p.add_argument("--plates", default=None,
+                   help='plate colours/strings: "good=blue,minor=yellow,defective=pink" or a JSON file')
     p.add_argument("--policy", choices=["fake", "openvino", "lerobot-server"], default="fake")
     p.add_argument("--policy-path", default=None, help="OpenVINO export dir")
     p.add_argument("--policy-device", default="GPU")
     p.add_argument("--policy-server", default="127.0.0.1:8080")
     p.add_argument("--fake-latency-ms", type=float, default=170.0, help="simulated chunk latency of --policy fake")
-    p.add_argument("--bricks", default="plain,cross,faint,hidden_cross", help="dry-run bricks on the fake table")
+    p.add_argument("--bricks", default="plain,cross,circle,faint,hidden_cross",
+                   help="dry-run bricks on the fake table (plain, cross, circle, blob, faint, hidden_cross, glare)")
     p.add_argument("--max-bricks", type=int, default=None, help="stop after this many bricks (dry run: #bricks)")
     p.add_argument("--fps", type=float, default=30.0)
     p.add_argument("--max-speed", type=float, default=90.0, help="arm joint cap, deg/s (step_toward per tick)")
@@ -95,7 +109,9 @@ def parse_args(argv=None) -> argparse.Namespace:
     p.add_argument("--skills-config", default=None, help="JSON overrides for skill strings / termination")
     p.add_argument("--enable-reshow", action="store_true", help="use the RESHOW skill on uncertain inspections")
     p.add_argument("--max-uncertain", type=int, default=2)
-    p.add_argument("--extra-margin", type=float, default=0.0)
+    p.add_argument("--extra-margin", type=float, default=0.0, help="stage 1: widen the uncertainty band")
+    p.add_argument("--min-mark-confidence", type=float, default=0.0,
+                   help="stage 2: CIRCLE/CROSS below this confidence count as uncertain")
     p.add_argument("--grasp-current-min", type=float, default=None)
     p.add_argument("--step", action="store_true", help="wait for Enter / NEXT BRICK before every brick")
     p.add_argument("--no-home", action="store_true", help="don't ramp to the home pose at start / end")
@@ -129,14 +145,20 @@ def build(args):
 
     cleanup = []
     library = SkillLibrary()
+    plates = Plates.parse(args.plates)
+    plates.apply(library)
     if args.skills_config:
-        library.load_overrides(args.skills_config)
+        library.load_overrides(args.skills_config)  # explicit per-skill overrides win over --plates
     if args.enable_reshow:
         library.enabled_optional.add(RESHOW)
 
     world = robot = None
     if args.robot == "fake":
-        world = fakes.FakeWorld(bricks=[b.strip() for b in args.bricks.split(",") if b.strip()])
+        role_pose = {"good": "blue", "minor": "yellow", "defective": "pink"}  # fake plate positions per role
+        wposes = {k: fakes.DEFAULT_POSES[k].copy() for k in SCRIPTED_POSES}
+        for pl in plates.all():  # only the configured plates exist in the fake world
+            wposes[pl.pose] = fakes.DEFAULT_POSES[role_pose[pl.role]].copy()
+        world = fakes.FakeWorld(bricks=[b.strip() for b in args.bricks.split(",") if b.strip()], poses=wposes)
         robot = fakes.FakeRobot(world)
         poses = dict(world.poses)
         home = poses["home"]
@@ -146,7 +168,7 @@ def build(args):
         robot = LeRobotArm(args.follower_port, args.follower_id, args.max_relative_target)
         robot.connect()
         cleanup.append(robot.disconnect)
-        poses = P.load_poses(args.follower_id, SCRIPTED_POSES)
+        poses = P.load_poses(args.follower_id, SCRIPTED_POSES + [pl.pose for pl in plates.all()])
         home = poses.get("home")
         if home is None:
             log.warning("no home pose saved for %s (teleop_web 'save home'); not homing", args.follower_id)
@@ -169,15 +191,16 @@ def build(args):
     else:
         from dlsj.loop.hardware import load_inspector
 
-        inspector = load_inspector(args.inspector_path)
+        inspector = load_inspector(args.inspector_path, device=args.inspector_device, stage2=args.stage2,
+                                   stage2_device=args.stage2_device)
 
     if args.policy == "fake":
-        missing = [n for n in SCRIPTED_POSES if n not in poses]
+        missing = [n for n in SCRIPTED_POSES + [pl.pose for pl in plates.all()] if n not in poses]
         if missing:
             raise SystemExit(f"--policy fake on the real arm needs saved poses {missing} (--save-pose NAME)")
         if args.robot != "fake":
             log.warning("SCRIPTED policy on the REAL arm: it moves between your saved poses. Keep a hand on the e-stop.")
-        policy = fakes.ScriptedPolicy(poses, latency_s=args.fake_latency_ms / 1000.0)
+        policy = fakes.ScriptedPolicy(poses, latency_s=args.fake_latency_ms / 1000.0, plates=plates)
     elif args.policy == "openvino":
         from dlsj.loop.hardware import OpenVINOPi05Policy
 
@@ -199,10 +222,12 @@ def build(args):
     ccfg = ControllerConfig(go_home=not args.no_home, grasp_current_min=args.grasp_current_min,
                             reason=ReasonConfig(max_uncertain=args.max_uncertain,
                                                 reshow_available=library.available(RESHOW),
-                                                extra_margin=args.extra_margin))
+                                                extra_margin=args.extra_margin,
+                                                min_mark_confidence=args.min_mark_confidence))
     gate = BrickGate() if args.step else None
     controller = Controller(executor, cameras, inspector, planner, runlog, ccfg, home, wait_for_brick=gate)
-    runlog.event("config", args=vars(args), run_dir=str(run_dir), poses={k: v.tolist() for k, v in poses.items()})
+    runlog.event("config", args=vars(args), run_dir=str(run_dir), poses={k: v.tolist() for k, v in poses.items()},
+                 plates=plates.describe())
     return controller, executor, cameras, runlog, world, gate, cleanup
 
 

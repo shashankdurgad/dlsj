@@ -20,6 +20,13 @@ Success conditions (each optional, all configured ones must hold together):
   runs before anyone saved an `inspect` pose.
 
 Instruction strings must be byte-identical to the training demos' task strings (PLAYBOOK 3.1b).
+
+Plates (three-class task): `Plates` maps the roles good / minor / defective to a place skill, a plate colour, the
+instruction string and the saved pose name. Skill ids are fixed per role (historic names: PLACE_BLUE = good,
+PLACE_PINK = defective; PLACE_MINOR = minor); colours and strings are configurable (`Plates.parse`, run.py
+`--plates good=blue,minor=yellow,defective=pink` or a JSON file) because the team hasn't fixed the colours.
+The minor plate's yellow is a PLACEHOLDER.
+
 Phase-2 skills (`PICK_MARKED`, `PLACE_SLOT`) are placeholders whose strings take `{slot}`-style params.
 """
 
@@ -41,6 +48,9 @@ log = logging.getLogger(__name__)
 PICK_AND_SHOW = "PICK_AND_SHOW"
 PLACE_BLUE = "PLACE_BLUE"
 PLACE_PINK = "PLACE_PINK"
+PLACE_MINOR = "PLACE_MINOR"
+PLACE_GOOD = PLACE_BLUE  # role aliases: the ids keep their historic colour names whatever the plate colours are
+PLACE_DEFECTIVE = PLACE_PINK
 RESHOW = "RESHOW"
 PICK_MARKED = "PICK_MARKED"  # phase 2
 PLACE_SLOT = "PLACE_SLOT"  # phase 2
@@ -105,6 +115,9 @@ def default_skills() -> dict[str, Skill]:
                              "brick on the table -> held still at the inspect spot"),
         PLACE_BLUE: Skill(PLACE_BLUE, "place the brick on the blue plate", place, "inspect spot -> blue plate"),
         PLACE_PINK: Skill(PLACE_PINK, "place the brick on the pink plate", place, "inspect spot -> pink plate"),
+        # PLACEHOLDER colour: the minor-defect plate colour is not fixed yet (override with --plates)
+        PLACE_MINOR: Skill(PLACE_MINOR, "place the brick on the yellow plate", place,
+                           "inspect spot -> minor-defect plate (yellow is a placeholder)"),
         RESHOW: Skill(RESHOW, "turn the brick and show it to the inspection camera again",
                       replace(show, max_duration_s=12.0), "optional recovery skill for uncertain inspections"),
         # phase 2 placeholders (PLAYBOOK 8.2); not trained yet
@@ -112,6 +125,78 @@ def default_skills() -> dict[str, Skill]:
                            "phase 2: target brick marked in the top image"),
         PLACE_SLOT: Skill(PLACE_SLOT, "place the brick in slot {slot}", place, "phase 2: ordered placement"),
     }
+
+
+# ----------------------------------------------------------------------------- plates
+ROLE_SKILL = {"good": PLACE_GOOD, "minor": PLACE_MINOR, "defective": PLACE_DEFECTIVE}
+INSTRUCTION_TEMPLATE = "place the brick on the {colour} plate"
+
+
+@dataclass(frozen=True)
+class Plate:
+    role: str  # "good" | "minor" | "defective"
+    colour: str
+    instruction: str
+    pose: str  # saved pose name (scripted policy / fake world); defaults to the colour
+
+    @property
+    def skill(self) -> str:
+        return ROLE_SKILL[self.role]
+
+
+@dataclass(frozen=True)
+class Plates:
+    good: Plate = Plate("good", "blue", "place the brick on the blue plate", "blue")
+    minor: Plate = Plate("minor", "yellow", "place the brick on the yellow plate", "yellow")  # placeholder colour
+    defective: Plate = Plate("defective", "pink", "place the brick on the pink plate", "pink")
+
+    def all(self) -> list[Plate]:
+        return [self.good, self.minor, self.defective]
+
+    def by_skill(self) -> dict[str, Plate]:
+        return {p.skill: p for p in self.all()}
+
+    @staticmethod
+    def parse(spec: str | None) -> "Plates":
+        """None -> defaults; "good=blue,minor=green,defective=red"; or a JSON file
+        {"minor": {"colour": "green", "instruction": "...", "pose": "green"}, ...} (missing keys keep defaults)."""
+        base = Plates()
+        if not spec:
+            return base
+        if spec.strip().endswith(".json") or Path(spec).is_file():
+            cfg = json.loads(Path(spec).read_text())
+        else:
+            cfg = {}
+            for item in spec.split(","):
+                if not item.strip():
+                    continue
+                role, _, colour = item.partition("=")
+                cfg[role.strip()] = {"colour": colour.strip()}
+        plates = {p.role: p for p in base.all()}
+        for role, c in cfg.items():
+            if role not in plates:
+                raise ValueError(f"unknown plate role {role!r} (use good, minor, defective)")
+            c = {"colour": c} if isinstance(c, str) else dict(c)
+            colour = c.get("colour", plates[role].colour)
+            changed = colour != plates[role].colour
+            instruction = c.get("instruction") or (INSTRUCTION_TEMPLATE.format(colour=colour) if changed
+                                                   else plates[role].instruction)
+            pose = c.get("pose") or (colour if changed else plates[role].pose)
+            plates[role] = Plate(role, colour, instruction, pose)
+        return Plates(**plates)
+
+    def apply(self, library: "SkillLibrary") -> None:
+        """Set each place skill's instruction string from the plate config."""
+        for p in self.all():
+            if p.skill in library:
+                library.override(p.skill, instruction=p.instruction)
+            else:
+                library.skills[p.skill] = Skill(p.skill, p.instruction, library.skills[PLACE_GOOD].termination,
+                                                f"inspect spot -> {p.role} plate")
+
+    def describe(self) -> dict:
+        return {p.role: {"skill": p.skill, "colour": p.colour, "instruction": p.instruction, "pose": p.pose}
+                for p in self.all()}
 
 
 class SkillLibrary:

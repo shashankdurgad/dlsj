@@ -68,7 +68,7 @@ main{display:grid;grid-template-columns:1fr 380px;gap:16px;padding:16px}@media(m
 .side{display:flex;flex-direction:column;gap:12px}.card{background:var(--card);border-radius:10px;padding:12px}
 .card h2{font-size:12px;text-transform:uppercase;letter-spacing:.06em;color:var(--mute);margin:0 0 8px}
 table{width:100%;border-collapse:collapse;font-variant-numeric:tabular-nums}td,th{padding:2px 4px;text-align:right}td:first-child,th:first-child{text-align:left;color:var(--mute)}
-th{color:var(--mute);font-weight:500}.big{font-size:20px;font-weight:600}.perfect{color:var(--ok)}.defective{color:var(--pink)}.uncertain{color:#ffc857}
+th{color:var(--mute);font-weight:500}.big{font-size:20px;font-weight:600}.perfect{color:var(--ok)}.defective{color:var(--pink)}.uncertain{color:#ffc857}.minor{color:#ffd23f}
 code{color:var(--acc)}
 </style></head><body>
 <header><h1>DLSJ closed loop</h1><span id="state" class="pill">…</span><span id="skill" class="pill"></span>
@@ -92,8 +92,9 @@ async function tick(){
     const st=document.getElementById('state');st.textContent=c.state;st.className='pill '+(c.state==='error'||c.state==='aborted'?'bad':'ok');
     const sk=c.skill||{};document.getElementById('skill').textContent=sk.skill?`${sk.skill} · tick ${sk.tick||0} · queue ${sk.queue??'–'}`:'';
     document.getElementById('msg').textContent=(c.task?`brick #${c.task.id} · `:'')+(c.message||'');
-    const r=c.last_inspection;if(r){const L=document.getElementById('label');L.textContent=r.label.toUpperCase();L.className='big '+r.label;
-      document.getElementById('insp_detail').innerHTML=`score <b>${r.score.toFixed(3)}</b> / thr ${r.threshold.toFixed(3)} · ${r.latency_ms.toFixed(1)} ms on ${r.device||'?'}<br>frames ${r.frame_scores.map(x=>x.toFixed(2)).join(', ')}<br>region ${r.region?JSON.stringify(r.region):'none'}`;
+    const r=c.last_inspection;if(r){const L=document.getElementById('label');const oc={none:'perfect',circle:'minor',cross:'defective',unknown:'uncertain'}[r.outcome]||r.label;
+      L.textContent=r.mark?`${r.label.toUpperCase()} · ${r.mark.toUpperCase()}`:r.label.toUpperCase();L.className='big '+oc;
+      document.getElementById('insp_detail').innerHTML=`score <b>${r.score.toFixed(3)}</b> / thr ${r.threshold.toFixed(3)} · ${r.latency_ms.toFixed(1)} ms on ${r.device||'?'}${r.mark?` · mark ${r.mark} ${r.mark_confidence.toFixed(2)} on ${r.mark_device}`:''}<br>stages ${Object.entries(r.stage_latency_ms||{}).map(([k,v])=>`${k} ${v.toFixed(1)} ms`).join(', ')}<br>frames ${r.frame_scores.map(x=>x.toFixed(2)).join(', ')}<br>region ${r.region?JSON.stringify(r.region):'none'}`;
       const key=JSON.stringify(r);if(key!==lastInsp){lastInsp=key;document.getElementById('insp').src='/inspection.jpg?'+Date.now();}}
     const d=c.last_decision;if(d)document.getElementById('decision').innerHTML=`<code>${d.skill||'re-grab'}</code>${d.forced?' (forced)':''}<br><span style="color:var(--mute)">${d.reason}</span>`;
     document.getElementById('counts').textContent=Object.entries(c.counts).map(([k,v])=>`${k}: ${v}`).join(' · ')||'–';

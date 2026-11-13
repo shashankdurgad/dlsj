@@ -5,8 +5,9 @@ Per task (brick) from the planner:
     PICK          run the task's pick skill (PICK_AND_SHOW) until the brick is held still at the inspect spot
     VERIFY_GRASP  gripper position (+ Present_Current if configured): EMPTY -> re-open and retry the pick
     DETECT        hold until the arm is still, grab N fresh `inspect` frames, Inspector.inspect(frames)
-    REASON        rule table (reasoner.decide): place skill, or re-inspect (RESHOW / re-grab) when uncertain;
-                  after `max_uncertain` uncertain inspections -> DEFECTIVE (safe default), logged as forced
+    REASON        decision tree (reasoner.decide): plain -> good plate, circle -> minor plate, cross -> defective
+                  plate; uncertain at either stage -> re-inspect (RESHOW / re-grab); after `max_uncertain`
+                  uncertain inspections -> DEFECTIVE (safe default), logged as forced
     PLACE         run the chosen place skill until the gripper opens (released)
     -> planner.complete(task) and loop
 
@@ -135,7 +136,7 @@ class Controller:
             "last_decision": None if self.last_decision is None else {
                 "kind": self.last_decision.kind, "label": self.last_decision.label.value,
                 "skill": self.last_decision.skill, "reason": self.last_decision.reason,
-                "forced": self.last_decision.forced},
+                "forced": self.last_decision.forced, "stage": self.last_decision.stage},
             "counts": dict(self.counts),
             "latency": self.log.summary(),
         }
@@ -236,6 +237,9 @@ class Controller:
                 frames = self.cameras.fresh(self.cfg.inspect_camera, self.cfg.inspect_frames)
                 result = self.inspector.inspect(frames)
             self.log.timing("inspector", result.latency_ms, task=task.id, device=result.device)
+            for stage, ms in result.stage_latency_ms.items():
+                dev = result.device if stage == "stage1" else result.mark_device
+                self.log.timing(f"inspector.{stage}", ms, task=task.id, device=dev)
             self.last_result, self.last_inspect_frame = result, frames[len(frames) // 2]
             rec = inspection_record(result)
             rep.inspections.append(rec)
@@ -244,14 +248,16 @@ class Controller:
             self._set(LoopState.REASON)
             with Stopwatch(self.log, "reason", task=task.id):
                 decision = decide(result, attempt, self.cfg.reason, task.perfect_skill, task.defective_skill,
-                                  task.perfect_params, task.defective_params)
+                                  task.perfect_params, task.defective_params, task.minor_skill, task.minor_params)
             self.last_decision = decision
             rep.decisions.append(decision.reason)
             self.log.event("decision", task=task.id, attempt=attempt, kind=decision.kind, label=decision.label.value,
-                           skill=decision.skill, forced=decision.forced, reason=decision.reason)
+                           skill=decision.skill, forced=decision.forced, reason=decision.reason,
+                           uncertain_stage=decision.stage or None)
             log.info("decision: %s", decision.reason)
             if decision.forced:
-                self.log.event("uncertain_fallback", task=task.id, attempts=attempt, label=decision.label.value)
+                self.log.event("uncertain_fallback", task=task.id, attempts=attempt, label=decision.label.value,
+                               stage=decision.stage)
             if decision.kind == "reinspect":
                 self.log.event("retry", stage="detect", task=task.id, attempt=attempt, reason=decision.reason)
                 if decision.skill is not None:

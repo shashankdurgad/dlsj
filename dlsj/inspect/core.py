@@ -19,7 +19,7 @@ from pathlib import Path
 import cv2
 import numpy as np
 
-from dlsj.contracts import InspectionResult, Label
+from dlsj.contracts import InspectionResult, Label, MarkType
 
 Box = tuple[int, int, int, int]  # (x0, y0, x1, y1), x1/y1 exclusive
 
@@ -43,6 +43,9 @@ class Manifest:
     trained_at: str = ""
     backbone: str = ""
     calibration: dict = field(default_factory=dict)  # score stats and the method used
+    # Stage-2 mark classifier: {"backend": "shape"} (default when empty), {"backend": "none"}, or
+    # {"backend": "cnn", "manifest": "../mark_cnn/classifier.json", "min_confidence": 0.7} (path relative to here).
+    stage2: dict = field(default_factory=dict)
 
     @classmethod
     def load(cls, path: str | Path) -> "Manifest":
@@ -279,12 +282,19 @@ def overlay(frame_rgb: np.ndarray, result: InspectionResult, alpha: float = 0.45
         heat = cv2.cvtColor(heat, cv2.COLOR_BGR2RGB)
         m = result.heatmap[..., None] > 0.02
         out = np.where(m, (out * (1 - alpha) + heat * alpha).astype(np.uint8), out)
-    color = {Label.PERFECT: (0, 200, 0), Label.DEFECTIVE: (230, 0, 0), Label.UNCERTAIN: (255, 170, 0)}
+    color = {Label.PERFECT: (0, 200, 0), Label.DEFECTIVE: (230, 0, 0), Label.UNCERTAIN: (255, 170, 0),
+             Label.MINOR: (240, 200, 0)}
+    col = color[result.label]
+    if result.label is Label.DEFECTIVE and result.mark is not None:
+        col = {MarkType.CIRCLE: color[Label.MINOR], MarkType.CROSS: color[Label.DEFECTIVE]}.get(
+            result.mark, color[Label.UNCERTAIN])
     if result.region is not None:
         x0, y0, x1, y1 = result.region
-        cv2.rectangle(out, (x0, y0), (x1, y1), color[result.label], 2)
+        cv2.rectangle(out, (x0, y0), (x1, y1), col, 2)
     txt = f"{result.label.value} {result.score:.3g} / thr {result.threshold:.3g}"
+    if result.mark is not None:
+        txt += f"  {result.mark.value} {result.mark_confidence:.2f}"
     if result.latency_ms:
         txt += f"  {result.latency_ms:.1f} ms {result.device}"
-    cv2.putText(out, txt, (8, 22), cv2.FONT_HERSHEY_SIMPLEX, 0.6, color[result.label], 2, cv2.LINE_AA)
+    cv2.putText(out, txt, (8, 22), cv2.FONT_HERSHEY_SIMPLEX, 0.6, col, 2, cv2.LINE_AA)
     return out
