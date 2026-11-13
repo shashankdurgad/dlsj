@@ -1,7 +1,7 @@
 """Record teleop demos of pick → inspect → place into a LeRobot v3 dataset, from a browser.
 
     uv run python -m dlsj.teleop_record --cameras top=2,wrist=0,inspect=4 \
-        --repo-id local/duplo_teleop --bowls red,blue,green --operator alice --target-s 8
+        --repo-id local/duplo_teleop --bowls yellow,purple,orange --operator alice --target-s 8
 
 Open http://localhost:8000.
 
@@ -64,7 +64,7 @@ class EpisodeRecorder:
         self.repo_id, self.fps = repo_id, fps
         self.root = Path(root) if root else Path("data") / repo_id.split("/")[-1]
         self.episode_time_s, self.operator, self.vcodec, self.resume = episode_time_s, operator, vcodec, resume
-        self.bowls = bowls or ["red", "blue"]
+        self.bowls = bowls or ["yellow", "purple", "orange"]
         self.pick_task, self.place_task = pick_task, place_task
         if "{colour}" not in place_task:
             raise ValueError("--place-task must contain {colour}")
@@ -402,7 +402,7 @@ body{background:var(--bg);color:var(--fg);font:400 15px/1.35 Barlow,ui-sans-seri
 <footer class="keys"><span><kbd>Space</kbd><span id="kspace">Start</span></span><span><kbd>1–3</kbd>Bowl</span><span><kbd>I</kbd>In view</span><span><kbd>F</kbd>Failed</span><span><kbd>H</kbd>Discard</span><span class="grow"></span><span><kbd>E</kbd><span id="keng">Engage</span></span><span><kbd>D</kbd>Detector</span></footer>
 </div>
 <script>
-const TARGET=__TARGET__,C=2*Math.PI*140,SW={red:'#e0393e',blue:'#2f6fe0',green:'#2fb36b',yellow:'#f2c230',orange:'#f08a2c',white:'#e8e8e8',black:'#2a2a2a',purple:'#8a5cd6',pink:'#e86aa6',grey:'#8d939b',gray:'#8d939b'};
+const TARGET=__TARGET__,C=2*Math.PI*140,SW={red:'#e0393e',blue:'#2f6fe0',green:'#2fb36b',yellow:'#f5c518',orange:'#f2711c',white:'#e8e8e8',black:'#2a2a2a',purple:'#8e44d9',pink:'#e86aa6',grey:'#8d939b',gray:'#8d939b'};
 let main=null,last={},debug=false,teleLive=false,ac=null;const thumbs={};
 const $=id=>document.getElementById(id),app=$('app');
 function tone(seq){try{ac=ac||new(window.AudioContext||window.webkitAudioContext)();let t=ac.currentTime;for(const[f,d]of seq){if(f){const o=ac.createOscillator(),g=ac.createGain();o.type='sine';o.frequency.value=f;o.connect(g);g.connect(ac.destination);g.gain.setValueAtTime(1e-4,t);g.gain.exponentialRampToValueAtTime(.25,t+.012);g.gain.exponentialRampToValueAtTime(1e-4,t+d);o.start(t);o.stop(t+d+.02)}t+=d}}catch(e){}}
@@ -476,7 +476,7 @@ def main() -> None:
 
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--repo-id", required=True, help="dataset name, e.g. local/duplo_teleop")
-    p.add_argument("--bowls", default="red,blue", help="bowl colours in key order (1, 2, 3), e.g. red,blue,green")
+    p.add_argument("--bowls", default="yellow,purple,orange", help="bowl colours in key order (1, 2, 3)")
     p.add_argument("--pick-task", default=PICK_TASK)
     p.add_argument("--place-task", default=PLACE_TASK, help="must contain {colour}")
     p.add_argument("--inspect-camera", default="inspect", help="camera name used for the in-view detector")
