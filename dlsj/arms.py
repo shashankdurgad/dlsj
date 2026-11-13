@@ -201,8 +201,31 @@ def ensure_calibrated(device, label: str, force: bool = False) -> bool:
     if warn:
         log.warning("%s calibration notes (not blocking; --calibrate %s to redo):\n  - %s",
                     label, label, "\n  - ".join(warn))
-    device.configure()
+    hold_present_goal(device.bus, label)
+    device.configure()  # LeRobot enables torque at the end of this for a follower
     return recalibrated
+
+
+def hold_present_goal(bus, label: str = "") -> None:
+    """Set every motor's Goal_Position to where it is now, with torque off.
+
+    Feetech servos drive to the stored goal the moment torque is enabled. A stale goal (we found 0 on every
+    joint after another tool had used the arm) makes the follower lunge to its limits at full torque, buzz
+    against them and brown out the bus. LeRobot's configure() does not reset it, so we do.
+    """
+    bus.disable_torque()
+    present = bus.sync_read("Present_Position", normalize=False, num_retry=5)
+    goal = bus.sync_read("Goal_Position", normalize=False, num_retry=5)
+    stale = {m: (int(goal[m]), int(p)) for m, p in present.items() if abs(int(goal[m]) - int(p)) > 20}
+    if stale:
+        log.warning("%s: stale goal positions reset to present (goal, present): %s", label, stale)
+    target = {m: int(p) for m, p in present.items()}
+    for _ in range(5):  # sync_write is fire-and-forget: read back until every goal took
+        bus.sync_write("Goal_Position", target, normalize=False)
+        goal = bus.sync_read("Goal_Position", normalize=False, num_retry=5)
+        if all(abs(int(goal[m]) - target[m]) <= 2 for m in target):
+            return
+    raise RuntimeError(f"{label}: could not set goal positions to present; not enabling torque")
 
 
 # ----------------------------------------------------------------------------- home pose

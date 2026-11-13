@@ -217,3 +217,26 @@ def test_parse_cameras_accepts_indices_and_device_paths():
         "wrist": 0,
         "top": "/dev/v4l/by-id/usb-cam-video-index0",
     }
+
+
+class FakeBus:
+    def __init__(self, present, goal):
+        self.regs = {"Present_Position": dict(present), "Goal_Position": dict(goal)}
+        self.torque_off = False
+
+    def disable_torque(self):
+        self.torque_off = True
+
+    def sync_read(self, name, normalize=True, num_retry=0):
+        return dict(self.regs[name])
+
+    def sync_write(self, name, values, normalize=True):
+        assert self.torque_off, "goal must be written with torque off"
+        self.regs[name].update(values)
+
+
+def test_hold_present_goal_clears_stale_zero_goals():
+    present = {"elbow_flex": 3128, "gripper": 1333}
+    bus = FakeBus(present, {"elbow_flex": 0, "gripper": 0})
+    arms.hold_present_goal(bus, "follower")
+    assert bus.regs["Goal_Position"] == present
