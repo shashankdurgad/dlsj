@@ -795,6 +795,16 @@ Measure on the XPS (median and p99 over ≥100 runs, after warmup, on mains powe
 | End-to-end loop | sum of baselines | sum of optimised + async overlap | |
 | Throughput | tasks/min, baseline | tasks/min, optimised | |
 
+**Measured on our XPS** (X9 388H, Arc B390; `bench/pi05_torch_xpu.py`, `lerobot/pi05_base`, LeRobot 0.7.0, PyTorch 2.15 XPU, bf16, 3 cameras at 224², chunk 50, median of 20 after warmup, 13 Nov):
+
+| π0.5 config | Median / chunk | Notes |
+|---|---|---|
+| PyTorch-XPU, 10 denoising steps | **467 ms** | Baseline row. Peak GPU memory 8.9 GiB |
+| PyTorch-XPU, 5 steps | 382 ms | No distillation, so accuracy is not checked |
+| PyTorch-XPU, 1 step | 313 ms | Same caveat |
+
+⇒ ~17 ms per denoising step, and **~296 ms is the vision encoder + VLM prefix**. Step reduction alone caps out at ~1.5×. The VLM prefix is where OpenVINO INT8, fused SDPA and batched cameras must win.
+
 Reference points:
 - Intel's π0.5 on a Core Ultra X7 358H: 555 → 172 ms per chunk (3 cameras, 10 steps).
 - Our ResNet-18 smoke test on this XPS: GPU FP16 0.59 ms, NPU 0.88 ms, PyTorch-XPU 2.17 ms, CPU 12.6 ms.
