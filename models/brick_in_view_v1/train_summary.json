@@ -1,0 +1,27 @@
+{
+  "split": {
+    "in_view": {
+      "train": 78,
+      "val": 10
+    },
+    "not_in_view": {
+      "train": 40,
+      "val": 6
+    }
+  },
+  "top1_val": 1.0,
+  "recall_per_class": {
+    "in_view": 1.0,
+    "not_in_view": 1.0
+  },
+  "names": {
+    "0": "in_view",
+    "1": "not_in_view"
+  },
+  "best_pt": "/home/yan/desmond/brick_detector/runs/v1/cls/weights/best.pt",
+  "openvino": {
+    "fp16": "/home/yan/desmond/brick_detector/runs/v1/cls/weights/best_openvino_model/",
+    "int8": "/home/yan/desmond/brick_detector/runs/v1/cls/weights/best_int8_openvino_model/"
+  },
+  "imgsz": 224
+}

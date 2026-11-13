@@ -325,6 +325,23 @@ class EpisodeRecorder:
             }
 
 
+def make_detector(args):
+    """The trained classifier when available (or asked for), else the colour-blob detector."""
+    from dlsj.inview_classifier import DEFAULT_MODEL, InViewClassifier
+
+    model = None if args.inspect_model == "colour" else (
+        DEFAULT_MODEL if args.inspect_model == "auto" else Path(args.inspect_model))
+    if model is not None and Path(model).exists():
+        log.info("in-view: classifier %s on %s", model, args.inspect_device)
+        return InViewClassifier(model, args.inspect_device, args.inspect_threshold, args.inspect_stable_frames or 3)
+    if args.inspect_model not in ("auto", "colour"):
+        raise SystemExit(f"--inspect-model {args.inspect_model} not found")
+    log.info("in-view: colour-blob detector")
+    return BrickInViewDetector(DetectorConfig(
+        roi=DetectorConfig.parse_roi(args.inspect_roi), min_area=args.inspect_min_area,
+        min_sat=args.inspect_min_sat, stable_frames=args.inspect_stable_frames or 5))
+
+
 def _median(xs: list[float]) -> float | None:
     return round(float(np.median(xs)), 1) if xs else None
 
@@ -480,10 +497,16 @@ def main() -> None:
     p.add_argument("--pick-task", default=PICK_TASK)
     p.add_argument("--place-task", default=PLACE_TASK, help="must contain {colour}")
     p.add_argument("--inspect-camera", default="inspect", help="camera name used for the in-view detector")
+    p.add_argument("--inspect-model", default="auto",
+                   help="OpenVINO brick-in-view classifier (.xml); 'auto' = models/brick_in_view_v1 if present, "
+                        "'colour' = the colour-blob detector")
+    p.add_argument("--inspect-device", default="CPU", help="OpenVINO device for the classifier: CPU, GPU or NPU")
+    p.add_argument("--inspect-threshold", type=float, default=0.6, help="P(in view) needed per frame")
     p.add_argument("--inspect-roi", default="0.1,0.1,0.9,0.9", help="x0,y0,x1,y1 fractions of the inspect image")
     p.add_argument("--inspect-min-area", type=float, default=0.03, help="brick blob area as a fraction of the ROI")
     p.add_argument("--inspect-min-sat", type=int, default=100)
-    p.add_argument("--inspect-stable-frames", type=int, default=5)
+    p.add_argument("--inspect-stable-frames", type=int, default=None,
+                   help="consecutive in-view frames needed (default 3 for the classifier, 5 for colour)")
     p.add_argument("--root", help="dataset directory (default data/<repo name>)")
     p.add_argument("--resume", action="store_true", help="append to an existing dataset")
     p.add_argument("--record-fps", type=int, default=30)
@@ -528,9 +551,7 @@ def main() -> None:
         log.warning("no camera named %r: the in-view detector is off, mark the moment with i", args.inspect_camera)
     streams = {n: teleop_web.CameraStream(n, i, args.width, args.height, args.cam_fps, args.jpeg_quality).start()
                for n, i in cams.items()}
-    detector = BrickInViewDetector(DetectorConfig(
-        roi=DetectorConfig.parse_roi(args.inspect_roi), min_area=args.inspect_min_area,
-        min_sat=args.inspect_min_sat, stable_frames=args.inspect_stable_frames))
+    detector = make_detector(args)
     teleop = teleop_web.Teleop(args)
     recorder = EpisodeRecorder(teleop, streams, args.repo_id, args.record_fps, args.root, args.episode_time,
                                args.operator, args.vcodec, args.resume, [b.strip() for b in args.bowls.split(",")],
