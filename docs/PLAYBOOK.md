@@ -11,6 +11,15 @@
 - **Primary task:** distinguish acceptable ("perfect") from anomalous ("defective") objects, then physically sort or respond according to the **rules revealed at kickoff**. ⚠️ Fill in the rules here: _TBD_.
 - **Closed loop:** **PERCEIVE → DETECT → REASON → ACT → OPTIMIZE**, demonstrated end to end.
 
+**Required technology stack** (second kickoff slide):
+
+| # | Component | Role per the slide | Our use |
+|---|---|---|---|
+| 01 | **SO-101 arm** | Physical platform; "closes the loop from AI perception and reasoning to real-world action" | Follower + leader for demos |
+| 02 | **Intel Physical AI Studio** | "Design and integrate the VLA-based robotics workflow, connecting perception, task reasoning, robot control, and application orchestration" | **Studio is the hub:** environment setup, recording, remote training on RTX, model export, running the policy (Section 4.0) |
+| 03 | **Anomalib** | "Visual anomaly and defect detection, producing **defect decisions and localization signals** that can be **consumed by the VLA / robot workflow**" | Score → perfect/defective, **and** the anomaly map → defect location → fed into REASON (Section 8) |
+| 04 | **OpenVINO + Core Ultra Series 3** | "Optimize and deploy supported AI workloads with OpenVINO. **Map inference across the integrated NPU, GPU, and CPU** to improve latency and on-device efficiency" | Anomalib on NPU, π0.5 on GPU, control on CPU; OPTIMIZE table |
+
 **What this means for us:** the judged stack is Studio + Anomalib + OpenVINO. Plain LeRobot is fine for data and baselines, but the final policy is trained via Physical AI Studio and deployed with the `physicalai` runtime on OpenVINO. The NPU must visibly do real work, and we must show before/after optimisation numbers.
 
 **Hardware:**
@@ -29,7 +38,7 @@
 | Loop step | Component | Choice | Device |
 |---|---|---|---|
 | **PERCEIVE** | Cameras | Overhead RealSense RGB-D + wrist webcam, 640×480@30, exposure/WB locked | CPU |
-| **DETECT** | Defect detection | **Anomalib PaDiM/PatchCore** on the overhead view (arm parked), OpenVINO, **static shapes**; plus **depth height-map check** | **NPU** |
+| **DETECT** | Defect detection | **Anomalib PaDiM/PatchCore** on the overhead view (arm parked), OpenVINO, **static shapes**; plus **depth height-map check**; anomaly map → **defect localization** (box + table coordinates) | **NPU** |
 | **REASON** | Decision | Kickoff rules + defect result + HSV colour → a **language instruction**, e.g. "put the defective part in the red bin" | CPU |
 | **ACT** | Manipulation | **π0.5 fine-tuned via Physical AI Studio** on cloud RTX, exported to OpenVINO **INT8**, `physicalai` runtime with RTC/async | **GPU** |
 | **OPTIMIZE** | Evidence | Latency table: PyTorch-XPU vs OpenVINO FP16 vs INT8 vs NPU; per-stage timings; tasks/min (Section 8.1) | all |
@@ -212,8 +221,18 @@ pip install "physicalai[so101,realsense]"
 
 ## 4. Training & speed on Intel XPU
 
-### 4.0 Train on cloud RTX, deploy on the XPS
-- **Flow:** record on the XPS → push the dataset to the HF Hub → **train on cloud/team RTX** (CUDA, bf16) → download the checkpoint → `physicalai export --backend openvino` (INT8) → run on the XPS.
+### 4.0 Train on cloud RTX, deploy on the XPS (Studio-orchestrated)
+**Preferred flow: everything driven from the Studio UI on the XPS** (http://100.77.191.42:7860). This is what the "Studio integrates the workflow" requirement wants to see:
+1. **Environment:** add the SO-101 robot and both cameras, then create an environment (`application/docs/04-environment-setup.md`).
+2. **Record:** create a dataset and record episodes with the task (instruction) string (`05-recording-datasets.md`).
+3. **Train remotely:** register the cloud RTX box as a **remote SSH trainer** (`07-remote-training.md`) and pick it when creating the model. Studio uploads a dataset snapshot and downloads the artifacts when done.
+   - The trainer's SSH user needs **passwordless sudo** for Studio's automatic Docker+GPU setup (`/etc/sudoers.d/physicalai-trainer`: `<user> ALL=(ALL) NOPASSWD: ALL`, mode 0440). Otherwise, prepare Docker + NVIDIA support on it by hand.
+   - AWS EC2 / AWS Batch trainers are also supported.
+4. **Export:** when training finishes Studio exports to **PyTorch, OpenVINO, ONNX and ExecuTorch** automatically.
+5. **Run:** on the Models screen use **Run model**, choose backend **OpenVINO** and device **GPU**. Studio's built-in inference supports only **GPU or CPU**, so NPU work (Anomalib, or the stretch action-expert split) runs through our own OpenVINO / `physicalai` runtime code.
+6. **HF token:** π0.5 needs `HF_TOKEN` (read-only, with PaliGemma access) in `application/docker/.env`, then `docker compose up -d --force-recreate`.
+
+**Manual fallback flow:** record on the XPS → push the dataset to the HF Hub → **train on cloud/team RTX** (CUDA, bf16) → download the checkpoint → `physicalai export --backend openvino` (INT8) → run on the XPS.
 - **Studio on CUDA:** the Studio configs default to `accelerator: gpu`, which is what you want on RTX. The XPU flags in 4.2 are only needed when training on Intel. Studio also ships a trainer container (`application/docker/docker-compose.trainer.yaml`).
 - **π0.5 GPU size:** ≥24 GB to fine-tune; 48–80 GB (RTX 6000 Ada / L40S / A100 / H100) is comfortable. Plain fine-tune first; SnapFlow 1-step distillation is optional (~12 GPU-h).
 - **Pin versions:** use the **same Physical AI Studio commit** on the cloud box and the XPS (the XPS has commit `8f13241`), so exports load in the runtime.
@@ -669,8 +688,11 @@ The same "fully closed = nothing grasped" override improved disturbance recovery
 
 **Task state machine:**
 1. `PERCEIVE`: arm parked out of the overhead view; grab overhead RGB + depth and find the next object with the depth mask.
-2. `DETECT`: 3-frame Anomalib scoring on the **NPU** + depth height check → `perfect` / `defective` (+ score and heatmap).
-3. `REASON`: apply the **kickoff rules** to (defect flag, colour/type, anything else the rules use) → one of a fixed set of **instructions**, e.g. `"place the object in the reject bin"` / `"place the object in the left bin"`. Keep the instruction strings **identical** to the ones used in the training demos. A rule table is enough; an LLM is optional narration only.
+2. `DETECT`: 3-frame Anomalib scoring on the **NPU** + depth height check → `perfect` / `defective` (+ score and heatmap). Also turn the **anomaly map into a localization signal**, which the brief requires the robot workflow to consume:
+   - threshold the map → connected components → defect bounding box and centroid in overhead pixels;
+   - map pixels to table coordinates with the RealSense depth + intrinsics (`rs2_deproject_pixel_to_point`);
+   - output: defect location, and which object or region is defective when several are on the table.
+3. `REASON`: apply the **kickoff rules** to (defect flag, **defect location / which object**, colour/type, anything else the rules use) → one of a fixed set of **instructions**, e.g. `"place the object in the reject bin"` / `"place the object in the left bin"`. Keep the instruction strings **identical** to the ones used in the training demos. If several objects are on the table, the localization picks **which** one; name it in the instruction by a trained position word (e.g. `"... the left object ..."`), or crop/highlight it. A rule table is enough; an LLM is optional narration only.
 4. `ACT`: run π0.5 with that instruction until the gripper closes → `VERIFY_GRASP` (current check; on EMPTY, retry up to 2) → continue until placed.
 5. Loop. Log per-stage timings every iteration.
 
