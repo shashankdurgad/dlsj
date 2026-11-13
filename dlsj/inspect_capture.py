@@ -7,9 +7,9 @@ Open http://localhost:8002.
 Frames are saved as full-resolution JPEGs to <out>/<session>/<tag>/<00000>.jpg and listed in
 <session>/index.csv (file, tag, unix time, width, height). The same camera frame is never saved twice.
 
-Keys while the page is focused:
-  1   in view (brick fully in view)       2   not in view (no brick, partial brick, hands, bowls)
-  space  start or stop burst capture      s   save one frame
+Keys while the page is focused (tap = one frame, hold = keep capturing, ~8 per second):
+  1   capture "in view"        brick fully in view
+  2   capture "not in view"    no brick, partial brick, hands, bowls
 
 With --sync, the output folder is copied with rsync every ~10 s and once at exit. ssh auth comes from the
 environment (SSH_ASKPASS, SSH_ASKPASS_REQUIRE=force, DISPLAY). Only paths under ~/desmond on the remote
@@ -41,40 +41,33 @@ DEFAULT_SSH_CONFIG = (
 
 
 class Capture:
-    """Saves frames from one camera stream into tag folders, singly or in bursts."""
+    """Saves frames from one camera stream into tag folders: one frame per capture command."""
 
-    def __init__(self, stream, out: str | Path, burst_fps: float = 5.0, session: str | None = None, quality: int = 95):
+    def __init__(self, stream, out: str | Path, session: str | None = None, quality: int = 95):
         self.stream = stream
         self.out = Path(out)
         self.session = session or datetime.now().strftime("%Y%m%d_%H%M%S")
         self.dir = self.out / self.session
-        self.burst_fps = burst_fps
         self.quality = quality
-        self.tag = TAGS[0]
+        self.last_tag: str | None = None
         self.counts = {t: 0 for t in TAGS}
-        self.bursting = False
         self.last_seq: int | None = None
         self.syncer: "Syncer | None" = None
         self._lock = threading.Lock()
         self._stop = threading.Event()
 
-    def command(self, name: str) -> None:
-        if name in TAGS:
-            self.tag = name
-        elif name == "burst":
-            self.bursting = not self.bursting
-        elif name == "save":
-            self.save()
-        else:
+    def command(self, name: str) -> Path | None:
+        """Capture the latest frame under tag `name` ("in_view" or "not_in_view")."""
+        if name not in TAGS:
             raise ValueError(f"unknown command {name!r}")
+        return self.save(name)
 
-    def save(self) -> Path | None:
-        """Write the latest frame under the current tag. Returns None if there is no new frame."""
+    def save(self, tag: str) -> Path | None:
+        """Write the latest frame under `tag`. Returns None if there is no new frame since the last save."""
         with self._lock:
             frame, seq = self.stream.frame, self.stream.seq
             if frame is None or seq == self.last_seq:
                 return None
-            tag = self.tag
             folder = self.dir / tag
             folder.mkdir(parents=True, exist_ok=True)
             path = folder / f"{self.counts[tag]:05d}.jpg"
@@ -89,25 +82,17 @@ class Capture:
                     w.writerow(["file", "tag", "time", "width", "height"])
                 w.writerow([path.relative_to(self.dir).as_posix(), tag, f"{time.time():.3f}", frame.shape[1], frame.shape[0]])
             self.last_seq = seq
+            self.last_tag = tag
             self.counts[tag] += 1
             return path
 
-    def run(self) -> None:
-        period = 1.0 / max(self.burst_fps, 0.1)
-        while not self._stop.is_set():
-            if self.bursting:
-                self.save()
-            self._stop.wait(period if self.bursting else 0.05)
-
     def stop(self) -> None:
-        self.bursting = False
         self._stop.set()
 
     def snapshot(self) -> dict:
         return {
-            "tag": self.tag,
+            "last_tag": self.last_tag,
             "counts": dict(self.counts),
-            "bursting": self.bursting,
             "folder": str(self.dir),
             "camera": self.stream.info(),
             "sync": self.syncer.snapshot() if self.syncer else None,
@@ -191,21 +176,20 @@ body{background:var(--bg);color:var(--fg);font:400 15px/1.35 Barlow,ui-sans-seri
 .view{padding:20px 0 12px 20px;min-height:0;display:flex}
 .main{position:relative;flex:1;min-height:0;border-radius:18px;overflow:hidden;background:#000;outline:3px solid transparent;outline-offset:-3px;transition:outline-color .2s}
 .main img{width:100%;height:100%;object-fit:contain;display:block}
-.rec .main{outline-color:var(--red)}
 .main.flash{outline-color:var(--fg);transition:none}
+.main.flash.not_in_view{outline-color:var(--red)}
 .side{padding:20px 20px 12px;display:flex;flex-direction:column;gap:14px;min-height:0}
 .tag{display:flex;flex-direction:column;align-items:flex-start;gap:6px;padding:18px 20px;border-radius:16px;border:1px solid var(--line);background:var(--panel);color:var(--mute);font:400 15px Barlow,ui-sans-serif,system-ui,sans-serif;cursor:pointer;text-align:left;transition:border-color .2s,color .2s,background .2s}
 .tag .n{font-weight:200;font-size:72px;line-height:1;letter-spacing:-.03em;color:var(--dim);font-variant-numeric:tabular-nums;transition:color .2s}
 .tag kbd{font:500 12px Barlow,sans-serif;border:1px solid var(--line);border-radius:6px;padding:1px 7px;margin-right:8px;color:var(--fg)}
-.tag.sel{border-color:var(--fg);color:var(--fg);background:#24282d}
-.tag.sel .n{color:var(--fg)}
-.tag:focus-visible,.burst:focus-visible{outline:2px solid var(--fg);outline-offset:2px}
-.burst{margin-top:auto;padding:16px;border-radius:14px;border:1px solid var(--line);background:transparent;color:var(--fg);font:500 16px Barlow,ui-sans-serif,system-ui,sans-serif;cursor:pointer;transition:background .2s,border-color .2s}
-.rec .burst{background:var(--red);border-color:var(--red)}
-.burst kbd{font:500 12px Barlow,sans-serif;border:1px solid currentColor;border-radius:6px;padding:1px 7px;margin-left:10px;opacity:.7}
+.tag .n{color:var(--fg)}
+.tag.hit{border-color:var(--fg);color:var(--fg);background:#24282d;transition:none}
+#not_in_view.hit{border-color:var(--red)}
+.tag:focus-visible{outline:2px solid var(--fg);outline-offset:2px}
+.hint{margin-top:auto;color:var(--mute);font-size:13px}
 .status{grid-column:1/-1;padding:10px 20px 14px;color:var(--mute);font-size:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .status .err{color:var(--red)}
-@media (max-width:820px){body{overflow:auto}.app{grid-template-columns:minmax(0,1fr);height:auto}.view{padding:16px 16px 0}.main{flex:none;width:100%;aspect-ratio:4/3}.side{padding:14px 16px;display:grid;grid-template-columns:1fr 1fr;gap:12px}.tag{padding:14px 16px}.tag .n{font-size:52px}.burst{grid-column:1/-1;margin-top:0}.status{padding:4px 16px 16px;white-space:normal}}
+@media (max-width:820px){body{overflow:auto}.app{grid-template-columns:minmax(0,1fr);height:auto}.view{padding:16px 16px 0}.main{flex:none;width:100%;aspect-ratio:4/3}.side{padding:14px 16px;display:grid;grid-template-columns:1fr 1fr;gap:12px}.tag{padding:14px 16px}.tag .n{font-size:52px}.hint{grid-column:1/-1;margin-top:0}.status{padding:4px 16px 16px;white-space:normal}}
 @media (prefers-reduced-motion:reduce){*{transition:none!important}}
 </style></head>
 <body><div class="app" id="app">
@@ -213,25 +197,23 @@ body{background:var(--bg);color:var(--fg);font:400 15px/1.35 Barlow,ui-sans-seri
 <aside class="side">
  <button class="tag" id="in_view"><span class="n" id="n_in_view">0</span><span><kbd>1</kbd>In view</span></button>
  <button class="tag" id="not_in_view"><span class="n" id="n_not_in_view">0</span><span><kbd>2</kbd>Not in view</span></button>
- <button class="burst" id="burst"><span id="blabel">Start burst</span><kbd>Space</kbd></button>
+ <div class="hint">Tap to capture one frame. Hold to keep capturing.</div>
 </aside>
 <div class="status" id="status">Connecting</div>
 </div>
 <script>
 const $=id=>document.getElementById(id),app=$('app');
-const cap=c=>fetch('/cap/'+c,{method:'POST'}).then(tick);
-let last=null;
-$('in_view').onclick=()=>cap('in_view');$('not_in_view').onclick=()=>cap('not_in_view');$('burst').onclick=()=>cap('burst');
-function flash(){const m=$('main');m.classList.add('flash');setTimeout(()=>m.classList.remove('flash'),120)}
-document.addEventListener('keydown',e=>{if(e.repeat||e.metaKey||e.ctrlKey||e.altKey)return;const k=e.key.toLowerCase();
- if(k==='1')cap('in_view');else if(k==='2')cap('not_in_view');
- else if(k===' '){e.preventDefault();cap('burst')}else if(k==='s'){flash();cap('save')}});
+let last=null,lastShot=0;const HOLD_MS=120;
+function flash(t){const m=$('main'),b=$(t);m.className='main flash '+t;b.classList.add('hit');setTimeout(()=>{m.className='main';b.classList.remove('hit')},90)}
+function cap(t){const now=Date.now();if(now-lastShot<HOLD_MS)return;lastShot=now;flash(t);fetch('/cap/'+t,{method:'POST'}).then(tick)}
+$('in_view').onclick=()=>cap('in_view');$('not_in_view').onclick=()=>cap('not_in_view');
+document.addEventListener('keydown',e=>{if(e.metaKey||e.ctrlKey||e.altKey)return;
+ if(e.key==='1')cap('in_view');else if(e.key==='2')cap('not_in_view')});
 function ago(t){const s=Math.max(0,Math.round(Date.now()/1000-t));return s<60?s+'s ago':Math.round(s/60)+'m ago'}
 function esc(s){return String(s).replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]))}
 async function tick(){try{
  const r=await fetch('/cap/state').then(x=>x.json());
- app.classList.toggle('rec',r.bursting);$('blabel').textContent=r.bursting?'Stop burst':'Start burst';
- for(const t of ['in_view','not_in_view']){$(t).classList.toggle('sel',r.tag===t);$('n_'+t).textContent=r.counts[t]}
+ for(const t of ['in_view','not_in_view'])$('n_'+t).textContent=r.counts[t];
  const c=r.camera,parts=[];
  parts.push(c.error?'<span class="err">Camera '+esc(c.error)+'</span>':'Camera '+(c.size||'waiting')+(c.fps?' at '+c.fps+' fps':''));
  const s=r.sync;
@@ -247,7 +229,7 @@ setInterval(tick,150);tick();
 def make_handler(streams: dict, capture: Capture):
     base = teleop_web.make_handler(streams, None)
     page = PAGE.encode()
-    commands = set(TAGS) | {"burst", "save"}
+    commands = set(TAGS)
 
     class Handler(base):
         def do_GET(self):
@@ -273,7 +255,6 @@ def main() -> None:
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--camera", type=int, required=True, help="OpenCV index of the inspection camera")
     p.add_argument("--out", default="data/inspect_frames")
-    p.add_argument("--burst-fps", type=float, default=5.0)
     p.add_argument("--width", type=int, default=640)
     p.add_argument("--height", type=int, default=480)
     p.add_argument("--host", default="127.0.0.1")
@@ -292,9 +273,8 @@ def main() -> None:
 
     stream = teleop_web.CameraStream("inspect", args.camera, args.width, args.height, 30, 80).start()
     streams = {"inspect": stream}
-    capture = Capture(stream, args.out, args.burst_fps)
+    capture = Capture(stream, args.out)
     capture.syncer = syncer
-    threading.Thread(target=capture.run, name="capture", daemon=True).start()
     if syncer:
         threading.Thread(target=syncer.run, name="sync", daemon=True).start()
     server = ThreadingHTTPServer((args.host, args.port), make_handler(streams, capture))

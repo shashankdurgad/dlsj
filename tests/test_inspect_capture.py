@@ -32,7 +32,7 @@ class FakeStream:
 
 @pytest.fixture
 def cap(tmp_path):
-    return Capture(FakeStream(), tmp_path / "out", burst_fps=5, session="20260101_120000")
+    return Capture(FakeStream(), tmp_path / "out", session="20260101_120000")
 
 
 def rows(c):
@@ -40,65 +40,37 @@ def rows(c):
         return list(csv.DictReader(f))
 
 
-def test_save_writes_jpeg_and_index_row(cap):
-    assert cap.save() is None  # no frame yet
+def test_key_captures_jpeg_and_index_row(cap):
+    assert cap.command("in_view") is None  # no frame yet
     cap.stream.new_frame()
-    path = cap.save()
+    path = cap.command("in_view")
     assert path == cap.dir / "in_view" / "00000.jpg"
     img = cv2.imread(str(path))
     assert img.shape == (48, 64, 3)
     (row,) = rows(cap)
     assert row["file"] == "in_view/00000.jpg" and row["tag"] == "in_view"
     assert (row["width"], row["height"]) == ("64", "48") and float(row["time"]) > 0
+    assert cap.last_tag == "in_view"
 
 
-def test_tags_route_to_folders(cap):
-    cap.stream.new_frame()
-    cap.command("save")
-    cap.command("not_in_view")
-    for _ in range(2):
+def test_each_key_captures_into_its_own_folder(cap):
+    for tag in ["in_view", "not_in_view", "not_in_view", "in_view"]:
         cap.stream.new_frame()
-        cap.command("save")
-    cap.command("in_view")
-    cap.stream.new_frame()
-    cap.command("save")
+        cap.command(tag)
     assert sorted(p.name for p in (cap.dir / "in_view").iterdir()) == ["00000.jpg", "00001.jpg"]
     assert sorted(p.name for p in (cap.dir / "not_in_view").iterdir()) == ["00000.jpg", "00001.jpg"]
     assert [r["tag"] for r in rows(cap)] == ["in_view", "not_in_view", "not_in_view", "in_view"]
     assert cap.counts == {"in_view": 2, "not_in_view": 2}
 
 
-def test_same_frame_never_saved_twice(cap):
+def test_holding_a_key_never_saves_the_same_frame_twice(cap):
     cap.stream.new_frame()
-    assert cap.save() is not None
-    assert cap.save() is None
-    cap.command("not_in_view")
-    assert cap.save() is None  # a tag change does not make the frame new
+    assert cap.command("in_view") is not None
+    assert cap.command("in_view") is None  # key repeat faster than the camera
+    assert cap.command("not_in_view") is None  # the other key does not make the frame new either
     assert len(rows(cap)) == 1
-
-
-def test_burst_toggles_and_saves_new_frames(cap):
-    assert not cap.bursting
-    cap.command("burst")
-    assert cap.bursting
-    cap.burst_fps = 200
-    t = threading.Thread(target=cap.run, daemon=True)
-    t.start()
-    try:
-        for v in range(3):
-            cap.stream.new_frame(v)
-            for _ in range(200):
-                if cap.counts["in_view"] == v + 1:
-                    break
-                threading.Event().wait(0.01)
-        assert cap.counts["in_view"] == 3
-    finally:
-        cap.command("burst")
-        assert not cap.bursting
-        cap.stop()
-        t.join(2)
     with pytest.raises(ValueError):
-        cap.command("nope")
+        cap.command("burst")
 
 
 def test_http_endpoints(cap):
@@ -110,15 +82,14 @@ def test_http_endpoints(cap):
     try:
         assert "<title>Inspect capture</title>" in urllib.request.urlopen(base + "/").read().decode()
         post("not_in_view")
-        post("save")
-        post("burst")
         state = json.loads(urllib.request.urlopen(base + "/cap/state").read())
-        assert state["tag"] == "not_in_view" and state["bursting"]
+        assert state["last_tag"] == "not_in_view"
         assert state["counts"] == {"in_view": 0, "not_in_view": 1}
         assert state["camera"]["size"] == "64x48" and state["sync"] is None
         assert state["folder"].endswith("20260101_120000")
-        with pytest.raises(urllib.error.HTTPError):
-            post("delete_everything")
+        for gone in ("burst", "save", "delete_everything"):
+            with pytest.raises(urllib.error.HTTPError):
+                post(gone)
         assert json.loads(urllib.request.urlopen(base + "/state").read())["cameras"][0]["name"] == "inspect"
     finally:
         srv.shutdown()
