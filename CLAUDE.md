@@ -6,7 +6,7 @@ Hackathon repo for **Intel's challenge at Junction**: end-to-end robotic defect 
 
 ## Hardware
 - SO-101 leader/follower arms.
-- Cameras: a fixed **overhead RealSense D415** RGB-D (needs the table ≥ ~0.45 m away; min depth range) and a **wrist camera**. A 2K webcam is also in the kit (maybe a third view). Objects/bins: Legos and bowls.
+- **Ontology (follow `dlsj`, Desmond's code):** cameras `wrist` (on gripper), `top` (fixed top-down), `inspect` (fixed side camera); objects are **bricks**, destinations are **plates**. Flow: **pick a brick → present it to `inspect` → Anomalib decides → choose a plate per the kickoff rules → place**. Kit devices: RealSense D415 + 2K webcam + the arm's wrist camera.
 - Judging rubric: the six "Technical implementation expectations" in PLAYBOOK's Challenge brief.
 - **Deploy machine:** Dell XPS 16 DA16260: Core Ultra X9 388H, Arc B390 iGPU, NPU, 64 GB, Ubuntu 26.04. Reach it with `ssh xps` (user `intel`, over a teammate's Tailscale network). Setup and environments: PLAYBOOK §1.0.
 - **Training:** cloud/team NVIDIA RTX GPUs.
@@ -14,15 +14,15 @@ Hackathon repo for **Intel's challenge at Junction**: end-to-end robotic defect 
 ## Decisions already made (don't re-litigate without a reason)
 - **VLA:** **π0.5 trained via Physical AI Studio** on cloud RTX, exported to OpenVINO INT8, run with the `physicalai` runtime on the XPS GPU. SmolVLA is the fallback; **ACT is the baseline**. No Chinese VLA beats π0.5 in independent tests (PLAYBOOK §2.1, `reports/XPU kernels and Chinese VLAs.md`).
 - **Device split:** Anomalib on the **NPU** (static shapes); π0.5 on the **GPU**; cameras, rules and control on the **CPU**. Stretch: π0.5 action expert on the NPU.
-- **REASON:** a rule table maps (defect flag, colour, kickoff rules) to a fixed instruction string, which conditions π0.5. Use identical strings in training demos and at run time.
-- **Defect detection:** Anomalib PaDiM/PatchCore on the fixed overhead view (arm parked out of frame), plus a depth height-map check against the table plane. Its anomaly map must also give a **localization signal** (defect box → table coordinates) consumed by REASON.
+- **REASON:** a rule table maps (label, score, region, brick colour/type, kickoff rules) to a plate and a fixed instruction string, which conditions π0.5. Use identical strings in training demos and at run time.
+- **Defect detection:** Anomalib PaDiM/PatchCore on the `inspect` crop of the brick the arm presents, output as a structured `{label, score, region}` signal. The anomaly-map `region` is the **localization signal** consumed by REASON.
 - **Studio is the hub:** environment, recording, remote SSH training on the cloud RTX box, export and Run model all go through the Studio UI on the XPS (PLAYBOOK §4.0). Studio inference only covers GPU/CPU, so NPU work uses our own OpenVINO code.
 - **Force:** gripper `Present_Current` in `observation.state` (never in actions), plus a rule-based grasp check.
 - **OPTIMIZE:** always report baseline vs optimised median/p99 latency (PLAYBOOK §8.1). The LeRobot PyTorch-XPU policy server in `~/inference/.venv` is the baseline.
 - **XPU inference:** follow the PLAYBOOK §4.5 checklist. `torch.compile(mode="reduce-overhead")` is a no-op on XPU; no IPEX; don't quantise ACT.
 
 ## Conventions
-- Record and run at 30 fps on both cameras; RealSense at 640×480@30. Auto-exposure and auto-WB **locked** on both (webcam via `v4l2-ctl`). Never move the overhead camera.
-- VLA export uses 2 cameras (`-c 2`), batched into one vision call.
+- Record with `dlsj.teleop_record` / `dlsj.kinesthetic_web` (`--cameras wrist=..,top=..,inspect=..`), 640×480@30. Calibration lives in `calibration/` (`dlsj.arms`). Auto-exposure and auto-WB **locked** on all cameras. Never move `top` or `inspect`.
+- VLA export uses 3 cameras (`-c 3`), batched into one vision call. ACT export: `python -m dlsj.deploy.act_export`.
 - Apply any sensor filtering (median/EMA) identically at record and inference time.
 - Items marked ⚠️ Unverified in the playbook must be smoke-tested on hardware before relying on them.

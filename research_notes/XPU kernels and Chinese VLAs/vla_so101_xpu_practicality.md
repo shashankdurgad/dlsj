@@ -51,7 +51,7 @@ SmolVLA has the best-documented real SO-101 results: 60–80% pick-and-place fro
 - **VLA-REPLICA (arXiv 2605.20774):** A low-cost real-world VLA benchmark built from off-the-shelf parts. The abstract does not name the robot or the models, and I could not retrieve the PDF (over the size limit). — [arXiv abs](https://arxiv.org/abs/2605.20774)
 
 ### Inferences
-- For a single SO-101 with our two cameras (fixed overhead RealSense RGB-D + wrist RGB webcam), SmolVLA and X-VLA (`action_mode=auto`) are the most likely to work without extra glue code.
+- For a single SO-101 with our three cameras (`wrist`, `top`, `inspect`), SmolVLA and X-VLA (`action_mode=auto`) are the most likely to work without extra glue code.
 
 ### Gaps
 - I found no published SO-101 success rates for X-VLA, EVO1, EO-1, WALL-OSS, LingBot, pi0.5 or any of the non-integrated Chinese models.
