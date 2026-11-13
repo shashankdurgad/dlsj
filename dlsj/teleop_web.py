@@ -164,7 +164,7 @@ class Teleop:
         )
         self.joints = list(self.robot.action_features)  # "shoulder_pan.pos", ...
         self.home = arms.load_home(args.follower_id)
-        inverted = {j.strip() for j in getattr(args, "invert", "wrist_roll").split(",") if j.strip() and j.strip() != "none"}
+        inverted = {j.strip() for j in getattr(args, "invert", "none").split(",") if j.strip() and j.strip() != "none"}
         if unknown := inverted - {j.removesuffix(".pos") for j in self.joints}:
             raise ValueError(f"--invert: unknown joints {sorted(unknown)}")
         # Leader joints whose direction is mirrored relative to the follower (flipped around 0 = mid travel).
@@ -488,7 +488,7 @@ def main() -> None:
     p.add_argument("--leader-port", default="auto", help="'auto' = the arm with a ~5 V servo supply")
     p.add_argument("--calibrate", choices=["follower", "leader", "both"], help="force a fresh calibration")
     p.add_argument("--ramp-speed", type=float, default=30.0, help="deg/s when homing and engaging")
-    p.add_argument("--invert", default="wrist_roll",
+    p.add_argument("--invert", default="none",
                    help="comma list of leader joints to mirror (e.g. wrist_roll,wrist_flex), or 'none'")
     p.add_argument("--match-deg", type=float, default=5.0,
                    help="engage on its own when the leader is within this many degrees of the follower (0 = off)")

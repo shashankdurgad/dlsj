@@ -358,7 +358,7 @@ def main() -> None:
     p.add_argument("--leader-id", default="leader")
     p.add_argument("--calibrate", choices=["follower", "leader", "both"])
     p.add_argument("--ramp-speed", type=float, default=30.0)
-    p.add_argument("--invert", default="wrist_roll",
+    p.add_argument("--invert", default="none",
                    help="leader joints mirrored onto the follower, comma-separated, or 'none' (as teleop_web)")
     p.add_argument("--match-deg", type=float, default=5.0,
                    help="auto-engage once the leader is within this many degrees of the follower (as teleop_web)")
