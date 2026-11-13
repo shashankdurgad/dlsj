@@ -1,6 +1,6 @@
 # SO-101 Robot Learning Hackathon Playbook (Intel XPU)
 
-*Compiled 13 Nov 2026 from the official links plus four research threads: anomaly detection, robustness, speed, and force sensing.*
+*Compiled 13 Nov 2026 from the official links plus four research threads: anomaly detection, robustness, speed, and force sensing. Updated the same day with XPU inference optimisation and a VLA comparison (Sections 2.1, 4.5; full report in `reports/XPU kernels and Chinese VLAs.md`).*
 
 **Hardware:** SO-101 leader/follower arms, wrist-mounted Intel RealSense depth camera (likely D405, ~7–50 cm range), Intel GPU ("XPU"), optional force sensor from a friend.
 **Tasks:** pick-and-place, sorting, anomaly detection.
@@ -21,7 +21,8 @@
 | Sorting | **HSV colour selector (or tiny classifier) → per-bin ACT policy** (or language-conditioned SmolVLA) | All policies score 0–10% on selective colour sorting end-to-end |
 | Anomaly detection | **Anomalib PaDiM/PatchCore** at a **fixed inspection pose**, OpenVINO export; **AnomalyDINO** if few images; plus **depth height-map check** | Intel-native, millisecond inference, works with ~100 good images |
 | Force | **Gripper `Present_Current`** in `observation.state` + rule-based grasp verification; friend's sensor as a stretch | One SO-101 project reported 77.5% → 95% success |
-| Stretch | SmolVLA/π0.5 with Real-Time Chunking, DINOv2 encoder, green-screen-style augmentation | Only with 4+ spare hours |
+| VLA track (parallel) | **π0.5** (SnapFlow 1-step distil → OpenVINO INT8 + RTC) if ≥24 GB; else **SmolVLA**. X-VLA only as a 30-min smoke test | Only VLA with a measured Intel path (172 ms/chunk on Panther Lake); no Chinese VLA beats π0.5 in independent tests (Section 2.1) |
+| Stretch | DINOv2 encoder, green-screen-style augmentation, NPU offload of the action expert | Only with spare hours |
 
 ### Suggested timeline (adapt to remaining hours)
 1. **Hour 0–1:** environment setup (Section 1) and verify the arm and camera; one person starts collecting demos.
@@ -53,7 +54,9 @@ pip3 install torch torchvision torchaudio --index-url https://download.pytorch.o
 python -c "import torch; print(torch.xpu.is_available(), torch.xpu.get_device_name(0))"
 ```
 - FP32, BF16, FP16 and AMP are supported on XPU. **Use bf16.** fp16 `GradScaler` needs hardware FP64, which Arc A-series cards lack.
-- `torch.compile` is supported on XPU.
+- `torch.compile` is supported on XPU, **but `mode="reduce-overhead"` is a silent no-op** (Inductor only graph-captures on CUDA, as of PyTorch 2.15). Use `mode="max-autotune-no-cudagraphs", dynamic=False` and capture graphs manually with `torch.xpu.graph` (PyTorch ≥2.11). See Section 4.5.
+- **Do not install IPEX** (intel-extension-for-pytorch): end-of-life since March 2026 and incompatible with Triton-XPU.
+- Pin one PyTorch version for the whole event; 2.13/2.14 had Inductor regressions of 8–32% on some models.
 
 ### 1.3 Physical AI Studio
 **Docker (recommended):**
@@ -94,7 +97,22 @@ pip install "physicalai[so101,realsense]"
 
 **SO-101 benchmark** ([arXiv 2606.08881](https://arxiv.org/html/2606.08881)), average success: **π0.5 56.25%**, ACT 33.75%, SmolVLA 32.5%. Selective colour sorting was **0–10% for all three**, which is why sorting needs a separate perception step (Section 5.6).
 
-**Decision:** ACT for everything you need working. Try SmolVLA + Real-Time Chunking only with 4+ spare hours and a need for language prompts.
+**Decision:** ACT for everything you need working (guaranteed baseline). Run a VLA as a parallel track (Section 2.1); it earns the demo only if it beats ACT on held-out lighting.
+
+### 2.1 Which VLA (updated after research, see `reports/XPU kernels and Chinese VLAs.md`)
+
+**Chinese VLAs vs π0.5:** none beats π0.5 in independent testing. Each lab wins on a benchmark it chose (saturated LIBERO, its own RoboTwin runs, RoboChallenge Table30). On the independent **RoboDojo** real-robot benchmark ([arXiv 2607.04434](https://arxiv.org/html/2607.04434v1)): π0.5 12.8%, InternVLA-A1 7.2%, Galaxea G0 4.4%, Xiaomi-R0 3.9%, X-VLA 3.3%, DM0 0% (DM0 topped Table30 at 62%). Several do beat SmolVLA: X-VLA 6.52% vs SmolVLA 0.85% in RoboDojo simulation; WALL-X reportedly 51.25% vs 32.5% on SO-101 (blog figure, unchecked).
+
+| Model | Params | LeRobot | Intel path | Verdict |
+|---|---|---|---|---|
+| **π0.5** | 3B | native | Intel OpenVINO + RTC pipeline; Physical AI Studio `pi05/so101/snapflow.yaml` | **Primary** if a 24 GB card (Arc Pro B60) or iGPU with ≥32 GB RAM |
+| **SmolVLA** | ~0.45B | native | Physical AI Studio XPU train + OpenVINO export | **Fallback** on 16 GB cards (A770/B580). Buys language, not success rate, over ACT |
+| **X-VLA** (Tsinghua) | 0.9B | native, SO-101 action modes | PyTorch XPU only, untested on Intel | Best Chinese gamble: 30-min smoke test only |
+| **EVO1** | 0.77B | native, flash-attn optional | PyTorch XPU only, untested on Intel | Smallest Chinese option |
+| WALL-OSS / WALL-X | 4B | native | none | Too big |
+| GR00T, Xiaomi-R0, Spirit, RDT2, InternVLA-A1, Galaxea G0.5 | 3–7B | partial/none | none; GR00T pins flash-attn; G0.5 non-commercial | Avoid |
+
+**Rule:** training memory decides, not accuracy (π0.5/X-VLA/WALL-X need 24–40 GB, "24 GB tight at batch 1"). Time the first 200 training steps; if the projected run exceeds the budget, drop to SmolVLA within the first hour. Porting an out-of-tree repo to XPU (`attn_implementation="sdpa"`, remove flash-attn/xformers/bitsandbytes, replace `.cuda()`) costs a day, not an hour.
 
 ---
 
@@ -183,7 +201,7 @@ model = InferenceModel("./exports/act")          # auto-picks OpenVINO device: G
 ```bash
 physicalai run --config runtime.yaml --run.duration_s=60
 ```
-- **Benchmark:** the runtime has `InferenceLatencyBenchmark` (iterations, warmup, max duration → JSON). No published OpenVINO latencies exist for ACT/SmolVLA/π0.5 on Arc, iGPU or NPU; **measure your own.**
+- **Benchmark:** the runtime has `InferenceLatencyBenchmark` (iterations, warmup, max duration → JSON). The only published reference is Intel's **π0.5 at 172 ms per 50-action chunk** on a Core Ultra X7 358H (Panther Lake iGPU, 3 cameras, 10 steps, OpenVINO + INT8), down from 555 ms PyTorch eager ([Intel paper](https://docs.openedgeplatform.intel.com/shared_media/publication-optimize-pi0.5-paper.pdf), vendor-reported). Nothing is published for ACT/SmolVLA, or for any policy on Arc or Lunar Lake; **measure your own** (median and p99).
 - **π0.5 via Robotics AI Suite:** `uv run --extra pi-ov --with nncf scripts/convert_ov_rtc.py --torch_dir <ckpt> --dataset_path <ds> --ov_output_dir out --compress_int8` (in `src/pipelines/pi05-rtc-ov`).
 
 ### 4.4 Execution speed (task throughput)
@@ -237,6 +255,43 @@ def idle_mask(q, gripper, fps=30, min_run=5, frac=0.02, keep_win=10):
             t += 1
     return ~drop   # True = keep frame
 ```
+
+### 4.5 Kernel / compiler-level inference optimisation on XPU
+
+Full evidence in `reports/XPU kernels and Chinese VLAs.md`. **Key lesson:** on Intel, "kernel-level" mostly means shaping the model so OpenVINO's built-in fusions fire, then graph-capturing what's left. Model-level cuts (1 denoising step, fewer cameras, INT8) beat hand-written kernels; even a fully optimised π0 needs 20–37 ms on an RTX 4090, and an iGPU has ~1/6 of its bandwidth.
+
+**Where π0.5 latency goes** (Intel profile): VLM = 95% of compute (compute-bound); action expert = 4% but **dispatch-bound at ~104 µs per unfused kernel launch**.
+
+**Ordered checklist (VLA; ✓ = also applies to ACT):**
+
+| # | Step | How | Gain |
+|---|---|---|---|
+| 0 ✓ | Pin the stack | PyTorch ≥2.11 XPU, OpenVINO 2026.1+, `xe` kernel driver (not i915) on iGPUs, no IPEX, pin P-cores with `taskset` | Avoids regressions, `CL_OUT_OF_RESOURCES` |
+| 1 ✓ | Shrink the input | 1–2 cameras (wrist + one fixed) at 224², fixed 64 language tokens, chunk 50 | ~7–9 ms per view on a 4090; more on iGPU |
+| 2 | Distil to 1 step | `configs/physicalai/pi05/so101/snapflow.yaml`; SmolVLA: test 3–5 Euler steps | Expert cost ~10× less; LIBERO 98.75% vs 97.75% (10-step) |
+| 3 ✓ | Static-shape OpenVINO IR (+RTC baked in) | π0.5: `convert_ov_rtc.py` in robotics-ai-suite `pi05-rtc-ov`, **set `-c/--camera_num`** (defaults to 4, baked in). ACT/SmolVLA: `physicalai export --backend openvino` | Base of 555 → 172 ms |
+| 4 | INT8 weight-only | `--compress_int8` / `compress_weights_openvino_int8_sym`; validate trajectory MSE/cosine vs PyTorch | >30% faster, half size. **Skip for ACT** (launch-bound, keep FP16) |
+| 5 | One batched vision call | Exported vision IR has batch = n_cams, not n calls | −50–67% vision weight traffic |
+| 6 ✓ | Make fusions fire | Export attention via `F.scaled_dot_product_attention`, standard RMSNorm/SwiGLU. Check `benchmark_app -m model.xml -d GPU -hint latency -pc` shows `sdpa` + GatedMLP kernels and oneDNN GEMMs | Fixes the ~104 µs/launch expert cost |
+| 7 ✓ | Latency config | `{"PERFORMANCE_HINT":"LATENCY","INFERENCE_PRECISION_HINT":"f16","NUM_STREAMS":"1","CACHE_DIR":"./ovcache"}`; pre-allocate and reuse tensors; leave queue throttle default | Full blob caching only for static shapes |
+| 8 ✓ | Async (+ RTC for VLA) | `AsyncExecution(request_threshold=0.5)`, `execution_horizon ≤ chunk/2` | Hides remaining latency (~30% faster tasks for SmolVLA) |
+| 9 | iGPU only: action expert on NPU | Separate compiled models, KV cache shared zero-copy as USM-host tensors; not HETERO. Useless on discrete Arc (PCIe) | Refill ≈ max(VE+LE, AE); power/overlap |
+| 10 | INT4 on VLM only | NNCF `INT4_ASYM`, group 64–128, AWQ + scale estimation; keep expert INT8 | Risky: generic full-stack INT4 collapses π0.5 to 11–16% |
+
+**OpenVINO gotchas:**
+- Dynamic activation quantization is skipped at ≤64 tokens, so the 50-token action expert doesn't get INT8 compute.
+- Custom OpenCL kernels (`CustomLayer` XML) bypass fusions and XMX. Match built-in patterns instead.
+- Set `INFERENCE_PRECISION_HINT` explicitly; the GPU default is ambiguous in the docs.
+- Do not reuse the VLM KV cache across *environment* steps (only across denoising steps within one chunk).
+
+**PyTorch-XPU fallback (if OpenVINO export breaks):**
+- bf16 (or fp16 on Arc A-series) so matmuls hit XMX; `torch.compile(model, mode="max-autotune-no-cudagraphs", dynamic=False)`.
+- **Capture the fixed-step denoising loop (or ACT's single forward) with `torch.xpu.graph`** around static buffers. On Arc A770 it must be forced with `SYCL_UR_USE_LEVEL_ZERO_V2=1 NEOReadDebugKeys=1 OverrideRecordReplayGraphCapability=1` ⚠️ not validated by Intel.
+- Cheap launch-overhead fix without graphs: `NEOReadDebugKeys=1 EnableDirectSubmission=1` (A770 launch ~14 µs → ~3 µs).
+- VLM backbone memory: torchao `Int4WeightOnlyConfig(group_size=128, int4_packing_format="plain_int32")` (1.56–2.14× decode on B580 for 3–4B LLMs); call `unwrap_tensor_subclass_parameters` before compiling. Useless for ACT.
+- Attention: SYCL-TLA FlashAttention is built only for Battlemage and PVC; others use oneDNN SDPA. π0.5's Gemma uses head_dim 256, which may miss the flash path, so time `sdpa_kernel([SDPBackend.FLASH_ATTENTION])` vs `[SDPBackend.OVERRIDEABLE]` on the real card.
+- Custom Triton kernels only for elementwise chains (e.g. the Euler update); use `tl.make_tensor_descriptor` (pointer-style kernels are 2–30× slower; block pointers removed in Triton-XPU v3.9). Leave GEMMs to oneDNN (~14% faster than Triton bf16).
+- Custom SYCL kernels (`torch.utils.cpp_extension.SyclExtension`) are supported but too slow to build for a hackathon.
 
 ---
 
@@ -539,6 +594,8 @@ RealSense ──►│ HSV/classifier → target colour & bin     Anomalib (Open
 - [ ] Augmentation on, **hue ≈ 0** if colour matters.
 - [ ] ACT trained in bf16; `update_s` timed; checkpoint exported to OpenVINO; latency benchmarked.
 - [ ] Async execution working, with no jerks at chunk boundaries.
+- [ ] OpenVINO IR is static-shape; `benchmark_app -pc` shows SDPA/GatedMLP fusions; median + p99 latency logged.
+- [ ] VLA track: first 200 training steps timed; go/no-go on π0.5 vs SmolVLA within the first hour; VLA beats ACT on held-out lighting before it's used in the demo.
 - [ ] Anomaly threshold calibrated **on site**; false-positive rate checked on 20+ good samples.
 - [ ] Grasp check triggers retries correctly.
 - [ ] **10+ trials per condition** for any claim (WARP authors: 1/20 differences are noise).
@@ -550,7 +607,10 @@ RealSense ──►│ HSV/classifier → target colour & bin     Anomalib (Open
 |---|---|
 | `bf16-mixed` / XPU strategy errors in Studio | `precision: 32`; or train with LeRobot `--policy.device=xpu` |
 | LeRobot version lacks new augmentations | Use `ColorJitter` + `SharpnessJitter` only, or pass torchvision v2 transforms |
-| OpenVINO export fails | Run PyTorch eager on XPU; or ONNX backend in `InferenceModel` |
+| OpenVINO export fails | PyTorch on XPU with `torch.compile(mode="max-autotune-no-cudagraphs")` + manual `torch.xpu.graph` (not `reduce-overhead`, a no-op on XPU); or ONNX backend in `InferenceModel` |
+| π0.5 doesn't fit / trains too slowly | SmolVLA (`train_expert_only` / frozen vision encoder); ACT stays the baseline |
+| INT8/INT4 hurts policy accuracy | Check trajectory MSE vs PyTorch; drop to INT8 weight-only or FP16; never generic INT4 on the action expert |
+| A Chinese VLA won't run on XPU | Don't port during the event; stick to LeRobot-native X-VLA/EVO1 smoke tests only |
 | Training too slow | Fewer steps (10–15k), smaller batch, fewer cameras, lower resolution |
 | Policy fails under new lighting | Record 15–20 demos in that condition and fine-tune; don't just train longer |
 | Anomaly false positives | Tighten pose/crop, lock exposure, add jittered good images, raise threshold |
@@ -568,6 +628,12 @@ RealSense ──►│ HSV/classifier → target colour & bin     Anomalib (Open
 - [open-edge-platform/physical-ai-studio](https://github.com/open-edge-platform/physical-ai-studio)
 - [WARP-RM paper (arXiv 2606.28320)](https://arxiv.org/pdf/2606.28320), [code](https://github.com/uynitsuj/WARP-RM), [project page](https://uynitsuj.github.io/warp-rm/)
 - [Flash ALOHA](https://flash-aloha.github.io)
+
+**XPU inference optimisation & VLAs** (details and full citations in `reports/XPU kernels and Chinese VLAs.md`)
+- [Intel: Optimizing π0.5 on Panther Lake (paper)](https://docs.openedgeplatform.intel.com/shared_media/publication-optimize-pi0.5-paper.pdf) · [pi05-rtc-ov pipeline](https://github.com/open-edge-platform/robotics-ai-suite/tree/main/src/pipelines/pi05-rtc-ov)
+- [Running VLAs at Real-time Speed](https://arxiv.org/html/2510.26742v1) · [SnapFlow](https://arxiv.org/pdf/2604.05656) · [QuantVLA](https://arxiv.org/pdf/2602.20309) · [HoloQ-VLA](https://arxiv.org/pdf/2605.28803)
+- [intel-xpu-backend-for-triton](https://github.com/intel/intel-xpu-backend-for-triton) · [torch-xpu-ops #5338 (reduce-overhead on XPU)](https://github.com/intel/torch-xpu-ops/issues/5338) · [PyTorch 2.8 + TorchAO on Intel AI PCs](https://pytorch.org/blog/pytorch-2-8torchao-unlock-efficient-llm-inference-on-intel-ai-pcs/)
+- [RoboDojo benchmark](https://arxiv.org/html/2607.04434v1) · [X-VLA](https://arxiv.org/html/2510.10274v1) · [LeRobot hardware guide](https://huggingface.co/docs/lerobot/main/hardware_guide)
 
 **Training / speed**
 - [LeRobot device_utils.py](https://github.com/huggingface/lerobot/blob/main/src/lerobot/utils/device_utils.py)
