@@ -93,7 +93,7 @@ def recorder(tmp_path):
             repo_id="local/test_kinesthetic", single_task="sort duplo", root=tmp_path / "ds", fps=200,
             video=False, push_to_hub=False, no_stamp=True,
         ),
-        action_lookahead=2, operator="tester", overlay=False, approach_speed=1000.0,
+        action_lookahead=2, operator="tester", overlay=False, approach_speed=1000.0, sounds=False,
     )
     r = rec.KinestheticRecorder(cfg, robot=FakeRobot())
     r.dataset = r._open_dataset()
@@ -111,7 +111,7 @@ def take(r, ticks, gripper_toggle_at=None):
     assert press(r, "1") and r.machine.phase is Phase.RECORDING
     for i in range(ticks):
         if i == gripper_toggle_at:
-            press(r, "space")
+            press(r, "g")
         r._record_tick()
 
 
@@ -204,3 +204,16 @@ def test_quit_mid_take_discards(recorder):
     take(r, 3)
     assert press(r, "q") is False
     assert r.dataset.num_episodes == 0 and r.machine.phase is Phase.IDLE
+
+
+def test_space_starts_and_stops_with_distinct_cues(recorder):
+    r = recorder
+    played = []
+    r.cues.play = played.append
+    press(r, "space")
+    assert r.machine.phase is Phase.RECORDING and played == ["start"]
+    r._record_tick()
+    press(r, "space")
+    assert r.machine.phase is Phase.REVIEW and played == ["start", "stop"]
+    press(r, "h")  # rejecting an already-stopped take does not beep again
+    assert played == ["start", "stop"]

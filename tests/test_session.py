@@ -70,6 +70,9 @@ def test_two_pedals_run_the_whole_loop():
     assert press("1") is Command.START
     assert press("h") is Command.DISCARD and sm.phase is Phase.IDLE  # reject mid-take
     assert press("h") is Command.TOGGLE_HOLD  # idle: release / hold the arm
+    assert press("space") is Command.START  # space bar is the main go key
+    assert press("space") is Command.STOP
+    assert press("space") is Command.SAVE_SUCCESS
 
 
 def test_review_allows_replay_and_failure_but_not_gripper():
@@ -77,7 +80,7 @@ def test_review_allows_replay_and_failure_but_not_gripper():
     sm.handle(Command.START)
     sm.handle(Command.STOP)
     assert sm.handle(km.lookup("r", sm.phase)) is Command.REPLAY and sm.phase is Phase.REVIEW
-    assert sm.handle(km.lookup("space", sm.phase)) is None
+    assert sm.handle(km.lookup("g", sm.phase)) is None
     assert sm.handle(km.lookup("f", sm.phase)) is Command.SAVE_FAILURE and sm.phase is Phase.IDLE
 
 

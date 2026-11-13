@@ -49,16 +49,16 @@ class Command(Enum):
 class KeyMap:
     """Canonical key names from `lerobot.utils.keyboard_input.create_key_listener`.
 
-    A two-pedal foot switch maps to `go` (left pedal, types '1') and `reject` (right pedal, types 'h'),
-    as in Flash ALOHA. The two pedals alone run the whole loop: 1 start, 1 stop, 1 accept, h reject.
+    Space bar is `go`: start a take, stop it, accept it. A two-pedal foot switch can map its left pedal
+    to space (or '1') and its right pedal to 'h' (reject), as in Flash ALOHA; the two alone run the loop.
     """
 
-    go: tuple[str, ...] = ("1", "s", "enter")
+    go: tuple[str, ...] = ("space", "1", "s", "enter")
     reject: tuple[str, ...] = ("h", "x", "backspace", "left")
     success: tuple[str, ...] = ("n", "right")  # LeRobot's "next" key: save straight away as success
     failure: tuple[str, ...] = ("f",)
     replay: tuple[str, ...] = ("r",)
-    gripper_toggle: tuple[str, ...] = ("space", "g")
+    gripper_toggle: tuple[str, ...] = ("g", "tab")
     gripper_open_more: tuple[str, ...] = ("up",)
     gripper_close_more: tuple[str, ...] = ("down",)
     start_pose: tuple[str, ...] = ("p",)

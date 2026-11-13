@@ -6,7 +6,8 @@ stays powered and is driven by keys or a foot pedal, so both hands stay on the a
 
 The workflow follows Flash ALOHA's hand-guided collector (MIT, see THIRD_PARTY_NOTICES.md):
 
-1. **Take.** Press go to release the arm and record. Press go again to stop.
+1. **Take.** Press space to release the arm and record (rising beep). Press space again to stop
+   (falling beep).
 2. **Review.** The arm is held at its last pose. You can then:
    * accept (go / n)
    * save as a failure (f)
@@ -42,11 +43,11 @@ Example:
         --dataset.fps=30 --dataset.episode_time_s=30 --dataset.push_to_hub=false \
         --dataset.streaming_encoding=true --operator=alice --target_s=8
 
-Keys (two-pedal foot switch: left pedal = 1, right pedal = h):
-  1 / s / Enter    go: start a take / stop it / accept it / start a replay
+Keys (two-pedal foot switch: left pedal = space or 1, right pedal = h):
+  SPACE / 1        go: start a take (beep-beep) / stop it (low beep) / accept it / start a replay
   h / x / Bksp     reject: discard the take, or cancel a replay. Between takes: hold or release the arm
   n / Right        save as SUCCESS now        f: save as FAILURE        r: (in review) replay the take
-  space / g        toggle the gripper         up / down: nudge the gripper
+  g / Tab          toggle the gripper         up / down: nudge the gripper
   p                save the current pose as the start pose
   q / Esc          quit (an unsaved take is discarded)
 """
@@ -74,6 +75,7 @@ from lerobot.utils.keyboard_input import create_key_listener
 from lerobot.utils.robot_utils import precise_sleep
 from lerobot.utils.utils import init_logging
 
+from .sounds import Cues
 from .session import (
     ActionLookahead,
     Command,
@@ -114,6 +116,8 @@ class KinestheticRecordConfig:
     overlay_camera: str | None = None
     # Log raw Present_Current / Present_Load per frame to meta/dlsj/telemetry (not a policy input).
     telemetry: bool = True
+    # Beep when recording starts (rising) and stops (falling).
+    sounds: bool = True
     operator: str = ""
     resume: bool = False
 
@@ -150,6 +154,7 @@ class KinestheticRecorder:
         self.lookahead = ActionLookahead(cfg.action_lookahead, self.joint_names)
         self.gripper = GripperCommand(cfg.gripper_open, cfg.gripper_closed, cfg.gripper_step)
         self.stats = EpisodeStats()
+        self.cues = Cues(cfg.sounds)
         self.keys: queue.Queue[str] = queue.Queue()
         self.arm_held = True  # LeRobot's configure() leaves torque on after connect
         self.dataset: LeRobotDataset | None = None
@@ -249,7 +254,8 @@ class KinestheticRecorder:
         if self.arm_held:
             self._release_arm()
         self._take_start = time.perf_counter()
-        _say(f"● REC take for episode {self.dataset.num_episodes}  (1 stop, h reject, n/f save)")
+        self.cues.play("start")
+        _say(f"● REC take for episode {self.dataset.num_episodes}  (space stop, h reject, n/f save)")
 
     def _write(self, frames: list[dict]) -> None:
         for f in frames:
@@ -280,13 +286,14 @@ class KinestheticRecorder:
         if self._take_closed:
             return
         self._take_duration = time.perf_counter() - self._take_start
+        self.cues.play("stop")
         self._write(self.lookahead.flush())
         self._take_closed = True
         self._hold_arm()
 
     def _enter_review(self, reason: str) -> None:
         self._close_take()
-        _say(f"■ {reason}: {self._take_duration:.1f}s, {self._frames_written} frames. Review: 1/n accept, "
+        _say(f"■ {reason}: {self._take_duration:.1f}s, {self._frames_written} frames. Review: space/n accept, "
              "f failure, r replay on robot, h reject")
 
     def _finish_take(self, cmd: Command) -> None:
@@ -373,7 +380,7 @@ class KinestheticRecorder:
         if live is None or live.shape != self._first_image.shape:
             return
         blend = cv2.addWeighted(self._first_image, 0.5, live, 0.5, 0)
-        cv2.imshow("take start vs live (1 = replay, h = cancel)", cv2.cvtColor(blend, cv2.COLOR_RGB2BGR))
+        cv2.imshow("take start vs live (space = replay, h = cancel)", cv2.cvtColor(blend, cv2.COLOR_RGB2BGR))
         cv2.waitKey(1)
 
     def _close_overlay(self) -> None:
@@ -389,8 +396,8 @@ class KinestheticRecorder:
         actions = np.stack(self._take_actions)
         first = dict(zip(self.motor_names, map(float, actions[0]), strict=True))
         self._move_to(first)
-        if not self._wait_go_or_reject("At the take's first pose. Reset the scene, then 1 = replay, h = cancel"):
-            _say("replay cancelled. Review: 1/n accept, f failure, r replay, h reject")
+        if not self._wait_go_or_reject("At the take's first pose. Reset the scene, then space = replay, h = cancel"):
+            _say("replay cancelled. Review: space/n accept, f failure, r replay, h reject")
             return
         measured, sent = [], []
         stopped = False
@@ -426,7 +433,7 @@ class KinestheticRecorder:
              f"(take {self._take_duration:.1f}s) | {rep.format('deg')}")
         if worst_arm > 10.0:
             _say("⚠ arm tracking error > 10 deg: this take may be too fast for the servos to reproduce")
-        _say("Review: 1/n accept, f failure, r replay again, h reject")
+        _say("Review: space/n accept, f failure, r replay again, h reject")
 
     # ---------------------------------------------------------------- keys
     def _apply(self, cmd: Command) -> bool:
@@ -498,10 +505,10 @@ class KinestheticRecorder:
             self._load_start_pose()
             if cfg.go_to_start and self.start_pose:
                 self._move_to(self.start_pose)
-            listener = create_key_listener(self.keys.put, controls_help="1 go, h reject, q quit")
+            listener = create_key_listener(self.keys.put, controls_help="space go, h reject, q quit")
             print("Keys" + __doc__.split("Keys", 1)[1])
             _say(f"dataset: {self.dataset.root}")
-            _say("Arm is HELD. Hold it, then press 1 to start a take (torque is released when recording starts).")
+            _say("Arm is HELD. Hold it, then press SPACE to start a take (torque is released when recording starts).")
             with VideoEncodingManager(self.dataset):
                 last_status = 0.0
                 while True:
@@ -524,7 +531,7 @@ class KinestheticRecorder:
                     elif phase is Phase.IDLE and t0 - last_status > 0.25:
                         g = self.bus.read("Present_Position", GRIPPER)
                         _status(f"idle | arm {'HELD' if self.arm_held else 'free'} | gripper measured {g:.1f} "
-                                f"target {self.gripper.target:.0f} | {self.stats.summary()} | 1 start, h hold, q quit")
+                                f"target {self.gripper.target:.0f} | {self.stats.summary()} | space start, h hold, q quit")
                         last_status = t0
                     precise_sleep(max(0.0, self.period - (time.perf_counter() - t0)))
         finally:
