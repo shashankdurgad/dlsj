@@ -370,7 +370,7 @@ PAGE = r"""<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Rec
 <link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Barlow:wght@200;300;400;500;600&display=swap" rel="stylesheet">
 <style>
-:root{--bg:#15171a;--panel:#1d2024;--line:#2b2f35;--fg:#f1f2f4;--mute:#80868f;--dim:#4a4f57;--red:#e31937;--glow:#e9f2ff}
+:root{--bg:#15171a;--panel:#1d2024;--line:#2b2f35;--fg:#f1f2f4;--mute:#80868f;--dim:#4a4f57;--red:#e31937;--glow:#e9f2ff;--ok:#2fd27a}
 *{box-sizing:border-box;margin:0}
 html,body{height:100%}
 body{background:var(--bg);color:var(--fg);font:400 15px/1.35 Barlow,ui-sans-serif,system-ui,sans-serif;-webkit-font-smoothing:antialiased;overflow:hidden}
@@ -423,7 +423,16 @@ body{background:var(--bg);color:var(--fg);font:400 15px/1.35 Barlow,ui-sans-seri
 .mbar{position:relative;height:6px;border-radius:4px;background:var(--line)}
 .mbar i{position:absolute;inset:0 auto 0 0;width:0;border-radius:4px;background:var(--mute);transition:width .1s}
 .mbar b{position:absolute;top:-5px;bottom:-5px;width:1.5px;background:var(--fg);opacity:.6}
-.inview .mbar i{background:var(--glow)}
+.inview .mbar i{background:var(--ok)}
+.main{transition:box-shadow .12s}
+.iv .main{box-shadow:inset 0 0 0 8px var(--ok),0 0 60px rgba(47,210,122,.55)}
+.ivbadge{position:absolute;left:50%;top:22px;transform:translate(-50%,-8px) scale(.96);opacity:0;pointer-events:none;
+ background:var(--ok);color:#06200f;font:600 40px/1 Barlow,ui-sans-serif,system-ui,sans-serif;padding:16px 34px;border-radius:999px;
+ box-shadow:0 10px 40px rgba(47,210,122,.5);transition:opacity .12s,transform .12s}
+.iv .ivbadge{opacity:1;transform:translate(-50%,0) scale(1)}
+.iv .thumb.seen{outline-color:var(--ok);box-shadow:0 0 22px rgba(47,210,122,.6)}
+.iv .guide.hit{border-color:var(--ok);box-shadow:0 0 24px rgba(47,210,122,.55),inset 0 0 24px rgba(47,210,122,.3)}
+@media (max-width:900px){.ivbadge{font-size:26px;padding:10px 22px}}
 .tally{margin-top:auto;display:flex;justify-content:space-between;color:var(--mute);font-size:14px}
 .tally b{display:block;color:var(--fg);font-weight:300;font-size:30px;font-variant-numeric:tabular-nums}
 .keys{grid-column:1/-1;display:flex;gap:26px;padding:12px 20px 16px;color:var(--mute);font-size:13px;border-top:1px solid var(--line)}
@@ -433,7 +442,7 @@ body{background:var(--bg);color:var(--fg);font:400 15px/1.35 Barlow,ui-sans-seri
 @media (prefers-reduced-motion:reduce){*{transition:none!important}}
 </style></head>
 <body><div class="app" id="app">
-<section class="view"><div class="main" id="mainbox"><img id="mainimg" alt=""><div class="guide" id="mguide"></div><div class="name" id="mainname"></div></div><div class="thumbs" id="thumbs"></div></section>
+<section class="view"><div class="main" id="mainbox"><img id="mainimg" alt=""><div class="guide" id="mguide"></div><div class="ivbadge" aria-live="polite">In view</div><div class="name" id="mainname"></div></div><div class="thumbs" id="thumbs"></div></section>
 <aside class="cluster">
  <div class="state" id="state"><span><span class="dot"></span><b id="arm">Connecting</b></span><span id="eps"></span></div>
  <div class="gauge"><svg viewBox="0 0 300 300"><circle class="ring" cx="150" cy="150" r="140"/><circle class="arc" id="arc" cx="150" cy="150" r="140" stroke-dasharray="0 880"/></svg>
@@ -490,7 +499,7 @@ async function tick(){try{
  $('s1').classList.toggle('on',active&&now>=1);$('s2').classList.toggle('on',active&&now>=2);
  if(r.inspect_camera&&thumbs[r.inspect_camera])thumbs[r.inspect_camera].classList.toggle('seen',r.in_view);
  bowls(r);guides(r);
- $('meter').style.display=(r.inspect_camera&&r.threshold)?'':'none';$('meter').classList.toggle('inview',r.in_view);
+ $('meter').style.display=(r.inspect_camera&&r.threshold)?'':'none';$('meter').classList.toggle('inview',r.in_view);app.classList.toggle('iv',!!r.in_view);
  $('mfill').style.width=Math.min(100,100*(r.prob||0))+'%';$('mthr').style.left=r.threshold?(100*r.threshold)+'%':'-9px';
  const cue=recording&&r.stage==='place';app.classList.toggle('cue',cue);
  $('msg').textContent=cue?(r.bowl?'Place in the '+r.bowl+' bowl':'In view. Choose a bowl (1\u20133)'):(r.message||(r.phase==='review'?'Space to save':(recording?'Centre the brick in the dashed square':'')));
