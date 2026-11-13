@@ -177,11 +177,12 @@ def calibrate_from_rest(device) -> None:
     print("Calibration saved to", device.calibration_fpath)
 
 
-def ensure_calibrated(device, label: str, force: bool = False) -> bool:
+def ensure_calibrated(device, label: str, force: bool = False, after_calibration=None) -> bool:
     """Connect `device` (LeRobot robot or teleop), calibrating until the result passes `calibration_problems`.
 
     Unlike plain `connect()`, a stored file that is valid is used without the "press ENTER" prompt, and a bad
-    one (or `force`) triggers a fresh calibration.
+    one (or `force`) triggers a fresh calibration. `after_calibration(device)` runs right after a fresh
+    calibration, while torque is still off (e.g. to capture the home pose by hand).
     """
     device.bus.connect()
     stored = device.calibration if device.calibration_fpath.exists() else {}
@@ -196,13 +197,40 @@ def ensure_calibrated(device, label: str, force: bool = False) -> bool:
         print(f"\n=== Calibrating {label.upper()} from its REST pose ===")
         calibrate_from_rest(device)
         recalibrated = True
+        if after_calibration is not None:
+            after_calibration(device)
     # Advisory only: with use_degrees the range just sets the centre and the clamp, so we never block.
     warn = calibration_problems(_as_plain(device.calibration))
     if warn:
         log.warning("%s calibration notes (not blocking; --calibrate %s to redo):\n  - %s",
                     label, label, "\n  - ".join(warn))
-    device.configure()
+    if hasattr(device, "send_action"):  # follower only; a goal write also switches a Feetech servo's torque on
+        hold_present_goal(device.bus, label)
+    device.configure()  # LeRobot enables torque at the end of this for a follower
     return recalibrated
+
+
+def hold_present_goal(bus, label: str = "") -> None:
+    """Set every motor's Goal_Position to where it is now, with torque off.
+
+    Feetech servos drive to the stored goal the moment torque is enabled. A stale goal (we found 0 on every
+    joint after another tool had used the arm) makes the follower lunge to its limits at full torque, buzz
+    against them and brown out the bus. LeRobot's configure() does not reset it, so we do. Note the write itself
+    switches torque on (Feetech behaviour); with goal == present the arm just holds still.
+    """
+    bus.disable_torque()
+    present = bus.sync_read("Present_Position", normalize=False, num_retry=5)
+    goal = bus.sync_read("Goal_Position", normalize=False, num_retry=5)
+    stale = {m: (int(goal[m]), int(p)) for m, p in present.items() if abs(int(goal[m]) - int(p)) > 20}
+    if stale:
+        log.warning("%s: stale goal positions reset to present (goal, present): %s", label, stale)
+    target = {m: int(p) for m, p in present.items()}
+    for _ in range(5):  # sync_write is fire-and-forget: read back until every goal took
+        bus.sync_write("Goal_Position", target, normalize=False)
+        goal = bus.sync_read("Goal_Position", normalize=False, num_retry=5)
+        if all(abs(int(goal[m]) - target[m]) <= 2 for m in target):
+            return
+    raise RuntimeError(f"{label}: could not set goal positions to present; not enabling torque")
 
 
 # ----------------------------------------------------------------------------- home pose
@@ -213,6 +241,21 @@ def home_pose_path(follower_id: str) -> Path:
 def load_home(follower_id: str) -> dict[str, float] | None:
     p = home_pose_path(follower_id)
     return json.loads(p.read_text()) if p.exists() else None
+
+
+def capture_home(device, follower_id: str, prompt=input) -> Path:
+    """Ask for the folded REST pose with torque off and save it as the follower's home pose.
+
+    Any previous home (in the old calibration's angles) is set aside first.
+    """
+    stale = retire_home(follower_id)
+    if stale:
+        log.info("old home pose moved to %s", stale.name)
+    prompt("\nLast step: fold the follower back into its REST pose (this becomes HOME) and press ENTER...")
+    pos = device.bus.sync_read("Present_Position", num_retry=5)  # normalised with the new calibration
+    p = save_home(follower_id, {f"{m}.pos": float(v) for m, v in pos.items()})
+    print("Home pose saved to", p)
+    return p
 
 
 def retire_home(follower_id: str) -> Path | None:

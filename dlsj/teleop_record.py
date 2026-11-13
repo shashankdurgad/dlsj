@@ -1,30 +1,35 @@
-"""Record teleop demos into a LeRobot v3 dataset from a browser: http://localhost:8000.
+"""Record teleop demos of pick → inspect → place into a LeRobot v3 dataset, from a browser.
 
-Built on `dlsj.teleop_web`, which runs the leader-to-follower control loop, the home/engage logic and
-the camera threads. This module adds a recorder that samples that loop at the dataset rate, plus a
-recording page.
+    uv run python -m dlsj.teleop_record --cameras top=2,wrist=0,inspect=4 \
+        --repo-id local/duplo_teleop --bowls yellow,purple,orange --operator alice --target-s 8
 
-    uv run python -m dlsj.teleop_record --cameras wrist=0,top=2,inspect=4 \
-        --repo-id local/duplo_teleop --task "Pick a brick and present it to the inspection camera" \
-        --operator alice --target-s 6
+Open http://localhost:8000.
 
-Keys in the browser (they work on Wayland too, unlike global key capture):
-  SPACE        start a take (rising beep) / stop it (falling beep) / accept it
-  f            save the stopped take as a FAILURE
-  h / Bksp     discard the take
-  e            engage / hold the follower
+One take is one continuous demo:
+1. Pick the brick and hold it in front of the inspection camera.
+2. When it is properly in front of the inspection camera, tap space to mark the moment (the classifier's
+   green "In view" is a guide). Pause for about half a second, as the deployed system will while it inspects.
+3. Place the brick in the bowl of your choice. Choose the bowl with 1/2/3 at any point before saving.
 
-Each frame stores:
-* `observation.state`: the follower's measured joints.
-* `action`: the command sent to the follower, i.e. the leader pose, as in `lerobot-record`.
-* `observation.images.<cam>`: one image per camera.
+Every frame stores a task string:
+* frames before the in-view moment get `--pick-task`;
+* frames after it get `--place-task` with the chosen colour.
 
-Frames are only recorded while the follower is live, i.e. following the leader. Labels (success, duration,
-operator, method) go to `meta/dlsj/labels.jsonl`, the same format as the kinesthetic recorder, so the two
-datasets can be mixed.
+LeRobot keeps a task per frame, so one dataset trains a language-conditioned policy for both stages.
+`meta/dlsj/labels.jsonl` records the split frame and bowl for each episode.
+
+The policy never sees good or defective. At deployment the controller turns the inspection verdict into a
+bowl colour and prompts "place the brick in the <colour> bowl".
+
+Keys while the page is focused:
+  space     start, mark in view, stop, save and start the next take (--no-continuous: just save)
+  enter     save and pause                                     1 2 3   choose bowl         i   mark in view
+  f         save as failed           h       discard             e   engage or hold the arm
+  d         show what the in-view detector sees                 v   one or two camera views
 """
 
 import argparse
+import contextlib
 import json
 import logging
 import queue
@@ -37,45 +42,77 @@ import cv2
 import numpy as np
 
 from dlsj import arms, teleop_web
+from dlsj.inspect_detect import BrickInViewDetector, DetectorConfig
 from dlsj.kinesthetic.session import EpisodeStats
 
 log = logging.getLogger("teleop_record")
+
+PICK_TASK = "pick up the brick and hold it in front of the inspection camera"
+PLACE_TASK = "place the brick in the {colour} bowl"
 
 
 class EpisodeRecorder:
     """Samples `teleop.latest` and the camera streams at `fps` into a LeRobot dataset.
 
-    Phases: idle -> recording -> review -> (saving) -> idle. A take is only written by accept/fail.
+    Phases: idle → recording → review → (saving) → idle. Within a take, the stage goes pick → place
+    when the inspection camera sees the held brick (or the operator presses i).
     """
 
-    def __init__(self, teleop, streams: dict, repo_id: str, task: str, fps: int = 30, root: str | Path | None = None,
-                 episode_time_s: float = 60.0, operator: str = "", vcodec: str = "h264", resume: bool = False):
+    def __init__(self, teleop, streams: dict, repo_id: str, fps: int = 30, root: str | Path | None = None,
+                 episode_time_s: float = 60.0, operator: str = "", vcodec: str = "h264", resume: bool = False,
+                 bowls: list[str] | None = None, pick_task: str = PICK_TASK, place_task: str = PLACE_TASK,
+                 inspect_camera: str | None = "inspect", detector: BrickInViewDetector | None = None,
+                 record_depth: bool = True, auto_split: bool = False, continuous: bool = True,
+                 streaming_encoding: bool = True):
         self.teleop, self.streams = teleop, streams
-        self.repo_id, self.task, self.fps = repo_id, task, fps
+        self.repo_id, self.fps = repo_id, fps
         self.root = Path(root) if root else Path("data") / repo_id.split("/")[-1]
         self.episode_time_s, self.operator, self.vcodec, self.resume = episode_time_s, operator, vcodec, resume
+        self.bowls = bowls or ["yellow", "purple", "orange"]
+        self.pick_task, self.place_task = pick_task, place_task
+        if "{colour}" not in place_task:
+            raise ValueError("--place-task must contain {colour}")
+        self.inspect_camera = inspect_camera if inspect_camera in streams else None
+        self.detector = detector or BrickInViewDetector()
+        # By default the operator marks the in-view moment (space). With auto_split the classifier does.
+        self.auto_split = auto_split
+        # continuous: saving a take immediately starts the next one, so takes chain without pausing
+        self.continuous, self.streaming_encoding = continuous, streaming_encoding
+        # RealSense streams carry aligned depth; it is recorded as observation.images.<cam>_depth (uint16 mm)
+        self.depth_cams = [n for n, s in streams.items() if record_depth and getattr(s, "use_depth", False)]
+        self.depth_shapes: dict[str, tuple[int, int, int]] = {}
         self.joints = list(teleop.joints)
         self.phase = "idle"
-        self.message = "engage the follower, then press SPACE to record"
+        self.message = ""
         self.dataset = None
         self.cam_shapes: dict[str, tuple[int, int, int]] = {}
         self.stats = EpisodeStats()
         self.commands: queue.Queue[str] = queue.Queue()
         self.lock = threading.Lock()
         self._stop = threading.Event()
+        self.saved = {"success": 0, "failure": 0}
+        self.bowl: str | None = None
+        self._reset_take()
+
+    def _reset_take(self) -> None:
         self._take_start = 0.0
         self._take_duration = 0.0
         self._frames = 0
         self._paused_ticks = 0
-        self.saved = {"success": 0, "failure": 0}
+        self.stage = "pick"
+        self.split_frame: int | None = None
+        self.split_auto = False
+        self.classifier_frame: int | None = None  # first frame the classifier said "in view", for comparison
 
     # ------------------------------------------------------------------ dataset
     def _wait_for_cameras(self, timeout_s: float = 20.0) -> None:
         t_end = time.monotonic() + timeout_s
         while time.monotonic() < t_end:
             frames = {n: s.frame for n, s in self.streams.items()}
-            if all(f is not None for f in frames.values()):
+            depths = {n: self.streams[n].depth for n in self.depth_cams}
+            if all(f is not None for f in frames.values()) and all(d is not None for d in depths.values()):
                 self.cam_shapes = {n: f.shape for n, f in frames.items()}
+                self.depth_shapes = {f"{n}_depth": (d.shape[0], d.shape[1], 1) for n, d in depths.items()}
                 return
             time.sleep(0.1)
         missing = [n for n, s in self.streams.items() if s.frame is None]
@@ -88,7 +125,9 @@ class EpisodeRecorder:
         joints = {j: float for j in self.joints}
         return {
             **hw_to_dataset_features(joints, ACTION, use_video=True),
-            **hw_to_dataset_features({**joints, **self.cam_shapes}, OBS_STR, use_video=True),
+            **hw_to_dataset_features({**joints, **self.cam_shapes, **self.depth_shapes}, OBS_STR, use_video=True),
+            **({"inspect.prob": {"dtype": "float32", "shape": (1,), "names": ["p_in_view"]}}
+               if self.inspect_camera else {}),
         }
 
     def open_dataset(self) -> None:
@@ -97,7 +136,9 @@ class EpisodeRecorder:
 
         self._wait_for_cameras()
         n = max(1, len(self.streams))
-        kw = dict(root=self.root, image_writer_threads=4 * n, rgb_encoder=RGBEncoderConfig(vcodec=self.vcodec))
+        # streaming encoding: videos are encoded while recording, so saving a take is near-instant
+        kw = dict(root=self.root, image_writer_threads=4 * n, rgb_encoder=RGBEncoderConfig(vcodec=self.vcodec),
+                  streaming_encoding=self.streaming_encoding)
         if self.resume and (self.root / "meta" / "info.json").exists():
             self.dataset = LeRobotDataset.resume(self.repo_id, **kw)
             want = set(self.features())
@@ -127,45 +168,84 @@ class EpisodeRecorder:
         latest = getattr(self.teleop, "latest", None)
         return latest is not None and latest.get("phase") == "live"
 
+    def _current_task(self) -> str:
+        if self.stage == "pick":
+            return self.pick_task
+        return self.place_task.format(colour=self.bowl or "?")
+
+    def _split(self, auto: bool) -> None:
+        self.split_frame, self.split_auto, self.stage = self._frames, auto, "place"
+        self.message = ""  # the stage track and the chime show it
+
     def _handle(self, c: str) -> None:
+        if c == "enter":
+            c = "accept_pause" if self.phase == "review" else ""
         if c == "space":
-            c = {"idle": "start", "recording": "stop", "review": "accept"}.get(self.phase, "")
-        if c == "start" and self.phase == "idle":
-            if not self._teleop_live():
-                self.message = "follower is not live: press ENGAGE (e) first"
-                return
-            self._frames, self._paused_ticks = 0, 0
-            self._take_start = time.perf_counter()
-            self.phase, self.message = "recording", "recording: SPACE to stop"
-        elif c == "stop" and self.phase == "recording":
-            self._to_review("stopped")
-        elif c in ("accept", "fail") and self.phase in ("recording", "review"):
             if self.phase == "recording":
-                self._to_review("stopped")
-            self._save(success=c == "accept")
+                c = "inview" if self.stage == "pick" else "stop"
+            else:
+                c = {"idle": "start", "review": "accept"}.get(self.phase, "")
+        if c.startswith("bowl") and c[4:].isdigit():
+            i = int(c[4:]) - 1
+            if 0 <= i < len(self.bowls) and self.phase != "saving":
+                self.bowl = self.bowls[i]
+            return
+        if c == "inview" and self.phase == "recording" and self.stage == "pick":
+            self._split(auto=False)
+        elif c == "start" and self.phase == "idle":
+            if not self._teleop_live():
+                self.message = "Engage the arm first"
+                return
+            self._reset_take()
+            self.detector.reset()
+            self._take_start = time.perf_counter()
+            self.phase, self.message = "recording", ""
+        elif c == "stop" and self.phase == "recording":
+            self._to_review()
+        elif c in ("accept", "accept_pause", "fail") and self.phase in ("recording", "review"):
+            if self.phase == "recording":
+                self._to_review()
+            success = c != "fail"
+            if success and self.split_frame is None:
+                self.message = "Mark the in-view moment first (space or i), or save as failed (f)"
+                return
+            if success and self.bowl is None:
+                self.message = "Choose a bowl (1–3)"
+                return
+            self._save(success=success)
+            if self.continuous and c != "accept_pause" and self.phase == "idle":
+                self._handle("start")  # chain straight into the next take
         elif c == "discard" and self.phase in ("recording", "review"):
             self.dataset.clear_episode_buffer()
-            self.phase, self.message = "idle", f"discarded ({self._take_duration or time.perf_counter() - self._take_start:.1f}s)"
-            self._take_duration = 0.0
+            self.phase, self.message = "idle", "Discarded"
+            self._reset_take()
 
-    def _to_review(self, why: str) -> None:
+    def _to_review(self) -> None:
         self._take_duration = time.perf_counter() - self._take_start
         self.phase = "review"
-        self.message = (f"{why} after {self._take_duration:.1f}s, {self._frames} frames: "
-                        "SPACE accept, f failure, h discard")
 
     def _save(self, success: bool) -> None:
         if self._frames == 0:
             self.dataset.clear_episode_buffer()
-            self.phase, self.message = "idle", "nothing recorded"
+            self.phase, self.message = "idle", "Nothing recorded"
+            self._reset_take()
             return
-        self.phase, self.message = "saving", "saving episode…"
+        self.phase, self.message = "saving", "Saving"
+        place = self.place_task.format(colour=self.bowl) if self.bowl else None
+        if self.split_frame is not None and place:
+            tasks = self.dataset.writer.episode_buffer["task"]
+            for i in range(self.split_frame, len(tasks)):
+                tasks[i] = place  # frames recorded before the bowl was chosen get the final instruction
         ep = self.dataset.num_episodes
         self.dataset.save_episode()
         label = {
             "episode_index": ep, "success": success, "duration_s": round(self._take_duration, 3),
             "n_frames": self._frames, "paused_ticks": self._paused_ticks, "method": "teleop",
-            "operator": self.operator, "task": self.task, "recorded_at": datetime.now().isoformat(timespec="seconds"),
+            "inspection_frame": self.split_frame, "inspection_auto": self.split_auto,
+            "inspection_marked_by": None if self.split_frame is None else ("classifier" if self.split_auto else "operator"),
+            "classifier_inview_frame": self.classifier_frame, "bowl": self.bowl,
+            "pick_task": self.pick_task, "place_task": place, "operator": self.operator,
+            "recorded_at": datetime.now().isoformat(timespec="seconds"),
         }
         with open(self.sidecar / "labels.jsonl", "a") as fh:
             fh.write(json.dumps(label) + "\n")
@@ -173,8 +253,9 @@ class EpisodeRecorder:
         if success:
             self.stats.add(self._take_duration)
         self.phase = "idle"
-        self.message = f"saved episode {ep} as {'SUCCESS' if success else 'FAILURE'} ({self._take_duration:.1f}s)"
-        self._take_duration = 0.0
+        self.message = f"Saved episode {ep}" if success else f"Saved episode {ep} as failed"
+        self.bowl = None  # choose again for the next take, so a stale choice can't mislabel it
+        self._reset_take()
 
     # ------------------------------------------------------------------ sampling
     def _frame(self) -> dict | None:
@@ -184,26 +265,50 @@ class EpisodeRecorder:
         frame = {
             "observation.state": np.asarray(latest["follower"], dtype=np.float32),
             "action": np.asarray(latest["cmd"], dtype=np.float32),
-            "task": self.task,
+            "task": self._current_task(),
         }
+        if self.inspect_camera:
+            frame["inspect.prob"] = np.array([self._prob()], dtype=np.float32)
         for name, stream in self.streams.items():
-            img = stream.frame
-            if img is None:
+            lock = getattr(stream, "cond", None) or contextlib.nullcontext()
+            with lock:  # colour and depth from the same RealSense frameset
+                img, depth = stream.frame, (stream.depth if name in self.depth_cams else None)
+            if img is None or (name in self.depth_cams and depth is None):
                 return None
             h, w, _ = self.cam_shapes[name]
             if img.shape[:2] != (h, w):
                 img = cv2.resize(img, (w, h))
             frame[f"observation.images.{name}"] = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+            if depth is not None:
+                dh, dw, _ = self.depth_shapes[f"{name}_depth"]
+                if depth.shape[:2] != (dh, dw):
+                    depth = cv2.resize(depth, (dw, dh), interpolation=cv2.INTER_NEAREST)
+                frame[f"observation.images.{name}_depth"] = np.ascontiguousarray(depth, dtype=np.uint16).reshape(dh, dw, 1)
         return frame
 
+    def _prob(self) -> float:
+        return float(getattr(self.detector, "prob", float(self.detector.last.in_view)))
+
+    def _detect(self) -> None:
+        if self.inspect_camera is None:
+            return
+        img = self.streams[self.inspect_camera].frame
+        if img is not None:
+            self.detector.update(img)
+
     def tick(self) -> None:
-        """One recorder step: apply queued commands, then record a frame if a take is running."""
+        """One recorder step: apply queued commands, run the in-view detector, record a frame if a take is running."""
         while not self.commands.empty():
             with self.lock:
                 self._handle(self.commands.get_nowait())
         with self.lock:
+            self._detect()
             if self.phase != "recording":
                 return
+            if self.detector.last.in_view and self.classifier_frame is None:
+                self.classifier_frame = self._frames
+            if self.auto_split and self.stage == "pick" and self.detector.last.in_view:
+                self._split(auto=True)
             frame = self._frame()
             if frame is None:
                 self._paused_ticks += 1  # follower not live (held / re-engaging) or a camera dropped out
@@ -211,7 +316,8 @@ class EpisodeRecorder:
                 self.dataset.add_frame(frame)
                 self._frames += 1
             if time.perf_counter() - self._take_start >= self.episode_time_s:
-                self._to_review(f"time limit {self.episode_time_s:.0f}s")
+                self._to_review()
+                self.message = "Time limit"
 
     def run(self) -> None:
         period = 1.0 / self.fps
@@ -223,7 +329,8 @@ class EpisodeRecorder:
                 log.exception("recorder error")
                 with self.lock:
                     self.dataset.clear_episode_buffer()
-                    self.phase, self.message = "idle", f"error, take discarded: {e}"
+                    self.phase, self.message = "idle", f"Take discarded after an error: {e}"
+                    self._reset_take()
             dt = time.perf_counter() - t0
             if dt < period:
                 time.sleep(period - dt)
@@ -235,83 +342,213 @@ class EpisodeRecorder:
             if self.dataset is not None:
                 self.dataset.finalize()
 
+    def inspect_debug_jpeg(self) -> bytes | None:
+        if self.inspect_camera is None:
+            return None
+        img = self.streams[self.inspect_camera].frame
+        if img is None:
+            return None
+        ok, buf = cv2.imencode(".jpg", self.detector.debug_image(img), [cv2.IMWRITE_JPEG_QUALITY, 70])
+        return buf.tobytes() if ok else None
+
     def snapshot(self) -> dict:
         with self.lock:
             elapsed = time.perf_counter() - self._take_start if self.phase == "recording" else self._take_duration
+            d = self.detector.last
             return {
-                "phase": self.phase, "message": self.message, "elapsed": round(elapsed, 2), "frames": self._frames,
-                "episodes": self.dataset.num_episodes if self.dataset is not None else 0, "saved": dict(self.saved),
-                "stats": self.stats.summary(), "task": self.task, "root": str(self.root),
-                "teleop_live": self._teleop_live(),
+                "phase": self.phase, "stage": self.stage, "message": self.message, "elapsed": round(elapsed, 2),
+                "frames": self._frames, "episodes": self.dataset.num_episodes if self.dataset is not None else 0,
+                "saved": dict(self.saved), "median_s": _median(self.stats.durations_s),
+                "bowls": self.bowls, "bowl": self.bowl, "split_frame": self.split_frame,
+                "inspect_camera": self.inspect_camera,
+                "in_view": d.in_view, "candidate": d.candidate, "detect_reason": d.reason,
+                "prob": round(float(getattr(self.detector, "prob", d.area)), 3),
+                "threshold": getattr(self.detector, "threshold", None),
+                "guide": "square" if hasattr(self.detector, "prob") else list(self.detector.cfg.roi),
+                "depth_cams": self.depth_cams, "auto_split": self.auto_split, "continuous": self.continuous,
+                "teleop_live": self._teleop_live(), "root": str(self.root),
+                "task": self._current_task() if self.phase == "recording" else None,
             }
 
 
+def make_detector(args):
+    """The trained classifier when available (or asked for), else the colour-blob detector."""
+    from dlsj.inview_classifier import DEFAULT_MODEL, InViewClassifier
+
+    model = None if args.inspect_model == "colour" else (
+        DEFAULT_MODEL if args.inspect_model == "auto" else Path(args.inspect_model))
+    if model is not None and Path(model).exists():
+        log.info("in-view: classifier %s on %s", model, args.inspect_device)
+        return InViewClassifier(model, args.inspect_device, args.inspect_threshold, args.inspect_stable_frames or 3)
+    if args.inspect_model not in ("auto", "colour"):
+        raise SystemExit(f"--inspect-model {args.inspect_model} not found")
+    log.info("in-view: colour-blob detector")
+    return BrickInViewDetector(DetectorConfig(
+        roi=DetectorConfig.parse_roi(args.inspect_roi), min_area=args.inspect_min_area,
+        min_sat=args.inspect_min_sat, stable_frames=args.inspect_stable_frames or 5))
+
+
+def _median(xs: list[float]) -> float | None:
+    return round(float(np.median(xs)), 1) if xs else None
+
+
 # ----------------------------------------------------------------------------- web
-PAGE = """<!doctype html><html><head><meta charset="utf-8"><title>SO-101 Record</title>
+PAGE = r"""<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Record</title>
 <meta name="viewport" content="width=device-width,initial-scale=1">
+<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Barlow:wght@200;300;400;500;600&display=swap" rel="stylesheet">
 <style>
-:root{--bg:#0f1115;--card:#181b22;--fg:#e6e8ee;--mute:#8a90a0;--ok:#3ecf8e;--bad:#ff6b6b;--rec:#ff4d4d;--acc:#6aa9ff}
-*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--fg);font:14px/1.4 ui-sans-serif,system-ui,-apple-system}
-header{display:flex;gap:12px;align-items:center;padding:10px 16px;border-bottom:1px solid #262a33;position:sticky;top:0;background:var(--bg);z-index:2}
-h1{font-size:15px;margin:0}.pill{padding:2px 8px;border-radius:99px;background:#262a33;color:var(--mute);font-variant-numeric:tabular-nums}
-.pill.ok{color:var(--ok)}.pill.bad{color:var(--bad)}
-main{display:grid;grid-template-columns:1fr 340px;gap:16px;padding:16px}@media(max-width:960px){main{grid-template-columns:1fr}}
-#cams{display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:12px;align-content:start}
-.cam{background:var(--card);border-radius:10px;overflow:hidden;border:3px solid transparent}.cam img{display:block;width:100%;aspect-ratio:4/3;object-fit:contain;background:#000}
-.cam .bar{padding:6px 10px;color:var(--mute)}.cam .bar b{color:var(--fg)}
-body.rec .cam{border-color:var(--rec)}
-.side{background:var(--card);border-radius:10px;padding:14px;align-self:start;display:flex;flex-direction:column;gap:12px}
-#big{font-size:44px;font-weight:700;font-variant-numeric:tabular-nums;text-align:center}
-#phase{text-align:center;font-weight:600;letter-spacing:.08em;text-transform:uppercase}
-body.rec #phase{color:var(--rec)}body.review #phase{color:var(--acc)}
-#msg{color:var(--mute);min-height:2.8em;text-align:center}
-.btns{display:grid;grid-template-columns:1fr 1fr;gap:8px}button{background:#262a33;color:var(--fg);border:1px solid #333845;border-radius:8px;padding:10px;cursor:pointer;font-size:14px}
-button.primary{grid-column:1/-1;font-size:18px;padding:14px;background:#2b3240}body.rec button.primary{background:#5a1f1f}
-kbd{background:#262a33;border-radius:4px;padding:0 5px;font-size:12px}.mute{color:var(--mute);font-size:12px}
-.bar2{height:6px;background:#262a33;border-radius:4px;overflow:hidden}.bar2>div{height:100%;width:0;background:var(--ok)}
-</style></head><body>
-<header><h1>SO-101 record</h1><span id="tele" class="pill">teleop…</span><span id="eps" class="pill"></span><span style="flex:1"></span><span id="root" class="mute"></span></header>
-<main><section id="cams"></section>
-<aside class="side">
-<div id="phase">idle</div><div id="big">0.0s</div><div class="bar2"><div id="prog"></div></div><div id="msg"></div>
-<div class="btns"><button id="main" class="primary">Start <kbd>space</kbd></button>
-<button id="fail">Failure <kbd>f</kbd></button><button id="disc">Discard <kbd>h</kbd></button>
-<button id="eng">Engage <kbd>e</kbd></button><button id="home">Go home</button></div>
-<div id="task" class="mute"></div><div id="stats" class="mute"></div>
-<div class="mute">Beeps: rising = recording started, falling = stopped. Keys work while this tab is focused.</div>
-</aside></main>
+:root{--bg:#15171a;--panel:#1d2024;--line:#2b2f35;--fg:#f1f2f4;--mute:#80868f;--dim:#4a4f57;--red:#e31937;--glow:#e9f2ff;--ok:#2fd27a}
+*{box-sizing:border-box;margin:0}
+html,body{height:100%}
+body{background:var(--bg);color:var(--fg);font:400 15px/1.35 Barlow,ui-sans-serif,system-ui,sans-serif;-webkit-font-smoothing:antialiased;overflow:hidden}
+.app{display:grid;grid-template-columns:minmax(0,1fr) 380px;grid-template-rows:minmax(0,1fr) auto;height:100vh}
+.view{padding:20px 0 12px 20px;display:flex;flex-direction:column;gap:12px;min-height:0}
+.panes{flex:1;min-height:0;display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.single .panes{grid-template-columns:1fr}.single .pane:nth-child(2){display:none}
+.main{position:relative;flex:1;min-height:0;border-radius:18px;overflow:hidden;background:#000}
+.pane{height:100%;min-width:0}
+.main img{width:100%;height:100%;object-fit:contain;display:block}
+.main .name{position:absolute;left:16px;bottom:12px;color:var(--mute);font-size:13px}
+.thumbs{display:flex;gap:12px;height:112px}
+.thumb{position:relative;aspect-ratio:4/3;height:100%;border-radius:12px;overflow:hidden;background:#000;cursor:pointer;border:0;padding:0;outline:2px solid transparent;transition:outline-color .25s,box-shadow .25s}
+.thumb img{width:100%;height:100%;object-fit:cover;display:block;opacity:.85}
+.thumb span{position:absolute;left:8px;bottom:5px;font-size:12px;color:var(--fg);text-shadow:0 1px 2px #000}
+.thumb.active{outline-color:var(--dim)}
+.thumb.seen{outline-color:var(--glow);box-shadow:0 0 22px rgba(233,242,255,.35)}
+.thumb:focus-visible{outline-color:var(--fg)}
+.cluster{padding:28px 28px 12px;display:flex;flex-direction:column;gap:30px;min-height:0}
+.state{display:flex;justify-content:space-between;align-items:baseline;color:var(--mute);font-size:15px}
+.state b{font-weight:500;color:var(--fg)}
+.dot{display:inline-block;width:8px;height:8px;border-radius:50%;background:var(--dim);margin-right:8px;vertical-align:1px;transition:background .3s}
+.live .dot{background:var(--fg)}
+.gauge{position:relative;width:300px;height:300px;align-self:center}
+.gauge svg{position:absolute;inset:0;transform:rotate(-90deg)}
+.gauge circle{fill:none;stroke-width:3}
+.gauge .ring{stroke:var(--line)}
+.gauge .arc{stroke:var(--fg);stroke-linecap:round;transition:stroke .3s}
+.rec .gauge .arc{stroke:var(--red)}
+.rec.over .time .n{color:var(--red)}
+.time{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center}
+.time .n{font-weight:200;font-size:104px;line-height:1;letter-spacing:-.04em;font-variant-numeric:tabular-nums}
+.time .u{color:var(--mute);font-size:15px;margin-top:6px;transition:color .3s}
+.rec .time .u{color:var(--red)}
+.stages{display:grid;grid-template-columns:auto 1fr auto 1fr auto;align-items:center;gap:10px;font-size:14px;color:var(--dim)}
+.node{display:flex;align-items:center;gap:8px;transition:color .3s}
+.node i{width:10px;height:10px;border-radius:50%;border:1.5px solid var(--dim);transition:background .3s,border-color .3s,box-shadow .3s}
+.node.on{color:var(--fg)}.node.on i{background:var(--fg);border-color:var(--fg)}
+.node.now i{box-shadow:0 0 0 5px rgba(241,242,244,.12)}
+.rec .node.now i{background:var(--red);border-color:var(--red);box-shadow:0 0 0 5px rgba(227,25,55,.18)}
+.seg{height:1.5px;background:var(--line);transition:background .3s}.seg.on{background:var(--fg)}
+.bowls{display:flex;gap:18px;justify-content:center}
+.bowl{width:64px;height:64px;border-radius:50%;border:0;cursor:pointer;position:relative;background:var(--c);opacity:.35;transform:scale(.88);transition:opacity .2s,transform .2s,box-shadow .2s}
+.bowl.sel{opacity:1;transform:scale(1);box-shadow:0 0 0 3px var(--bg),0 0 0 5px var(--fg)}
+.bowl kbd{position:absolute;right:-6px;bottom:-6px;background:var(--panel);color:var(--fg);border:1px solid var(--line);border-radius:6px;padding:1px 6px;font:500 12px Barlow,sans-serif}
+.bowl:focus-visible{box-shadow:0 0 0 3px var(--bg),0 0 0 5px var(--glow)}
+.msg{min-height:22px;text-align:center;color:var(--mute);font-size:15px;transition:color .2s}
+.cue .msg{color:var(--fg);font-size:20px;font-weight:500}
+.guide{position:absolute;border:1.5px dashed rgba(241,242,244,.55);border-radius:10px;pointer-events:none;display:none;transition:border-color .15s,box-shadow .15s}
+.guide.show{display:block}.guide.near{border-color:var(--fg);border-style:solid}
+.guide.hit{border:2.5px solid var(--glow);box-shadow:0 0 24px rgba(233,242,255,.45),inset 0 0 24px rgba(233,242,255,.25)}
+.meter{display:grid;grid-template-columns:auto 1fr;align-items:center;gap:12px;color:var(--mute);font-size:13px}
+.mbar{position:relative;height:6px;border-radius:4px;background:var(--line)}
+.mbar i{position:absolute;inset:0 auto 0 0;width:0;border-radius:4px;background:var(--mute);transition:width .1s}
+.mbar b{position:absolute;top:-5px;bottom:-5px;width:1.5px;background:var(--fg);opacity:.6}
+.inview .mbar i{background:var(--ok)}
+.main{transition:box-shadow .12s}
+.iv .pane.insp{box-shadow:inset 0 0 0 8px var(--ok),0 0 60px rgba(47,210,122,.55)}
+.ivbadge{position:absolute;left:50%;top:22px;transform:translate(-50%,-8px) scale(.96);opacity:0;pointer-events:none;
+ background:var(--ok);color:#06200f;font:600 40px/1 Barlow,ui-sans-serif,system-ui,sans-serif;padding:16px 34px;border-radius:999px;
+ box-shadow:0 10px 40px rgba(47,210,122,.5);transition:opacity .12s,transform .12s}
+.iv .insp .ivbadge{opacity:1;transform:translate(-50%,0) scale(1)}
+.iv .thumb.seen{outline-color:var(--ok);box-shadow:0 0 22px rgba(47,210,122,.6)}
+.iv .guide.hit{border-color:var(--ok);box-shadow:0 0 24px rgba(47,210,122,.55),inset 0 0 24px rgba(47,210,122,.3)}
+@media (max-width:900px){.ivbadge{font-size:26px;padding:10px 22px}.panes{grid-template-columns:1fr}.pane{height:56vw}}
+.tally{margin-top:auto;display:flex;justify-content:space-between;color:var(--mute);font-size:14px}
+.tally b{display:block;color:var(--fg);font-weight:300;font-size:30px;font-variant-numeric:tabular-nums}
+.keys{grid-column:1/-1;display:flex;gap:26px;padding:12px 20px 16px;color:var(--mute);font-size:13px;border-top:1px solid var(--line)}
+.keys kbd{color:var(--fg);font:500 12px Barlow,sans-serif;border:1px solid var(--line);border-radius:6px;padding:1px 7px;margin-right:6px}
+.keys .grow{flex:1}
+@media (max-width:900px){body{overflow:auto}.app{grid-template-columns:minmax(0,1fr);height:auto}.view{padding:16px;min-width:0}.main{flex:none;height:62vw}.thumbs{height:84px;overflow-x:auto}.thumb{flex:none}.cluster{padding:8px 16px 16px;gap:24px}.gauge{width:240px;height:240px}.time .n{font-size:80px}.keys{flex-wrap:wrap;gap:12px 18px}}
+@media (prefers-reduced-motion:reduce){*{transition:none!important}}
+</style></head>
+<body><div class="app" id="app">
+<section class="view"><div class="panes" id="panes"></div><div class="thumbs" id="thumbs"></div></section>
+<aside class="cluster">
+ <div class="state" id="state"><span><span class="dot"></span><b id="arm">Connecting</b></span><span id="eps"></span></div>
+ <div class="gauge"><svg viewBox="0 0 300 300"><circle class="ring" cx="150" cy="150" r="140"/><circle class="arc" id="arc" cx="150" cy="150" r="140" stroke-dasharray="0 880"/></svg>
+  <div class="time"><span class="n" id="t">0.0</span><span class="u" id="unit">Ready</span></div></div>
+ <div class="stages"><span class="node"><i></i>Pick</span><span class="seg" id="s1"></span><span class="node"><i></i>In view</span><span class="seg" id="s2"></span><span class="node"><i></i>Place</span></div>
+ <div class="bowls" id="bowls"></div>
+ <div class="meter" id="meter"><span>Inspection</span><div class="mbar"><i id="mfill"></i><b id="mthr"></b></div></div>
+ <div class="msg" id="msg"></div>
+ <div class="tally"><span><b id="ok">0</b>Saved</span><span><b id="bad">0</b>Failed</span><span><b id="med">–</b>Median time</span></div>
+</aside>
+<footer class="keys"><span><kbd>Space</kbd><span id="kspace">Start</span></span><span><kbd>Enter</kbd><span id="kenter">Save and pause</span></span><span><kbd>1–3</kbd>Bowl</span><span><kbd>I</kbd>In view</span><span><kbd>F</kbd>Failed</span><span><kbd>H</kbd>Discard</span><span class="grow"></span><span><kbd>E</kbd><span id="keng">Engage</span></span><span><kbd>V</kbd>Views</span><span><kbd>D</kbd>Detector</span></footer>
+</div>
 <script>
-const TARGET=__TARGET__;let last=null,teleLive=false;const seen={},cams=document.getElementById('cams');
-const AC=window.AudioContext||window.webkitAudioContext;let ac=null;
-function tone(seq){try{ac=ac||new AC();let t=ac.currentTime;for(const[f,d]of seq){if(f>0){const o=ac.createOscillator(),g=ac.createGain();
-o.frequency.value=f;o.connect(g);g.connect(ac.destination);g.gain.setValueAtTime(0.0001,t);g.gain.exponentialRampToValueAtTime(0.3,t+0.01);
-g.gain.exponentialRampToValueAtTime(0.0001,t+d);o.start(t);o.stop(t+d+0.02);}t+=d;}}catch(e){}}
-const BEEP={start:[[880,.08],[0,.04],[1320,.12]],stop:[[660,.10],[0,.03],[330,.22]]};
-const post=p=>fetch(p,{method:'POST'});const rec=c=>post('/rec/'+c);const tele=c=>post('/cmd/'+c);
-document.getElementById('main').onclick=()=>rec('space');document.getElementById('fail').onclick=()=>rec('fail');
-document.getElementById('disc').onclick=()=>rec('discard');document.getElementById('home').onclick=()=>tele('home');
-document.getElementById('eng').onclick=()=>tele(teleLive?'hold':'engage');
-document.addEventListener('keydown',e=>{if(e.repeat||e.target.tagName==='INPUT')return;const k=e.key.toLowerCase();
- if(k===' '){e.preventDefault();rec('space');}else if(k==='f')rec('fail');else if(k==='h'||k==='backspace'){e.preventDefault();rec('discard');}
- else if(k==='e')tele(teleLive?'hold':'engage');});
+const TARGET=__TARGET__,C=2*Math.PI*140,SW={red:'#e0393e',blue:'#2f6fe0',green:'#2fb36b',yellow:'#f5c518',orange:'#f2711c',white:'#e8e8e8',black:'#2a2a2a',purple:'#8e44d9',pink:'#e86aa6',grey:'#8d939b',gray:'#8d939b'};
+let panes=[null,null],split=true,last={},debug=false,teleLive=false,ac=null;const thumbs={};
+const $=id=>document.getElementById(id),app=$('app');
+function tone(seq){try{ac=ac||new(window.AudioContext||window.webkitAudioContext)();let t=ac.currentTime;for(const[f,d]of seq){if(f){const o=ac.createOscillator(),g=ac.createGain();o.type='sine';o.frequency.value=f;o.connect(g);g.connect(ac.destination);g.gain.setValueAtTime(1e-4,t);g.gain.exponentialRampToValueAtTime(.25,t+.012);g.gain.exponentialRampToValueAtTime(1e-4,t+d);o.start(t);o.stop(t+d+.02)}t+=d}}catch(e){}}
+const BEEP={start:[[880,.08],[0,.04],[1320,.12]],stop:[[660,.1],[0,.03],[330,.22]],view:[[1568,.18]]};
+const rec=c=>fetch('/rec/'+c,{method:'POST'}),tele=c=>fetch('/cmd/'+c,{method:'POST'});
+(function(){const P=$('panes');for(let i=0;i<2;i++){const d=document.createElement('div');d.className='main pane';
+ d.innerHTML='<img alt=""><div class="guide"></div><div class="ivbadge" aria-live="polite">In view</div><div class="name"></div>';P.appendChild(d)}})();
+const pane=i=>$('panes').children[i],visible=()=>panes.slice(0,split?2:1);
+function show(i,n){panes[i]=n;const d=pane(i),ic=last.inspect_camera;
+ if(!(debug&&n===ic))d.querySelector('img').src='/stream/'+encodeURIComponent(n);
+ d.querySelector('.name').textContent=n;d.classList.toggle('insp',n===ic);
+ for(const k in thumbs)thumbs[k].classList.toggle('active',visible().includes(k))}
+function pick(n){if(visible().includes(n))return;show(split?1:0,n)}
+setInterval(()=>{if(debug)visible().forEach((n,i)=>{if(n&&n===last.inspect_camera)pane(i).querySelector('img').src='/rec/inspect.jpg?'+Date.now()})},120);
+document.addEventListener('keydown',e=>{if(e.repeat||e.metaKey||e.ctrlKey)return;const k=e.key.toLowerCase();
+ if(k===' '){e.preventDefault();rec('space')}else if(k.length===1&&'123'.includes(k))rec('bowl'+k);else if(k==='i')rec('inview');
+ else if(k==='enter'){e.preventDefault();rec('enter')}else if(k==='f')rec('fail');else if(k==='h'||k==='backspace'){e.preventDefault();rec('discard')}else if(k==='e')tele(teleLive?'hold':'engage');
+ else if(k==='d'){debug=!debug;panes.forEach((n,i)=>{if(n)show(i,n)})}
+ else if(k==='v'){split=!split;app.classList.toggle('single',!split);panes.forEach((n,i)=>{if(n)show(i,n)})}});
+function bowls(r){const b=$('bowls');if(b.dataset.k!==r.bowls.join()){b.dataset.k=r.bowls.join();b.innerHTML='';
+ r.bowls.forEach((c,i)=>{const x=document.createElement('button');x.className='bowl';x.style.setProperty('--c',SW[c]||c);x.setAttribute('aria-label',c+' bowl');x.innerHTML='<kbd>'+(i+1)+'</kbd>';x.onclick=()=>rec('bowl'+(i+1));b.appendChild(x)})}
+ [...b.children].forEach((x,i)=>x.classList.toggle('sel',r.bowl===r.bowls[i]))}
+function fracs(r,img){if(Array.isArray(r.guide))return r.guide;const w=img.naturalWidth||4,h=img.naturalHeight||3,s=Math.min(w,h);return[(w-s)/2/w,(h-s)/2/h,(w+s)/2/w,(h+s)/2/h]}
+function place(g,box,img,f){const cw=box.clientWidth,ch=box.clientHeight,nw=img.naturalWidth||4,nh=img.naturalHeight||3;
+ const k=g.dataset.cover?Math.max(cw/nw,ch/nh):Math.min(cw/nw,ch/nh),rw=nw*k,rh=nh*k,ox=(cw-rw)/2,oy=(ch-rh)/2;
+ g.style.left=(ox+f[0]*rw)+'px';g.style.top=(oy+f[1]*rh)+'px';g.style.width=((f[2]-f[0])*rw)+'px';g.style.height=((f[3]-f[1])*rh)+'px'}
+function guides(r){const ic=r.inspect_camera;const state=g=>{g.classList.toggle('hit',r.in_view);g.classList.toggle('near',r.candidate&&!r.in_view)};
+ panes.forEach((n,i)=>{const d=pane(i),g=d.querySelector('.guide'),im=d.querySelector('img'),on=!!ic&&n===ic&&!debug;
+  d.classList.toggle('insp',!!ic&&n===ic);g.classList.toggle('show',on);if(on){place(g,d,im,fracs(r,im));state(g)}});
+ const t=ic&&thumbs[ic];if(t){let g=t.querySelector('.guide');if(!g){g=document.createElement('div');g.className='guide show';g.dataset.cover=1;t.appendChild(g)}
+  const im=t.querySelector('img');place(g,t,im,fracs(r,im));state(g)}}
 async function tick(){try{
- const s=await (await fetch('/state')).json(),r=await (await fetch('/rec/state')).json();
- for(const c of s.cameras){if(!seen[c.name]){const d=document.createElement('div');d.className='cam';
-  d.innerHTML=`<img src="/stream/${encodeURIComponent(c.name)}"><div class="bar"><b>${c.name}</b> <span></span></div>`;cams.appendChild(d);seen[c.name]=d;}
-  seen[c.name].querySelector('.bar span').textContent=c.error?c.error:`${c.size||'…'} · ${c.fps} fps`;}
- const t=s.teleop;teleLive=!!(t&&(t.phase==='live'||t.phase==='engaging'));const te=document.getElementById('tele');
- te.textContent=t?`${t.phase} · ${t.hz} Hz`:'no robot';te.className='pill '+(t&&t.phase==='live'?'ok':'bad');
- document.getElementById('eng').innerHTML=(teleLive?'Hold':'Engage')+' <kbd>e</kbd>';
- if(last&&last!==r.phase){if(r.phase==='recording')tone(BEEP.start);else if(last==='recording')tone(BEEP.stop);}
- last=r.phase;document.body.className=r.phase==='recording'?'rec':(r.phase==='review'?'review':'');
- document.getElementById('phase').textContent=r.phase;document.getElementById('big').textContent=r.elapsed.toFixed(1)+'s';
- const pr=document.getElementById('prog');pr.style.width=TARGET?Math.min(100,100*r.elapsed/TARGET)+'%':'0';pr.style.background=TARGET&&r.elapsed>TARGET?'var(--bad)':'var(--ok)';
- document.getElementById('msg').textContent=r.message;document.getElementById('main').innerHTML=
-  ({idle:'Start',recording:'Stop',review:'Accept',saving:'Saving…'}[r.phase]||r.phase)+' <kbd>space</kbd>';
- document.getElementById('eps').textContent=`${r.episodes} episodes · ✓${r.saved.success} ✗${r.saved.failure}`;
- document.getElementById('task').textContent='Task: '+r.task;document.getElementById('stats').textContent=r.stats+(TARGET?` · target ${TARGET}s`:'');
- document.getElementById('root').textContent=r.root;
-}catch(e){document.getElementById('tele').textContent='server gone';}}
+ const [s,r]=await Promise.all([fetch('/state').then(x=>x.json()),fetch('/rec/state').then(x=>x.json())]);
+ for(const c of s.cameras){if(!thumbs[c.name]){const t=document.createElement('button');t.className='thumb';t.innerHTML='<img alt="" src="/stream/'+encodeURIComponent(c.name)+'"><span>'+c.name+'</span>';t.onclick=()=>pick(c.name);$('thumbs').appendChild(t);thumbs[c.name]=t}}
+ if(!panes[0]&&s.cameras.length){last=r;const names=s.cameras.map(c=>c.name),a=r.inspect_camera&&names.includes(r.inspect_camera)?r.inspect_camera:names[0];
+  show(0,a);const b=names.includes('top')&&a!=='top'?'top':names.find(n=>n!==a);if(b)show(1,b);else{split=false;app.classList.add('single')}}
+ const t=s.teleop;teleLive=!!(t&&(t.phase==='live'||t.phase==='engaging'));
+ $('arm').textContent=!t?'No arm':t.phase==='live'?'Live':t.phase==='engaging'?'Engaging':t.phase==='ready'?'Holding':t.phase[0].toUpperCase()+t.phase.slice(1);
+ $('state').classList.toggle('live',!!t&&t.phase==='live');$('keng').textContent=teleLive?'Hold':'Engage';
+ $('eps').textContent=r.episodes+' episodes';
+ if(last.phase&&last.phase!==r.phase){if(r.phase==='recording')tone(BEEP.start);else if(last.phase==='recording')tone(BEEP.stop)}
+ if(r.phase==='recording'&&last.stage==='pick'&&r.stage==='place')tone(BEEP.view);
+ const recording=r.phase==='recording',over=TARGET&&r.elapsed>TARGET;
+ app.classList.toggle('rec',recording);app.classList.toggle('over',!!over);
+ $('t').textContent=r.elapsed.toFixed(1);
+ $('unit').textContent=recording?'Recording':r.phase==='review'?'Review':r.phase==='saving'?'Saving':(r.teleop_live?'Ready':'Engage the arm');
+ const frac=TARGET?Math.min(1,r.elapsed/TARGET):(recording?(r.elapsed%1):0);$('arc').setAttribute('stroke-dasharray',(frac*C)+' '+C);
+ const active=recording||r.phase==='review',now=!active?-1:(r.stage==='place'?2:(r.in_view?1:0));
+ document.querySelectorAll('.node').forEach((n,i)=>{n.classList.toggle('on',active&&i<=now);n.classList.toggle('now',active&&i===now)});
+ $('s1').classList.toggle('on',active&&now>=1);$('s2').classList.toggle('on',active&&now>=2);
+ if(r.inspect_camera&&thumbs[r.inspect_camera])thumbs[r.inspect_camera].classList.toggle('seen',r.in_view);
+ bowls(r);guides(r);
+ $('meter').style.display=(r.inspect_camera&&r.threshold)?'':'none';$('meter').classList.toggle('inview',r.in_view);app.classList.toggle('iv',!!r.in_view);
+ $('mfill').style.width=Math.min(100,100*(r.prob||0))+'%';$('mthr').style.left=r.threshold?(100*r.threshold)+'%':'-9px';
+ const cue=recording&&r.stage==='place';app.classList.toggle('cue',cue);
+ $('msg').textContent=cue?(r.bowl?'Place in the '+r.bowl+' bowl':'In view. Choose a bowl (1\u20133)'):(r.message||(r.phase==='review'?(r.continuous?'Space saves and starts the next take':'Space to save'):(recording?'Space when the brick is properly in front of the inspection camera':'')));
+ $('kspace').textContent={idle:'Start',recording:r.stage==='pick'?'Mark in view':'Stop',review:r.continuous?'Save and next':'Save',saving:'Saving'}[r.phase]||'';
+ $('kenter').parentNode.style.display=(r.phase==='review'&&r.continuous)?'':'none';
+ $('ok').textContent=r.saved.success;$('bad').textContent=r.saved.failure;$('med').textContent=r.median_s===null?'–':r.median_s+'s';
+ last=r;
+}catch(e){$('arm').textContent='Disconnected'}}
 setInterval(tick,100);tick();
 </script></body></html>"""
 
@@ -319,6 +556,8 @@ setInterval(tick,100);tick();
 def make_handler(streams: dict, teleop, recorder: EpisodeRecorder, target_s: float | None):
     base = teleop_web.make_handler(streams, teleop)
     page = PAGE.replace("__TARGET__", json.dumps(target_s)).encode()
+    commands = ({"space", "enter", "start", "stop", "accept", "accept_pause", "fail", "discard", "inview"}
+                | {f"bowl{i}" for i in range(1, 10)})
 
     class Handler(base):
         def do_GET(self):
@@ -326,11 +565,14 @@ def make_handler(streams: dict, teleop, recorder: EpisodeRecorder, target_s: flo
                 return self._send(200, page, "text/html; charset=utf-8")
             if self.path == "/rec/state":
                 return self._send(200, json.dumps(recorder.snapshot()).encode(), "application/json")
+            if self.path.startswith("/rec/inspect.jpg"):
+                jpeg = recorder.inspect_debug_jpeg()
+                return self._send(200, jpeg, "image/jpeg") if jpeg else self._send(404, b"", "text/plain")
             return super().do_GET()
 
         def do_POST(self):
             name = self.path.removeprefix("/rec/")
-            if self.path.startswith("/rec/") and name in ("space", "start", "stop", "accept", "fail", "discard"):
+            if self.path.startswith("/rec/") and name in commands:
                 recorder.command(name)
                 return self._send(200, b"{}", "application/json")
             return super().do_POST()
@@ -344,12 +586,25 @@ def main() -> None:
 
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--repo-id", required=True, help="dataset name, e.g. local/duplo_teleop")
-    p.add_argument("--task", required=True, help="language instruction stored with every frame")
+    p.add_argument("--bowls", default="yellow,purple,orange", help="bowl colours in key order (1, 2, 3)")
+    p.add_argument("--pick-task", default=PICK_TASK)
+    p.add_argument("--place-task", default=PLACE_TASK, help="must contain {colour}")
+    p.add_argument("--inspect-camera", default="inspect", help="camera name used for the in-view detector")
+    p.add_argument("--inspect-model", default="auto",
+                   help="OpenVINO brick-in-view classifier (.xml); 'auto' = models/brick_in_view_v1 if present, "
+                        "'colour' = the colour-blob detector")
+    p.add_argument("--inspect-device", default="CPU", help="OpenVINO device for the classifier: CPU, GPU or NPU")
+    p.add_argument("--inspect-threshold", type=float, default=0.6, help="P(in view) needed per frame")
+    p.add_argument("--inspect-roi", default="0.1,0.1,0.9,0.9", help="x0,y0,x1,y1 fractions of the inspect image")
+    p.add_argument("--inspect-min-area", type=float, default=0.03, help="brick blob area as a fraction of the ROI")
+    p.add_argument("--inspect-min-sat", type=int, default=100)
+    p.add_argument("--inspect-stable-frames", type=int, default=None,
+                   help="consecutive in-view frames needed (default 3 for the classifier, 5 for colour)")
     p.add_argument("--root", help="dataset directory (default data/<repo name>)")
     p.add_argument("--resume", action="store_true", help="append to an existing dataset")
     p.add_argument("--record-fps", type=int, default=30)
     p.add_argument("--episode-time", type=float, default=60.0, help="a take stops itself after this many seconds")
-    p.add_argument("--target-s", type=float, help="tempo target shown as a progress bar")
+    p.add_argument("--target-s", type=float, help="target time per take, shown as the ring around the timer")
     p.add_argument("--operator", default="")
     p.add_argument("--vcodec", default="h264", help="h264 is cheap to encode; 'auto' tries hardware encoders")
     p.add_argument("--follower-port", default="auto")
@@ -365,7 +620,16 @@ def main() -> None:
     p.add_argument("--fps", type=int, default=60, help="teleop control loop rate")
     p.add_argument("--max-relative-target", type=float, default=None)
     p.add_argument("--auto-engage", action="store_true")
-    p.add_argument("--cameras", required=True, help="name=index,... e.g. wrist=0,top=2,inspect=4")
+    p.add_argument("--cameras", default="", help="OpenCV cameras, name=index_or_path,... e.g. wrist=/dev/video38")
+    p.add_argument("--realsense", default="",
+                   help="RealSense cameras by serial, name=serial,... e.g. top=346422061366,inspect=243722062690")
+    p.add_argument("--no-depth", action="store_true", help="don't record RealSense depth")
+    p.add_argument("--no-continuous", action="store_true",
+                   help="after saving, wait for space instead of starting the next take straight away")
+    p.add_argument("--no-streaming", action="store_true",
+                   help="encode videos when a take is saved instead of while recording (slower saves)")
+    p.add_argument("--auto-split", action="store_true",
+                   help="let the classifier mark the in-view moment instead of the operator's space press")
     p.add_argument("--width", type=int, default=640)
     p.add_argument("--height", type=int, default=480)
     p.add_argument("--cam-fps", type=int, default=30)
@@ -373,6 +637,7 @@ def main() -> None:
     p.add_argument("--host", default="127.0.0.1")
     p.add_argument("--port", type=int, default=8000)
     args = p.parse_args()
+    teleop_web.install_stop_signals()
     args.no_robot = False
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 
@@ -384,12 +649,25 @@ def main() -> None:
         if not (args.follower_port and args.leader_port):
             p.error("could not find both arms; check USB cables and the follower's 12 V supply")
 
-    cams = teleop_web.parse_cameras(args.cameras, 8)
+    from dlsj.realsense_stream import RealSenseStream
+
+    cams = teleop_web.parse_cameras(args.cameras, 8) if args.cameras else {}
+    rs_cams = dict(part.split("=", 1) for part in filter(None, (x.strip() for x in args.realsense.split(","))))
+    if not cams and not rs_cams:
+        p.error("give at least one camera with --cameras and/or --realsense")
     streams = {n: teleop_web.CameraStream(n, i, args.width, args.height, args.cam_fps, args.jpeg_quality).start()
                for n, i in cams.items()}
+    streams |= {n: RealSenseStream(n, sn, args.width, args.height, args.cam_fps, depth=not args.no_depth,
+                                   quality=args.jpeg_quality).start() for n, sn in rs_cams.items()}
+    if args.inspect_camera not in streams:
+        log.warning("no camera named %r: the in-view detector is off, mark the moment with i", args.inspect_camera)
+    detector = make_detector(args)
     teleop = teleop_web.Teleop(args)
-    recorder = EpisodeRecorder(teleop, streams, args.repo_id, args.task, args.record_fps, args.root,
-                               args.episode_time, args.operator, args.vcodec, args.resume)
+    recorder = EpisodeRecorder(teleop, streams, args.repo_id, args.record_fps, args.root, args.episode_time,
+                               args.operator, args.vcodec, args.resume, [b.strip() for b in args.bowls.split(",")],
+                               args.pick_task, args.place_task, args.inspect_camera, detector,
+                               record_depth=not args.no_depth, auto_split=args.auto_split,
+                               continuous=not args.no_continuous, streaming_encoding=not args.no_streaming)
     server = None
     worker = rec_thread = None
     try:
@@ -402,7 +680,8 @@ def main() -> None:
         server = ThreadingHTTPServer((args.host, args.port), make_handler(streams, teleop, recorder, args.target_s))
         server.daemon_threads = True
         threading.Thread(target=server.serve_forever, name="http", daemon=True).start()
-        log.info("record UI: http://localhost:%d  (cameras: %s)", args.port, ", ".join(cams))
+        log.info("record UI: http://localhost:%d  (cameras: %s; depth: %s)", args.port, ", ".join(streams),
+                 ", ".join(recorder.depth_cams) or "none")
         while worker.is_alive():
             worker.join(0.5)
     except KeyboardInterrupt:

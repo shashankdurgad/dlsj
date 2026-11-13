@@ -17,6 +17,7 @@ import argparse
 import json
 import logging
 import queue
+import signal
 import sys
 import threading
 import time
@@ -28,13 +29,14 @@ import numpy as np
 from dlsj import arms
 
 log = logging.getLogger("teleop_web")
+CAM_BACKEND = cv2.CAP_AVFOUNDATION if sys.platform == "darwin" else cv2.CAP_V4L2
 
 
 # ----------------------------------------------------------------------------- cameras
 class CameraStream:
     """Grabs frames from one OpenCV camera in a thread and keeps the latest one as JPEG."""
 
-    def __init__(self, name: str, index: int, width: int, height: int, fps: int, quality: int):
+    def __init__(self, name: str, index: int | str, width: int, height: int, fps: int, quality: int):
         self.name, self.index = name, index
         self.width, self.height, self.fps = width, height, fps
         self.quality = quality
@@ -56,7 +58,7 @@ class CameraStream:
         self._stop.set()
 
     def _open(self) -> cv2.VideoCapture:
-        cap = cv2.VideoCapture(self.index, cv2.CAP_AVFOUNDATION)
+        cap = cv2.VideoCapture(self.index, CAM_BACKEND)
         if not cap.isOpened():
             cap = cv2.VideoCapture(self.index)
         if self.width and self.height:
@@ -108,7 +110,7 @@ class CameraStream:
 def probe_camera_indices(max_index: int) -> list[int]:
     found = []
     for i in range(max_index):
-        cap = cv2.VideoCapture(i, cv2.CAP_AVFOUNDATION)
+        cap = cv2.VideoCapture(i, CAM_BACKEND)
         ok = cap.isOpened() and cap.read()[0]
         cap.release()
         if ok:
@@ -116,7 +118,8 @@ def probe_camera_indices(max_index: int) -> list[int]:
     return found
 
 
-def parse_cameras(spec: str, max_index: int) -> dict[str, int]:
+def parse_cameras(spec: str, max_index: int) -> dict[str, int | str]:
+    """"auto", or name=index or name=/dev/v4l/by-id/... (stable across re-plugs on Linux), comma-separated."""
     if spec == "auto":
         idx = probe_camera_indices(max_index)
         log.info("auto-detected camera indices: %s", idx)
@@ -124,7 +127,8 @@ def parse_cameras(spec: str, max_index: int) -> dict[str, int]:
     out = {}
     for part in filter(None, (p.strip() for p in spec.split(","))):
         name, _, index = part.partition("=")
-        out[name.strip()] = int(index)
+        index = index.strip()
+        out[name.strip()] = int(index) if index.isdigit() else index
     return out
 
 
@@ -181,11 +185,10 @@ class Teleop:
 
     # ------------------------------------------------------------------ lifecycle
     def connect(self) -> None:
-        if arms.ensure_calibrated(self.robot, "follower", force=self.args.calibrate in ("follower", "both")):
-            stale = arms.retire_home(self.args.follower_id)
-            if stale:
-                log.warning("follower recalibrated: old home pose moved to %s; save a new one", stale.name)
-            self.home = None
+        fid = self.args.follower_id
+        if arms.ensure_calibrated(self.robot, "follower", force=self.args.calibrate in ("follower", "both"),
+                                  after_calibration=lambda dev: arms.capture_home(dev, fid)):
+            self.home = arms.load_home(fid)  # captured at the end of calibration
         if arms.ensure_calibrated(self.leader, "leader", force=self.args.calibrate in ("leader", "both")):
             p = arms.align_path(self.args.leader_id)
             if p.exists():
@@ -482,6 +485,16 @@ def make_handler(streams: dict[str, CameraStream], teleop: Teleop | None):
 
 
 # ----------------------------------------------------------------------------- main
+def install_stop_signals() -> None:
+    """Treat SIGTERM and SIGHUP (e.g. the SSH session closing) like Ctrl+C: home the follower, then stop."""
+
+    def _stop(signum, frame):
+        raise KeyboardInterrupt
+
+    for sig in (signal.SIGTERM, signal.SIGHUP):
+        signal.signal(sig, _stop)
+
+
 def main() -> None:
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--follower-port", default="auto", help="'auto' = the arm with a ~12 V servo supply")
@@ -504,7 +517,7 @@ def main() -> None:
         help="cap per-step follower motion (degrees) for safety; unset = no cap",
     )
     p.add_argument("--cameras", default="auto", help='"auto" or name=index,... e.g. wrist=1,top=2')
-    p.add_argument("--max-camera-index", type=int, default=8)
+    p.add_argument("--max-camera-index", type=int, default=8 if sys.platform == "darwin" else 48)
     p.add_argument("--width", type=int, default=640)
     p.add_argument("--height", type=int, default=480)
     p.add_argument("--cam-fps", type=int, default=30)
@@ -512,6 +525,7 @@ def main() -> None:
     p.add_argument("--host", default="127.0.0.1")
     p.add_argument("--port", type=int, default=8000)
     args = p.parse_args()
+    install_stop_signals()
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 
     if not args.no_robot and "auto" in (args.follower_port, args.leader_port):
