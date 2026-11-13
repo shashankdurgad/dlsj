@@ -164,7 +164,7 @@ class Teleop:
         )
         self.joints = list(self.robot.action_features)  # "shoulder_pan.pos", ...
         self.home = arms.load_home(args.follower_id)
-        inverted = {j.strip() for j in getattr(args, "invert", "").split(",") if j.strip() and j.strip() != "none"}
+        inverted = {j.strip() for j in getattr(args, "invert", "wrist_roll").split(",") if j.strip() and j.strip() != "none"}
         if unknown := inverted - {j.removesuffix(".pos") for j in self.joints}:
             raise ValueError(f"--invert: unknown joints {sorted(unknown)}")
         # Leader joints whose direction is mirrored relative to the follower (flipped around 0 = mid travel).
