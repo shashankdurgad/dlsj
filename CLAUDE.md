@@ -6,7 +6,8 @@ Hackathon repo for **Intel's challenge at Junction**: end-to-end robotic defect 
 
 ## Hardware
 - SO-101 leader/follower arms.
-- Cameras: a fixed **overhead RealSense** RGB-D (likely D405, <50 cm from the workspace) and a plain **RGB webcam on the wrist**.
+- Cameras: a fixed **overhead RealSense D415** RGB-D (needs the table ≥ ~0.45 m away; min depth range) and a **wrist camera**. A 2K webcam is also in the kit (maybe a third view). Objects/bins: Legos and bowls.
+- Judging rubric: the six "Technical implementation expectations" in PLAYBOOK's Challenge brief.
 - **Deploy machine:** Dell XPS 16 DA16260: Core Ultra X9 388H, Arc B390 iGPU, NPU, 64 GB, Ubuntu 26.04. Reach it with `ssh xps` (user `intel`, over a teammate's Tailscale network). Setup and environments: PLAYBOOK §1.0.
 - **Training:** cloud/team NVIDIA RTX GPUs.
 

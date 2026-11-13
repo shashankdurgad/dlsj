@@ -11,6 +11,26 @@
 - **Primary task:** distinguish acceptable ("perfect") from anomalous ("defective") objects, then physically sort or respond according to the **rules revealed at kickoff**. ⚠️ Fill in the rules here: _TBD_.
 - **Closed loop:** **PERCEIVE → DETECT → REASON → ACT → OPTIMIZE**, demonstrated end to end.
 
+**Technical implementation expectations** (kickoff slide; treat as the judging rubric):
+
+| # | Expectation | Slide wording (condensed) | Where we cover it |
+|---|---|---|---|
+| 1 | Perception & defect detection | Capture workspace imagery, apply Anomalib; defect output available to the policy as a **structured signal: label, score, or localized region** | Section 8 DETECT: `{label, score, box, table_xyz}` |
+| 2 | VLA reasoning & task planning | **Use Physical AI Studio to construct the VLA-driven application flow.** The VLA interprets the **task instruction and perception results**, determines the response, and produces the **action intent** for the robot controller | Section 8 REASON → π0.5 instruction; Studio flow (4.0) |
+| 3 | SO-101 execution | Turn the action into robot behaviour: motion, grasping, sorting or other challenge-specific manipulation | π0.5/ACT + grasp check |
+| 4 | OpenVINO optimization | Model conversion, **precision, graph optimization, preprocessing/postprocessing efficiency, device selection** → lower **end-to-end** latency | Sections 4.5, 8.1 (incl. pre/post-processing rows) |
+| 5 | Core Ultra Series 3 deployment | Use **NPU, GPU and CPU according to workload characteristics and operator support**, while keeping robot control and the app responsive | Section 8 device split |
+| 6 | Closed-loop demonstration | Full sequence from image acquisition and defect detection through VLA reasoning to robot action, **then a concise explanation of the architecture and optimization decisions** | Section 9 demo + pitch |
+
+**Provided hardware/software** (HW/SW slide):
+- **Compute:** HP OmniBook Ultra (C2NM8AV) or **Dell XPS 16 (DA16260)**, both Core Ultra X9 388H. We have the XPS.
+- **Arm:** LeRobot SO-ARM101, assembled: 1 leader + 1 follower + **1 wrist camera**.
+- **Cameras:** **one RealSense D415** and **one Pro QHD 2K/60 fps webcam**. ⚠️ With the arm's wrist camera that may make **three** cameras; confirm what is actually mounted.
+- **Extras:** camera desk mounts, a **USB hub**, **Legos/bowls** (likely the objects and the bins), printed robot safety guidelines.
+- **Software to install as part of the challenge:** Physical AI Studio and **Anomalib v2.7.0** (both done on our XPS, Section 1.0).
+- **Pre-installed:** Ubuntu 26.04 and NPU/GPU drivers. On our XPS the GPU *compute* runtime and the NPU user-space driver were still missing, and we installed them.
+- A **GPU cloud instance** is provided for training.
+
 **Required technology stack** (second kickoff slide):
 
 | # | Component | Role per the slide | Our use |
@@ -24,7 +44,7 @@
 
 **Hardware:**
 - **Robot:** SO-101 leader/follower arms.
-- **Cameras:** a fixed **overhead Intel RealSense** RGB-D (likely D405, ~7–50 cm range, mounted <50 cm from the workspace) and a **plain RGB webcam on the wrist**.
+- **Cameras:** a fixed **overhead Intel RealSense D415** RGB-D and a **wrist camera**. A Pro QHD 2K/60 fps webcam is also in the kit, possibly a third view (confirm).
 - **Deploy machine:** **Dell XPS 16 DA16260**: Core Ultra **X9 388H** (Panther Lake, Core Ultra Series 3), **Arc B390** iGPU, **NPU** ("Intel AI Boost"), **64 GB** RAM, Ubuntu 26.04. Reach it with `ssh xps` over Tailscale (Section 1.0).
 - **Training:** **cloud / team NVIDIA RTX GPUs** (CUDA).
 - Optional force sensor from a friend.
@@ -143,13 +163,16 @@ pip install "physicalai[so101,realsense]"
 ### 1.5 Camera setup (overhead RealSense + wrist webcam)
 **Overhead RealSense (RGB-D, fixed):**
 - Use `pyrealsense2`, or the runtime's `[realsense]` extra. You need the camera's serial number in configs.
-- Use **640×480 @ 30 fps**, and plug **directly into the laptop, not through a hub** (USB bandwidth causes frame drops). Give it its own USB port/controller.
-- Keep it **within ~50 cm** of the workspace (D405 range is ~7–50 cm). Confirm the model with `rs-enumerate-devices`.
+- Use **640×480 @ 30 fps**. The kit includes a USB hub, but plug the **RealSense directly into a laptop USB-C/3.x port**, and put the arm and webcam(s) on the hub. RealSense through a shared hub causes frame drops.
+- **It's a D415**, not a D405. ⚠️ The D415's minimum depth distance is roughly **0.3–0.45 m depending on resolution** (from memory of the spec, not verified), and accuracy improves with distance. Mount it so the **table is at least ~0.45 m away**, or check the depth at your height in `realsense-viewer`. Closer than its minimum, depth goes to 0/holes.
+- **Coverage at 0.45 m:** depth FOV ~65°×40° ⇒ ≈ 0.57 m × 0.33 m of table. Make sure all bowls and the pick area fit in view.
+- D415 uses a rolling shutter: keep fast arm motion out of the overhead view while inspecting (arm parked anyway).
 - **Mount it rigidly and never move it** between recording and deployment. A bumped overhead camera hurts the policy and the anomaly detector more than any lighting change. Mark its position with tape.
 - Record **depth aligned to colour** (`rs.align(rs.stream.color)`) if you want the depth tricks in Sections 5.3, 5.5 and 6.4.
 - Capture an empty-table depth frame once as the **table plane** reference (Section 6.4).
 
-**Wrist webcam (RGB only):**
+**Wrist camera and the 2K webcam (RGB only):**
+- The 2K/60 fps webcam: run it at **640×480@30** (or 1280×720 if there's bandwidth) to match the policy input. 2K is wasted on a 224² VLA input and costs USB bandwidth and resize time.
 - Plain UVC camera, so lock exposure/WB with `v4l2-ctl` (e.g. `v4l2-ctl -d /dev/videoN -c auto_exposure=1 -c white_balance_automatic=0`; control names vary by camera, list them with `v4l2-ctl -d /dev/videoN -l`). **Re-check after every replug**; cheap webcams reset.
 - Expect motion blur, rolling shutter and colour drift: it's the noisiest stream, so keep augmentation on for it (Section 5.2).
 
@@ -704,7 +727,9 @@ Measure on the XPS (median and p99 over ≥100 runs, after warmup, on mains powe
 
 | Stage | Baseline | Optimised | Gain |
 |---|---|---|---|
+| Preprocessing | Python/NumPy resize + normalise on CPU per camera | Capture at the policy's resolution; fold normalisation into the OpenVINO graph (`ov.preprocess.PrePostProcessor`); batch cameras | |
 | Anomalib | PyTorch-XPU eager | OpenVINO on **NPU** (and GPU FP16 for comparison) | |
+| Postprocessing | Full-res anomaly map → NumPy threshold | Threshold/box on the downsampled map; only upsample the box | |
 | π0.5 chunk | LeRobot PyTorch-XPU (`~/inference/.venv`, policy server) | OpenVINO FP16 → **INT8** → (stretch) 1-step distilled / expert on NPU | |
 | End-to-end loop | sum of baselines | sum of optimised + async overlap | |
 | Throughput | tasks/min, baseline | tasks/min, optimised | |
@@ -728,6 +753,8 @@ Reference points:
 - [ ] OpenVINO IR is static-shape; `benchmark_app -pc` shows SDPA/GatedMLP fusions; median + p99 latency logged.
 - [ ] VLA track: first 200 training steps timed; go/no-go on π0.5 vs SmolVLA within the first hour; VLA beats ACT on held-out lighting before it's used in the demo.
 - [ ] Anomaly threshold calibrated **on site**; false-positive rate checked on 20+ good samples; model **runs on the NPU**.
+- [ ] Defect output is a structured signal `{label, score, box, table_xyz}` and is logged per object.
+- [ ] Pitch ready: **concise architecture + optimization decisions** explanation (loop diagram, device split and why, OPTIMIZE table), per expectation 6.
 - [ ] OPTIMIZE table (Section 8.1) filled with measured baseline vs optimised numbers; per-stage latency shown live in the demo.
 - [ ] Grasp check triggers retries correctly.
 - [ ] **10+ trials per condition** for any claim (WARP authors: 1/20 differences are noise).
