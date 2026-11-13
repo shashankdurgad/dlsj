@@ -22,10 +22,11 @@ The policy never sees good or defective. At deployment the controller turns the 
 bowl colour and prompts "place the brick in the <colour> bowl".
 
 Keys while the page is focused:
-  space     start, mark in view, stop, save and start the next take (--no-continuous: just save)
-  enter     save and pause                                     1 2 3   choose bowl         i   mark in view
-  f         save as failed           h       discard             e   engage or hold the arm
-  d         show what the in-view detector sees                 v   one or two camera views
+  space     start a take / stop it                 m   mark the in-view moment (pick/place split)
+  s         save (then the next take starts; --no-continuous: just save)      enter   save and pause
+  d         discard                                f   save as failed          1 2 3   choose the plate
+  e         engage or hold the arm                 v   one or two camera views x       detector view
+The chosen plate stays selected across takes and restarts until you change it.
 """
 
 import argparse
@@ -150,6 +151,18 @@ class EpisodeRecorder:
             self.dataset = LeRobotDataset.create(self.repo_id, self.fps, robot_type=robot_type,
                                                  features=self.features(), use_videos=True, **kw)
         log.info("recording to %s (%d episodes already)", self.root, self.dataset.num_episodes)
+        self._load_bowl()
+
+    def _store_bowl(self) -> None:
+        if self.dataset is not None:
+            (self.sidecar / "selected_bowl.json").write_text(json.dumps({"bowl": self.bowl}))
+
+    def _load_bowl(self) -> None:
+        """Keep the plate chosen in an earlier session, if it is still one of the configured bowls."""
+        p = self.sidecar / "selected_bowl.json"
+        if p.exists():
+            bowl = json.loads(p.read_text()).get("bowl")
+            self.bowl = bowl if bowl in self.bowls else self.bowl
 
     @property
     def sidecar(self) -> Path:
@@ -181,14 +194,14 @@ class EpisodeRecorder:
         if c == "enter":
             c = "accept_pause" if self.phase == "review" else ""
         if c == "space":
-            if self.phase == "recording":
-                c = "inview" if self.stage == "pick" else "stop"
-            else:
-                c = {"idle": "start", "review": "accept"}.get(self.phase, "")
+            c = {"idle": "start", "recording": "stop"}.get(self.phase, "")
+        if c == "save":
+            c = "accept" if self.phase in ("recording", "review") else ""
         if c.startswith("bowl") and c[4:].isdigit():
             i = int(c[4:]) - 1
             if 0 <= i < len(self.bowls) and self.phase != "saving":
                 self.bowl = self.bowls[i]
+                self._store_bowl()
             return
         if c == "inview" and self.phase == "recording" and self.stage == "pick":
             self._split(auto=False)
@@ -207,10 +220,10 @@ class EpisodeRecorder:
                 self._to_review()
             success = c != "fail"
             if success and self.split_frame is None:
-                self.message = "Mark the in-view moment first (space or i), or save as failed (f)"
+                self.message = "Mark the in-view moment first (m), or save as failed (f)"
                 return
             if success and self.bowl is None:
-                self.message = "Choose a bowl (1–3)"
+                self.message = "Choose a plate (1–3)"
                 return
             self._save(success=success)
             if self.continuous and c != "accept_pause" and self.phase == "idle":
@@ -254,7 +267,6 @@ class EpisodeRecorder:
             self.stats.add(self._take_duration)
         self.phase = "idle"
         self.message = f"Saved episode {ep}" if success else f"Saved episode {ep} as failed"
-        self.bowl = None  # choose again for the next take, so a stale choice can't mislabel it
         self._reset_take()
 
     # ------------------------------------------------------------------ sampling
@@ -444,6 +456,7 @@ body{background:var(--bg);color:var(--fg);font:400 15px/1.35 Barlow,ui-sans-seri
 .bowl{width:64px;height:64px;border-radius:50%;border:0;cursor:pointer;position:relative;background:var(--c);opacity:.35;transform:scale(.88);transition:opacity .2s,transform .2s,box-shadow .2s}
 .bowl.sel{opacity:1;transform:scale(1);box-shadow:0 0 0 3px var(--bg),0 0 0 5px var(--fg)}
 .bowl kbd{position:absolute;right:-6px;bottom:-6px;background:var(--panel);color:var(--fg);border:1px solid var(--line);border-radius:6px;padding:1px 6px;font:500 12px Barlow,sans-serif}
+.platesel{text-align:center;color:var(--mute);font-size:14px;margin-top:-18px}.platesel b{color:var(--fg);font-weight:500}
 .bowl:focus-visible{box-shadow:0 0 0 3px var(--bg),0 0 0 5px var(--glow)}
 .msg{min-height:22px;text-align:center;color:var(--mute);font-size:15px;transition:color .2s}
 .cue .msg{color:var(--fg);font-size:20px;font-weight:500}
@@ -480,11 +493,12 @@ body{background:var(--bg);color:var(--fg);font:400 15px/1.35 Barlow,ui-sans-seri
   <div class="time"><span class="n" id="t">0.0</span><span class="u" id="unit">Ready</span></div></div>
  <div class="stages"><span class="node"><i></i>Pick</span><span class="seg" id="s1"></span><span class="node"><i></i>In view</span><span class="seg" id="s2"></span><span class="node"><i></i>Place</span></div>
  <div class="bowls" id="bowls"></div>
+ <div class="platesel" id="platesel"></div>
  <div class="meter" id="meter"><span>Inspection</span><div class="mbar"><i id="mfill"></i><b id="mthr"></b></div></div>
  <div class="msg" id="msg"></div>
  <div class="tally"><span><b id="ok">0</b>Saved</span><span><b id="bad">0</b>Failed</span><span><b id="med">–</b>Median time</span></div>
 </aside>
-<footer class="keys"><span><kbd>Space</kbd><span id="kspace">Start</span></span><span><kbd>Enter</kbd><span id="kenter">Save and pause</span></span><span><kbd>1–3</kbd>Bowl</span><span><kbd>I</kbd>In view</span><span><kbd>F</kbd>Failed</span><span><kbd>H</kbd>Discard</span><span class="grow"></span><span><kbd>E</kbd><span id="keng">Engage</span></span><span><kbd>V</kbd>Views</span><span><kbd>D</kbd>Detector</span></footer>
+<footer class="keys"><span><kbd>Space</kbd><span id="kspace">Start</span></span><span><kbd>M</kbd>Mark in view</span><span><kbd>S</kbd><span id="ksave">Save</span></span><span><kbd>D</kbd>Discard</span><span><kbd>F</kbd>Failed</span><span><kbd>1–3</kbd>Plate</span><span class="grow"></span><span><kbd>E</kbd><span id="keng">Engage</span></span><span><kbd>V</kbd>Views</span><span><kbd>X</kbd>Detector</span></footer>
 </div>
 <script>
 const TARGET=__TARGET__,C=2*Math.PI*140,SW={red:'#e0393e',blue:'#2f6fe0',green:'#2fb36b',yellow:'#f5c518',orange:'#f2711c',white:'#e8e8e8',black:'#2a2a2a',purple:'#8e44d9',pink:'#e86aa6',grey:'#8d939b',gray:'#8d939b'};
@@ -502,10 +516,11 @@ function show(i,n){panes[i]=n;const d=pane(i),ic=last.inspect_camera;
  for(const k in thumbs)thumbs[k].classList.toggle('active',visible().includes(k))}
 function pick(n){if(visible().includes(n))return;show(split?1:0,n)}
 setInterval(()=>{if(debug)visible().forEach((n,i)=>{if(n&&n===last.inspect_camera)pane(i).querySelector('img').src='/rec/inspect.jpg?'+Date.now()})},120);
-document.addEventListener('keydown',e=>{if(e.repeat||e.metaKey||e.ctrlKey)return;const k=e.key.toLowerCase();
- if(k===' '){e.preventDefault();rec('space')}else if(k.length===1&&'123'.includes(k))rec('bowl'+k);else if(k==='i')rec('inview');
- else if(k==='enter'){e.preventDefault();rec('enter')}else if(k==='f')rec('fail');else if(k==='h'||k==='backspace'){e.preventDefault();rec('discard')}else if(k==='e')tele(teleLive?'hold':'engage');
- else if(k==='d'){debug=!debug;panes.forEach((n,i)=>{if(n)show(i,n)})}
+document.addEventListener('keydown',e=>{if(e.repeat||e.metaKey||e.ctrlKey||e.altKey)return;const k=e.key.toLowerCase();
+ if(k===' '){e.preventDefault();rec('space')}else if(k.length===1&&'123'.includes(k))rec('bowl'+k);else if(k==='m')rec('inview');
+ else if(k==='s')rec('save');else if(k==='d')rec('discard');else if(k==='f')rec('fail');
+ else if(k==='enter'){e.preventDefault();rec('enter')}else if(k==='e')tele(teleLive?'hold':'engage');
+ else if(k==='x'){debug=!debug;panes.forEach((n,i)=>{if(n)show(i,n)})}
  else if(k==='v'){split=!split;app.classList.toggle('single',!split);panes.forEach((n,i)=>{if(n)show(i,n)})}});
 function bowls(r){const b=$('bowls');if(b.dataset.k!==r.bowls.join()){b.dataset.k=r.bowls.join();b.innerHTML='';
  r.bowls.forEach((c,i)=>{const x=document.createElement('button');x.className='bowl';x.style.setProperty('--c',SW[c]||c);x.setAttribute('aria-label',c+' bowl');x.innerHTML='<kbd>'+(i+1)+'</kbd>';x.onclick=()=>rec('bowl'+(i+1));b.appendChild(x)})}
@@ -539,13 +554,12 @@ async function tick(){try{
  document.querySelectorAll('.node').forEach((n,i)=>{n.classList.toggle('on',active&&i<=now);n.classList.toggle('now',active&&i===now)});
  $('s1').classList.toggle('on',active&&now>=1);$('s2').classList.toggle('on',active&&now>=2);
  if(r.inspect_camera&&thumbs[r.inspect_camera])thumbs[r.inspect_camera].classList.toggle('seen',r.in_view);
- bowls(r);guides(r);
+ bowls(r);guides(r);$('platesel').innerHTML=r.bowl?'Plate <b>'+r.bowl+'</b>':'No plate chosen';
  $('meter').style.display=(r.inspect_camera&&r.threshold)?'':'none';$('meter').classList.toggle('inview',r.in_view);app.classList.toggle('iv',!!r.in_view);
  $('mfill').style.width=Math.min(100,100*(r.prob||0))+'%';$('mthr').style.left=r.threshold?(100*r.threshold)+'%':'-9px';
  const cue=recording&&r.stage==='place';app.classList.toggle('cue',cue);
- $('msg').textContent=cue?(r.bowl?'Place in the '+r.bowl+' bowl':'In view. Choose a bowl (1\u20133)'):(r.message||(r.phase==='review'?(r.continuous?'Space saves and starts the next take':'Space to save'):(recording?'Space when the brick is properly in front of the inspection camera':'')));
- $('kspace').textContent={idle:'Start',recording:r.stage==='pick'?'Mark in view':'Stop',review:r.continuous?'Save and next':'Save',saving:'Saving'}[r.phase]||'';
- $('kenter').parentNode.style.display=(r.phase==='review'&&r.continuous)?'':'none';
+ $('msg').textContent=cue?(r.bowl?'Place on the '+r.bowl+' plate':'In view. Choose a plate (1\u20133)'):(r.message||(r.phase==='review'?(r.continuous?'S saves and starts the next take. D discards.':'S saves. D discards.'):(recording?'M when the brick is properly in front of the inspection camera':'')));
+ $('kspace').textContent=r.phase==='recording'?'Stop':'Start';$('ksave').textContent=r.continuous?'Save and next':'Save';
  $('ok').textContent=r.saved.success;$('bad').textContent=r.saved.failure;$('med').textContent=r.median_s===null?'–':r.median_s+'s';
  last=r;
 }catch(e){$('arm').textContent='Disconnected'}}
@@ -556,7 +570,7 @@ setInterval(tick,100);tick();
 def make_handler(streams: dict, teleop, recorder: EpisodeRecorder, target_s: float | None):
     base = teleop_web.make_handler(streams, teleop)
     page = PAGE.replace("__TARGET__", json.dumps(target_s)).encode()
-    commands = ({"space", "enter", "start", "stop", "accept", "accept_pause", "fail", "discard", "inview"}
+    commands = ({"space", "enter", "save", "start", "stop", "accept", "accept_pause", "fail", "discard", "inview"}
                 | {f"bowl{i}" for i in range(1, 10)})
 
     class Handler(base):
