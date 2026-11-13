@@ -10,6 +10,7 @@ Frames are saved as full-resolution JPEGs to <out>/<session>/<tag>/<00000>.jpg a
 Keys while the page is focused (tap = one frame, hold = keep capturing, ~8 per second):
   1   capture "in view"        brick fully in view
   2   capture "not in view"    no brick, partial brick, hands, bowls
+  u / Backspace   undo: delete the latest capture (again to go further back), also on the remote copy
 
 With --sync, the output folder is copied with rsync every ~10 s and once at exit. ssh auth comes from the
 environment (SSH_ASKPASS, SSH_ASKPASS_REQUIRE=force, DISPLAY). Only paths under ~/desmond on the remote
@@ -51,16 +52,40 @@ class Capture:
         self.quality = quality
         self.last_tag: str | None = None
         self.counts = {t: 0 for t in TAGS}
+        self._next = {t: 0 for t in TAGS}  # file numbers are never reused, so an undo can't race a sync
+        self.history: list[tuple[str, Path]] = []
         self.last_seq: int | None = None
         self.syncer: "Syncer | None" = None
         self._lock = threading.Lock()
         self._stop = threading.Event()
 
     def command(self, name: str) -> Path | None:
-        """Capture the latest frame under tag `name` ("in_view" or "not_in_view")."""
+        """Capture the latest frame under tag `name` ("in_view" or "not_in_view"), or "undo" the latest."""
+        if name == "undo":
+            return self.undo()
         if name not in TAGS:
             raise ValueError(f"unknown command {name!r}")
         return self.save(name)
+
+    def undo(self) -> Path | None:
+        """Delete the most recent capture: its JPEG, its index row and its count; queue the remote delete."""
+        with self._lock:
+            if not self.history:
+                return None
+            tag, path = self.history.pop()
+            path.unlink(missing_ok=True)
+            rel = path.relative_to(self.dir).as_posix()
+            index = self.dir / "index.csv"
+            if index.exists():
+                with index.open(newline="") as f:
+                    kept = [r for r in csv.reader(f) if not r or r[0] != rel]
+                with index.open("w", newline="") as f:
+                    csv.writer(f).writerows(kept)
+            self.counts[tag] -= 1
+            self.last_tag = self.history[-1][0] if self.history else None
+            if self.syncer is not None:
+                self.syncer.queue_delete(path.relative_to(self.out).as_posix())
+            return path
 
     def save(self, tag: str) -> Path | None:
         """Write the latest frame under `tag`. Returns None if there is no new frame since the last save."""
@@ -70,7 +95,7 @@ class Capture:
                 return None
             folder = self.dir / tag
             folder.mkdir(parents=True, exist_ok=True)
-            path = folder / f"{self.counts[tag]:05d}.jpg"
+            path = folder / f"{self._next[tag]:05d}.jpg"
             if not cv2.imwrite(str(path), frame, [cv2.IMWRITE_JPEG_QUALITY, self.quality]):
                 log.error("could not write %s", path)
                 return None
@@ -84,6 +109,8 @@ class Capture:
             self.last_seq = seq
             self.last_tag = tag
             self.counts[tag] += 1
+            self._next[tag] += 1
+            self.history.append((tag, path))
             return path
 
     def stop(self) -> None:
@@ -92,6 +119,7 @@ class Capture:
     def snapshot(self) -> dict:
         return {
             "last_tag": self.last_tag,
+            "can_undo": bool(self.history),
             "counts": dict(self.counts),
             "folder": str(self.dir),
             "camera": self.stream.info(),
@@ -115,16 +143,26 @@ class Syncer:
         self.error: str | None = None
         self.busy = False
         self._made_dir = False
+        self._deletes: list[str] = []  # paths relative to `out`, removed remotely before the next rsync
         self._lock = threading.Lock()
         self._stop = threading.Event()
 
     def _ssh(self) -> list[str]:
         return ["ssh", "-F", self.ssh_config]
 
-    def commands(self) -> list[list[str]]:
+    def queue_delete(self, rel: str) -> None:
+        """Remove `rel` (a path inside the output folder) from the remote copy at the next sync."""
+        parts = Path(rel).parts
+        if Path(rel).is_absolute() or ".." in parts or not parts:
+            raise ValueError(f"refusing to delete {rel!r}")
+        self._deletes.append(Path(rel).as_posix())
+
+    def commands(self, deletes: list[str] | None = None) -> list[list[str]]:
         cmds = []
         if not self._made_dir:
             cmds.append(self._ssh() + [self.host, "mkdir", "-p", self.remote_dir])
+        if deletes:  # only single files we captured and then undid, always under ~/desmond
+            cmds.append(self._ssh() + [self.host, "rm", "-f", "--"] + [shlex.quote(f"{self.remote_dir}/{d}") for d in deletes])
         cmds.append(["rsync", "-az", "-e", shlex.join(self._ssh()), f"{self.out}/", self.dest])
         return cmds
 
@@ -133,15 +171,17 @@ class Syncer:
             self.busy = True
             try:
                 self.out.mkdir(parents=True, exist_ok=True)
-                for cmd in self.commands():
+                deletes = list(self._deletes)
+                for cmd in self.commands(deletes):
                     r = subprocess.run(cmd, capture_output=True, text=True, timeout=120, stdin=subprocess.DEVNULL)
                     if r.returncode != 0:
                         msg = (r.stderr or r.stdout or "").strip().splitlines()
                         self.error = f"{cmd[0]} exit {r.returncode}" + (f": {msg[-1]}" if msg else "")
                         log.warning("sync failed: %s", self.error)
                         return False
-                    if cmd[0] == "ssh":
+                    if cmd[0] == "ssh" and "mkdir" in cmd:
                         self._made_dir = True
+                del self._deletes[: len(deletes)]
                 self.last_ok, self.error = time.time(), None
                 return True
             except (OSError, subprocess.SubprocessError) as e:
@@ -186,10 +226,15 @@ body{background:var(--bg);color:var(--fg);font:400 15px/1.35 Barlow,ui-sans-seri
 .tag.hit{border-color:var(--fg);color:var(--fg);background:#24282d;transition:none}
 #not_in_view.hit{border-color:var(--red)}
 .tag:focus-visible{outline:2px solid var(--fg);outline-offset:2px}
-.hint{margin-top:auto;color:var(--mute);font-size:13px}
+.hint{color:var(--mute);font-size:13px}
+.undo{margin-top:auto;padding:14px;border-radius:14px;border:1px solid var(--line);background:transparent;color:var(--fg);font:500 15px Barlow,ui-sans-serif,system-ui,sans-serif;cursor:pointer;transition:border-color .2s,opacity .2s}
+.undo:disabled{opacity:.35;cursor:default}
+.undo.hit{border-color:var(--fg);transition:none}
+.undo:focus-visible{outline:2px solid var(--fg);outline-offset:2px}
+.undo kbd{font:500 12px Barlow,sans-serif;border:1px solid currentColor;border-radius:6px;padding:1px 7px;margin-left:10px;opacity:.7}
 .status{grid-column:1/-1;padding:10px 20px 14px;color:var(--mute);font-size:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .status .err{color:var(--red)}
-@media (max-width:820px){body{overflow:auto}.app{grid-template-columns:minmax(0,1fr);height:auto}.view{padding:16px 16px 0}.main{flex:none;width:100%;aspect-ratio:4/3}.side{padding:14px 16px;display:grid;grid-template-columns:1fr 1fr;gap:12px}.tag{padding:14px 16px}.tag .n{font-size:52px}.hint{grid-column:1/-1;margin-top:0}.status{padding:4px 16px 16px;white-space:normal}}
+@media (max-width:820px){body{overflow:auto}.app{grid-template-columns:minmax(0,1fr);height:auto}.view{padding:16px 16px 0}.main{flex:none;width:100%;aspect-ratio:4/3}.side{padding:14px 16px;display:grid;grid-template-columns:1fr 1fr;gap:12px}.tag{padding:14px 16px}.tag .n{font-size:52px}.undo,.hint{grid-column:1/-1;margin-top:0}.status{padding:4px 16px 16px;white-space:normal}}
 @media (prefers-reduced-motion:reduce){*{transition:none!important}}
 </style></head>
 <body><div class="app" id="app">
@@ -197,6 +242,7 @@ body{background:var(--bg);color:var(--fg);font:400 15px/1.35 Barlow,ui-sans-seri
 <aside class="side">
  <button class="tag" id="in_view"><span class="n" id="n_in_view">0</span><span><kbd>1</kbd>In view</span></button>
  <button class="tag" id="not_in_view"><span class="n" id="n_not_in_view">0</span><span><kbd>2</kbd>Not in view</span></button>
+ <button class="undo" id="undo">Undo last <kbd>U</kbd></button>
  <div class="hint">Tap to capture one frame. Hold to keep capturing.</div>
 </aside>
 <div class="status" id="status">Connecting</div>
@@ -206,14 +252,17 @@ const $=id=>document.getElementById(id),app=$('app');
 let last=null,lastShot=0;const HOLD_MS=120;
 function flash(t){const m=$('main'),b=$(t);m.className='main flash '+t;b.classList.add('hit');setTimeout(()=>{m.className='main';b.classList.remove('hit')},90)}
 function cap(t){const now=Date.now();if(now-lastShot<HOLD_MS)return;lastShot=now;flash(t);fetch('/cap/'+t,{method:'POST'}).then(tick)}
-$('in_view').onclick=()=>cap('in_view');$('not_in_view').onclick=()=>cap('not_in_view');
+function undo(){const u=$('undo');u.classList.add('hit');setTimeout(()=>u.classList.remove('hit'),90);fetch('/cap/undo',{method:'POST'}).then(tick)}
+$('in_view').onclick=()=>cap('in_view');$('not_in_view').onclick=()=>cap('not_in_view');$('undo').onclick=undo;
 document.addEventListener('keydown',e=>{if(e.metaKey||e.ctrlKey||e.altKey)return;
- if(e.key==='1')cap('in_view');else if(e.key==='2')cap('not_in_view')});
+ if(e.key==='1')cap('in_view');else if(e.key==='2')cap('not_in_view');
+ else if(!e.repeat&&(e.key==='u'||e.key==='U'||e.key==='Backspace')){e.preventDefault();undo()}});
 function ago(t){const s=Math.max(0,Math.round(Date.now()/1000-t));return s<60?s+'s ago':Math.round(s/60)+'m ago'}
 function esc(s){return String(s).replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]))}
 async function tick(){try{
  const r=await fetch('/cap/state').then(x=>x.json());
  for(const t of ['in_view','not_in_view'])$('n_'+t).textContent=r.counts[t];
+ $('undo').disabled=!r.can_undo;
  const c=r.camera,parts=[];
  parts.push(c.error?'<span class="err">Camera '+esc(c.error)+'</span>':'Camera '+(c.size||'waiting')+(c.fps?' at '+c.fps+' fps':''));
  const s=r.sync;
@@ -229,7 +278,7 @@ setInterval(tick,150);tick();
 def make_handler(streams: dict, capture: Capture):
     base = teleop_web.make_handler(streams, None)
     page = PAGE.encode()
-    commands = set(TAGS)
+    commands = set(TAGS) | {"undo"}
 
     class Handler(base):
         def do_GET(self):

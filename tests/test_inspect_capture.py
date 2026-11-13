@@ -140,3 +140,56 @@ def test_page_javascript_parses(tmp_path):
     js.write_text(re.search(r"<script>(.*)</script>", PAGE, re.S).group(1))
     r = subprocess.run([node, "--check", str(js)], capture_output=True, text=True)
     assert r.returncode == 0, r.stderr
+
+
+def test_undo_deletes_latest_capture_and_walks_back(cap):
+    for tag in ["in_view", "not_in_view", "in_view"]:
+        cap.stream.new_frame()
+        cap.command(tag)
+    third = cap.dir / "in_view" / "00001.jpg"
+    assert third.exists()
+    assert cap.command("undo") == third and not third.exists()
+    assert cap.counts == {"in_view": 1, "not_in_view": 1} and cap.last_tag == "not_in_view"
+    assert [r["file"] for r in rows(cap)] == ["in_view/00000.jpg", "not_in_view/00000.jpg"]
+    assert cap.command("undo") == cap.dir / "not_in_view" / "00000.jpg"
+    assert cap.counts == {"in_view": 1, "not_in_view": 0}
+    cap.stream.new_frame()
+    assert cap.command("in_view") == cap.dir / "in_view" / "00002.jpg"  # numbers are never reused
+    assert cap.command("undo") and cap.command("undo") and cap.command("undo") is None  # nothing left
+    assert cap.counts == {"in_view": 0, "not_in_view": 0} and rows(cap) == []
+
+
+def test_undo_removes_the_remote_copy_before_the_next_rsync(cap, monkeypatch):
+    run = FakeRun()
+    monkeypatch.setattr(inspect_capture.subprocess, "run", run)
+    cap.syncer = Syncer(cap.out, "gb10:desmond/inspect_frames/", ssh_config="/x/ssh_config")
+    cap.stream.new_frame()
+    cap.command("in_view")
+    assert cap.syncer.sync_once()
+    cap.command("undo")
+    assert cap.syncer.sync_once()
+    rm = [c for c in run.calls if "rm" in c]
+    assert rm == [["ssh", "-F", "/x/ssh_config", "gb10", "rm", "-f", "--",
+                   "desmond/inspect_frames/20260101_120000/in_view/00000.jpg"]]
+    assert run.calls.index(rm[0]) < len(run.calls) - 1 and run.calls[-1][0] == "rsync"  # delete, then rsync
+    assert cap.syncer.sync_once() and len([c for c in run.calls if "rm" in c]) == 1  # sent once
+    assert not any("--delete" in a for c in run.calls for a in c)
+    with pytest.raises(ValueError):
+        cap.syncer.queue_delete("../../etc/passwd")
+    with pytest.raises(ValueError):
+        cap.syncer.queue_delete("/abs/path.jpg")
+
+
+def test_undo_over_http(cap):
+    cap.stream.new_frame()
+    cap.command("in_view")
+    srv = ThreadingHTTPServer(("127.0.0.1", 0), make_handler({"inspect": cap.stream}, cap))
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    base = f"http://127.0.0.1:{srv.server_address[1]}"
+    try:
+        assert json.loads(urllib.request.urlopen(base + "/cap/state").read())["can_undo"]
+        urllib.request.urlopen(urllib.request.Request(base + "/cap/undo", method="POST"))
+        state = json.loads(urllib.request.urlopen(base + "/cap/state").read())
+        assert state["counts"]["in_view"] == 0 and not state["can_undo"]
+    finally:
+        srv.shutdown()
