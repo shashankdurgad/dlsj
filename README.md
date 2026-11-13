@@ -1,6 +1,6 @@
 # dlsj: SO-101 Robot Learning Hackathon (Intel XPU)
 
-Pick-and-place, colour sorting and anomaly detection on an SO-101 leader/follower arm with a wrist-mounted Intel RealSense camera, trained and deployed on an Intel GPU (XPU).
+Pick-and-place, colour sorting and anomaly detection on an SO-101 leader/follower arm with a fixed overhead Intel RealSense depth camera and a wrist RGB webcam, trained and deployed on an Intel GPU (XPU).
 
 The full plan, commands, code snippets and sources are in **[docs/PLAYBOOK.md](docs/PLAYBOOK.md)**.
 
@@ -13,12 +13,12 @@ The full plan, commands, code snippets and sources are in **[docs/PLAYBOOK.md](d
 | Data | ~150 brisk demos across 6–10 lighting/background conditions, idle frames trimmed |
 | Robustness | LeRobot image augmentation (brightness, contrast, shadow, white balance), hue jitter ≈ 0 |
 | Sorting | HSV colour selector → per-bin ACT policy (the decision stays outside the policy) |
-| Anomaly detection | Anomalib PaDiM/PatchCore at a fixed inspection pose, OpenVINO export, plus a depth height check |
+| Anomaly detection | Anomalib PaDiM/PatchCore on the overhead RealSense view, OpenVINO export, plus a depth height check |
 | Force | Gripper `Present_Current` in `observation.state` + rule-based grasp verification |
 
 ## Timeline
 
-1. **0–1 h:** environment setup; verify the arm and camera.
+1. **0–1 h:** environment setup; verify the arm and both cameras.
 2. **1–3 h:** collect diverse demos; capture good/bad images for anomaly detection.
 3. **3–5 h:** trim data, train ACT on XPU, train Anomalib.
 4. **5–7 h:** export to OpenVINO, deploy async, add the HSV selector and grasp check.

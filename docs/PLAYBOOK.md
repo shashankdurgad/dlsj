@@ -2,7 +2,7 @@
 
 *Compiled 13 Nov 2026 from the official links plus four research threads: anomaly detection, robustness, speed, and force sensing. Updated the same day with XPU inference optimisation and a VLA comparison (Sections 2.1, 4.5; full report in `reports/XPU kernels and Chinese VLAs.md`).*
 
-**Hardware:** SO-101 leader/follower arms, wrist-mounted Intel RealSense depth camera (likely D405, ~7–50 cm range), Intel GPU ("XPU"), optional force sensor from a friend.
+**Hardware:** SO-101 leader/follower arms; **two cameras**: a fixed **overhead Intel RealSense** RGB-D camera (likely D405, ~7–50 cm range; mounted <50 cm from the workspace) and a **plain RGB webcam on the wrist**. Intel GPU ("XPU"), optional force sensor from a friend.
 **Tasks:** pick-and-place, sorting, anomaly detection.
 **Judged on (assumed):** success, robustness to lighting/texture/colour, speed.
 
@@ -17,15 +17,15 @@
 | Motor policy | **ACT**, trained in **bf16 on XPU**, 20–40k steps | Smallest, fastest to train, recommended first by LeRobot |
 | Deployment | **OpenVINO export** + `physicalai` runtime with **AsyncExecution**, chunk 50–100, **no temporal ensembling** | Low latency, smooth, hides inference time |
 | Data | ~150 brisk demos over **6–10 lighting/background conditions**, idle frames trimmed | Diversity beats quantity; fast demos give a fast policy |
-| Robustness | LeRobot image augmentation (brightness/contrast/shadow/white-balance), **hue jitter ≈ 0**; depth-based background replacement if time allows | Lighting robustness without destroying colour info |
+| Robustness | LeRobot image augmentation (brightness/contrast/shadow/white-balance), **hue jitter ≈ 0**; depth-based background replacement on the overhead view if time allows | Lighting robustness without destroying colour info |
 | Sorting | **HSV colour selector (or tiny classifier) → per-bin ACT policy** (or language-conditioned SmolVLA) | All policies score 0–10% on selective colour sorting end-to-end |
-| Anomaly detection | **Anomalib PaDiM/PatchCore** at a **fixed inspection pose**, OpenVINO export; **AnomalyDINO** if few images; plus **depth height-map check** | Intel-native, millisecond inference, works with ~100 good images |
+| Anomaly detection | **Anomalib PaDiM/PatchCore** on the **fixed overhead RealSense view** (arm parked out of frame), OpenVINO export; **AnomalyDINO** if few images; plus **depth height-map check** | Intel-native, millisecond inference, works with ~100 good images |
 | Force | **Gripper `Present_Current`** in `observation.state` + rule-based grasp verification; friend's sensor as a stretch | One SO-101 project reported 77.5% → 95% success |
 | VLA track (parallel) | **π0.5** (SnapFlow 1-step distil → OpenVINO INT8 + RTC) if ≥24 GB; else **SmolVLA**. X-VLA only as a 30-min smoke test | Only VLA with a measured Intel path (172 ms/chunk on Panther Lake); no Chinese VLA beats π0.5 in independent tests (Section 2.1) |
 | Stretch | DINOv2 encoder, green-screen-style augmentation, NPU offload of the action expert | Only with spare hours |
 
 ### Suggested timeline (adapt to remaining hours)
-1. **Hour 0–1:** environment setup (Section 1) and verify the arm and camera; one person starts collecting demos.
+1. **Hour 0–1:** environment setup (Section 1) and verify the arm and both cameras (lock exposure/WB, fix the overhead mount); one person starts collecting demos.
 2. **Hour 1–3:** collect diverse demos (Section 3); in parallel, capture good and bad images for anomaly detection (Section 6).
 3. **Hour 3–5:** trim data (Section 4.4), train ACT on XPU (Section 4); train Anomalib (Section 6).
 4. **Hour 5–7:** export to OpenVINO, deploy with async runtime, add the HSV selector and grasp check.
@@ -80,10 +80,23 @@ pip install "physicalai[so101,realsense]"
 - Connect to the SO-101 over its serial port. `verify_robot` runs an interactive joint-by-joint check.
 - Full walkthrough: `examples/tutorials/collect_train_deploy.ipynb` in the runtime repo. **Start here.**
 
-### 1.5 RealSense tips
+### 1.5 Camera setup (overhead RealSense + wrist webcam)
+**Overhead RealSense (RGB-D, fixed):**
 - Use `pyrealsense2`, or the runtime's `[realsense]` extra. You need the camera's serial number in configs.
-- Use **640×480 @ 30 fps**, and plug **directly into the laptop, not through a hub** (USB bandwidth causes frame drops).
-- **Lock exposure and white balance** (turn auto-exposure/auto-WB off) for anomaly detection, and ideally for policies too. Auto-exposure changes images between frames and between runs.
+- Use **640×480 @ 30 fps**, and plug **directly into the laptop, not through a hub** (USB bandwidth causes frame drops). Give it its own USB port/controller.
+- Keep it **within ~50 cm** of the workspace (D405 range is ~7–50 cm). Confirm the model with `rs-enumerate-devices`.
+- **Mount it rigidly and never move it** between recording and deployment. A bumped overhead camera hurts the policy and the anomaly detector more than any lighting change. Mark its position with tape.
+- Record **depth aligned to colour** (`rs.align(rs.stream.color)`) if you want the depth tricks in Sections 5.3, 5.5 and 6.4.
+- Capture an empty-table depth frame once as the **table plane** reference (Section 6.4).
+
+**Wrist webcam (RGB only):**
+- Plain UVC camera, so lock exposure/WB with `v4l2-ctl` (e.g. `v4l2-ctl -d /dev/videoN -c auto_exposure=1 -c white_balance_automatic=0`; control names vary by camera, list them with `v4l2-ctl -d /dev/videoN -l`). **Re-check after every replug**; cheap webcams reset.
+- Expect motion blur, rolling shutter and colour drift: it's the noisiest stream, so keep augmentation on for it (Section 5.2).
+
+**Both:**
+- **Lock exposure and white balance** (turn auto-exposure/auto-WB off). Auto-exposure changes images between frames and between runs.
+- Same fps (30) on both; read the latest frame from each inside the same `get_observation()` and check their timestamps stay close.
+- For VLA export, the camera count is **2** (Section 4.5).
 
 ---
 
@@ -130,7 +143,7 @@ pip install "physicalai[so101,realsense]"
 
 ### 3.2 Demo quality = policy speed
 - The policy copies your speed and hesitation. **Demo at the speed you want the robot to move**, decisively, with no fumbling. (Lesson from [Flash ALOHA](https://flash-aloha.github.io), which reached >80% success at near-human speed with 50 demos per task.)
-- **Keep your hands and arms out of the camera view.** Flash ALOHA masks the operator because operator appearance hurts visual alignment. The wrist camera mostly avoids this, but watch any static cameras.
+- **Keep your hands and arms out of the camera view.** Flash ALOHA masks the operator because operator appearance hurts visual alignment. The wrist camera mostly avoids this, but **the overhead RealSense will see you**: teleoperate from outside its frame.
 - Discard failed or retried demos, or record them separately; don't train on them by default.
 - Keep a consistent strategy: always approach from the same side and grasp the same way. Multimodal demos confuse ACT.
 
@@ -267,11 +280,11 @@ Full evidence in `reports/XPU kernels and Chinese VLAs.md`. **Key lesson:** on I
 | # | Step | How | Gain |
 |---|---|---|---|
 | 0 ✓ | Pin the stack | PyTorch ≥2.11 XPU, OpenVINO 2026.1+, `xe` kernel driver (not i915) on iGPUs, no IPEX, pin P-cores with `taskset` | Avoids regressions, `CL_OUT_OF_RESOURCES` |
-| 1 ✓ | Shrink the input | 1–2 cameras (wrist + one fixed) at 224², fixed 64 language tokens, chunk 50 | ~7–9 ms per view on a 4090; more on iGPU |
+| 1 ✓ | Shrink the input | Our setup is already 2 cameras (overhead RealSense RGB + wrist webcam) at 224², fixed 64 language tokens, chunk 50. Don't add depth as a third image unless needed | ~7–9 ms per extra view on a 4090; more on iGPU. 2 views ≈ 27 ms vs 37 ms for 3 on a 4090 |
 | 2 | Distil to 1 step | `configs/physicalai/pi05/so101/snapflow.yaml`; SmolVLA: test 3–5 Euler steps | Expert cost ~10× less; LIBERO 98.75% vs 97.75% (10-step) |
-| 3 ✓ | Static-shape OpenVINO IR (+RTC baked in) | π0.5: `convert_ov_rtc.py` in robotics-ai-suite `pi05-rtc-ov`, **set `-c/--camera_num`** (defaults to 4, baked in). ACT/SmolVLA: `physicalai export --backend openvino` | Base of 555 → 172 ms |
+| 3 ✓ | Static-shape OpenVINO IR (+RTC baked in) | π0.5: `convert_ov_rtc.py` in robotics-ai-suite `pi05-rtc-ov`, **set `-c 2`** (`--camera_num` defaults to 4 and is baked into the IR). ACT/SmolVLA: `physicalai export --backend openvino` | Base of 555 → 172 ms |
 | 4 | INT8 weight-only | `--compress_int8` / `compress_weights_openvino_int8_sym`; validate trajectory MSE/cosine vs PyTorch | >30% faster, half size. **Skip for ACT** (launch-bound, keep FP16) |
-| 5 | One batched vision call | Exported vision IR has batch = n_cams, not n calls | −50–67% vision weight traffic |
+| 5 | One batched vision call | Exported vision IR has batch = 2 (both cameras), not 2 calls | −50% vision weight traffic with 2 cameras |
 | 6 ✓ | Make fusions fire | Export attention via `F.scaled_dot_product_attention`, standard RMSNorm/SwiGLU. Check `benchmark_app -m model.xml -d GPU -hint latency -pc` shows `sdpa` + GatedMLP kernels and oneDNN GEMMs | Fixes the ~104 µs/launch expert cost |
 | 7 ✓ | Latency config | `{"PERFORMANCE_HINT":"LATENCY","INFERENCE_PRECISION_HINT":"f16","NUM_STREAMS":"1","CACHE_DIR":"./ovcache"}`; pre-allocate and reuse tensors; leave queue throttle default | Full blob caching only for static shapes |
 | 8 ✓ | Async (+ RTC for VLA) | `AsyncExecution(request_threshold=0.5)`, `execution_horizon ≤ chunk/2` | Hides remaining latency (~30% faster tasks for SmolVLA) |
@@ -325,18 +338,21 @@ cfg = ImageTransformsConfig(enable=True, max_num_transforms=3, random_order=True
 ```
 - ⚠️ CLI form for `tfs` (`--dataset.image_transforms.tfs='{...}'`) is undocumented; verify it parses.
 - ⚠️ **Colour sorting:** keep **hue jitter at ~0** and saturation narrow, otherwise the policy learns to ignore the colour it needs. Brightness, white-balance and shadow jitter are safe.
-- **Wrist camera:** keep affine shifts and crops small; large crops break image-to-action alignment.
+- **Wrist webcam:** keep affine shifts and crops small; large crops break image-to-action alignment. Add `MotionBlur`/`GaussianNoise` here if available, since it's the noisiest stream.
+- **Overhead RealSense:** fixed view, so small `RandomAffine` shifts (a few px) help tolerate a slightly bumped mount; keep them small.
 - Physical AI Studio's README doesn't document augmentation, so **train in LeRobot if you need it.**
 
 ### 5.3 Background replacement (1–3 h, big gain on background/texture shift)
 - **GreenAug** ([arXiv 2407.07868](https://arxiv.org/html/2407.07868v2)): demos on a green screen with random textures keyed in. **91% average success vs 55% (no aug) and 70% (standard aug)**. Texture variety matters: no texture 48%, solid colours 65%, real textures 87%. Costs ~0.009 s per frame.
-- **Depth as a green screen (untested idea):** with the RealSense, mark pixels beyond the table depth as background and replace them with random texture photos, or zero them. Needs aligned depth recorded with the dataset.
+- **Depth as a green screen (untested idea):** the overhead RealSense is fixed, so "background" is everything at or below the table plane, or outside the workspace. Replace those pixels in the **overhead image only** with random texture photos (the wrist webcam has no depth). Needs aligned depth recorded with the dataset.
 - **Cheaper:** random overlay `img' = (1−α)·img + α·random_photo` with α ≈ 0.2–0.3 on part of each batch ([arXiv 2011.13389](https://arxiv.org/pdf/2011.13389) used α=0.5 in RL).
 
 ```python
 import torch, random
 class DepthBackgroundSwap:
-    """Replace far-away pixels with a random texture. Needs depth aligned to RGB."""
+    """Overhead camera only: replace table/background pixels with a random texture.
+    Needs depth aligned to RGB. Set max_depth_m just above the table surface depth
+    (e.g. table_depth - 0.005) so anything standing on the table is kept."""
     def __init__(self, textures, max_depth_m=0.45, p=0.5):
         self.textures, self.max_depth, self.p = textures, max_depth_m, p
     def __call__(self, rgb, depth):            # rgb: (3,H,W) float [0,1]; depth: (H,W) metres
@@ -352,7 +368,7 @@ class DepthBackgroundSwap:
 
 ### 5.5 Depth / point clouds (high payoff, high risk)
 - **DP3** drops colour from point clouds and generalised across cube colours with 40 real demos ([project](https://3d-diffusion-policy.github.io)). Colour-blind by design, so it can't sort by colour, and full integration is too much for a hackathon.
-- Cheaper: feed **depth (or depth-masked RGB) as a second image** into ACT.
+- Cheaper: feed **overhead depth (or depth-masked overhead RGB) as an extra image** into ACT. This adds a third image stream (~one extra view of latency for a VLA), so try RGB-only first.
 
 ### 5.6 Colour sorting: keep the decision outside the policy
 - VLAs often grasp fine but pick the wrong object. SmolVLA dropped from 44% to 0% on unseen object–region pairings, and more data barely helped ([source](https://www.alphaxiv.org/abs/2602.24143.md)).
@@ -387,7 +403,7 @@ def dominant_colour(bgr, roi=None, min_px=400):
 ## 6. Anomaly detection
 
 ### 6.1 Recommended approach
-**Anomalib PaDiM or PatchCore**, trained on **50–200 "good" crops from one fixed inspection pose**, exported to OpenVINO, gating a reject/sort action. Runs **separately from the policy**.
+**Anomalib PaDiM or PatchCore**, trained on **50–200 "good" crops from the fixed overhead RealSense**, exported to OpenVINO, gating a reject/sort action. Runs **separately from the policy**. Because the overhead camera is fixed, there is no inspection pose to reach: park the arm out of frame and inspect the object where it sits (or at a taped inspection spot on the table, which gives the tightest crop).
 
 - Intel's own robot demo: a Dobot arm with **PaDiM, resnet18, 256×256, 1 epoch, F1AdaptiveThreshold** ([Intel article](https://www.intel.com/content/www/us/en/developer/articles/training/defect-detection-with-anomalib.html)), which is almost exactly this setup.
 - Anomalib v2.7.0 has 33 image models, including PatchCore, PaDiM, EfficientAd, Dinomaly, SuperSimpleNet, UniNet, and few/zero-shot **AnomalyDINO, WinCLIP, FoundAD, AnomalyVFM, VLM-AD** ([models](https://anomalib.readthedocs.io/en/latest/markdown/guides/reference/models/image/index.html)).
@@ -401,7 +417,7 @@ pip install "anomalib[xpu,openvino]"
 Dataset layout:
 ```
 data/
-  good/   # 50–200 images of normal objects at the inspection pose
+  good/   # 50–200 overhead crops of normal objects (same spot/crop size as at run time)
   bad/    # optional: a few defective examples (for threshold calibration/eval)
 ```
 ```python
@@ -466,22 +482,23 @@ def height_features(depth_m, table_depth_m, mask):
 # Fit mean/std on good samples; flag if any |z| > 3. Final decision = RGB_flag OR depth_flag.
 ```
 Catches wrong size, missing parts, stacked or tipped objects.
+- With the **fixed overhead RealSense**, `table_depth_m` is a per-pixel depth map of the empty table captured once at setup (median of ~30 frames). The object mask is simply `table_depth_m - depth_m > 5 mm`. Recapture it if the camera or table moves.
 
 ### 6.5 Robustness of the detector
 - In the RAD benchmark, **memory-bank methods (PatchCore) were the most robust to lighting and viewpoint changes**; flow/distillation methods were hurt by light spots. **Viewpoint misalignment caused false positives for every method** ([arXiv 2406.07176](https://arxiv.org/pdf/2406.07176)).
 - **Mitigations:**
-  - Fixed inspection pose + crop around the object.
+  - Fixed overhead camera + crop around the object (use the depth mask to centre the crop); keep the arm out of frame.
   - Lock RealSense exposure and white balance.
   - Collect good samples under the real venue lighting (and different times of day).
   - Add brightness/colour-jitter copies of the good images.
   - Recalibrate the threshold on site.
 
 ### 6.6 Wiring into the robot loop
-1. Pick the object → place at a fixed inspection spot (or hover at a fixed pose) → **wait until the arm is still** (servo `Moving` register = 0).
+1. Park the arm out of the overhead camera's view (or wait for `Moving`=0 if it's returning) → locate the object with the depth mask. Optionally, first move the object to a taped inspection spot for a consistent crop.
 2. Grab **3 frames**, crop the ROI, take the **median score**.
 3. **Threshold:** max score over held-out good images + a margin, or the F1-adaptive threshold if you have defects.
 4. Route: good bin vs reject bin. Detector inference takes milliseconds, so it doesn't slow the loop.
-5. **Demo:** overlay `anomaly_map` as a heatmap on the camera feed.
+5. **Demo:** overlay `anomaly_map` as a heatmap on the overhead camera feed.
 
 ```python
 def inspect(get_frame, inferencer, threshold, roi):
@@ -567,20 +584,22 @@ The same "fully closed = nothing grasped" override improved disturbance recovery
 
 ```
              ┌─────────────────────────────── perception (outside policy) ───────────────────────────────┐
-RealSense ──►│ HSV/classifier → target colour & bin     Anomalib (OpenVINO) + depth height check → OK/NG │
- (RGB+D)     └──────────────┬───────────────────────────────────────────────┬────────────────────────────┘
+Overhead ───►│ HSV/classifier → target colour & bin     Anomalib (OpenVINO) + depth height check → OK/NG │
+RealSense    └──────────────┬───────────────────────────────────────────────┬────────────────────────────┘
+ (RGB+D)                    │                                               │
                             │ task id / prompt                              │ route decision
                             ▼                                               ▼
+ overhead RGB + wrist RGB +
  joint state + ──► ACT policy (OpenVINO, AsyncExecution, chunk 50–100) ──► SO-101 follower
  gripper current             ▲                                               │
                              └──── grasp check (current + position) ◄───────┘  → retry if EMPTY / SLIP
 ```
 
 **Task state machine (sorting + anomaly):**
-1. `DETECT`: find the next object and its colour (HSV) → choose policy/prompt.
-2. `PICK`: run the pick policy until the gripper closes.
-3. `VERIFY_GRASP`: current check; on EMPTY, retry (max 2).
-4. `INSPECT`: move to the inspection pose, wait for `Moving=0`, run 3-frame anomaly scoring + depth check.
+1. `DETECT`: with the arm parked out of frame, find the next object in the overhead view (depth mask) and its colour (HSV) → choose policy/prompt.
+2. `INSPECT`: in the same overhead frames, run 3-frame anomaly scoring + depth height check on that object. No arm motion needed.
+3. `PICK`: run the pick policy until the gripper closes.
+4. `VERIFY_GRASP`: current check; on EMPTY, retry (max 2).
 5. `PLACE`: route to the colour bin, or the reject bin if anomalous.
 6. Loop.
 
@@ -588,7 +607,7 @@ RealSense ──►│ HSV/classifier → target colour & bin     Anomalib (Open
 
 ## 9. Evaluation checklist
 - [ ] `torch.xpu.is_available()` is True; Studio/LeRobot runs a `fast_dev_run` on XPU.
-- [ ] RealSense streams at 640×480@30 with **auto-exposure/WB locked**.
+- [ ] Overhead RealSense (640×480@30) and wrist webcam both streaming at 30 fps with **auto-exposure/WB locked**; overhead mount fixed and marked; empty-table depth captured.
 - [ ] ≥150 demos across ≥6 conditions; one lighting + one background **held out**.
 - [ ] Idle frames trimmed; slow/retry episodes dropped.
 - [ ] Augmentation on, **hue ≈ 0** if colour matters.
