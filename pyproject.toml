@@ -5,6 +5,8 @@ description = "Add your description here"
 requires-python = ">=3.12"
 dependencies = [
     "lerobot[dataset,feetech]>=0.7.0",
+    "nncf>=3.4.0",
+    "openvino>=2026.4.1",
 ]
 
 [dependency-groups]
