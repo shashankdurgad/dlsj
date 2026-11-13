@@ -1,0 +1,11 @@
+From https://github.com/open-edge-platform/physical-ai-studio
+ * branch              8f1324161ece2b24f2d38765b6e943ed1961258c -> FETCH_HEAD
+HEAD is now at 8f132416 feat(train): use Kahan-compensated AdamW for bf16 policies (#1355)
+Resolved 290 packages in 1ms
+Checked 165 packages in 0.94ms
+2.11.0+cu128
+[('NVIDIA RTX PRO 6000 Blackwell Server Edition', 95.0)]
+Triton CUDA device: 0
+Environment ready. Authenticate to Hugging Face with the environment
+CLI: /home/w3joe/dlsj/training/pi05/.studio/library/.venv/bin/hf auth login
+The account needs access to google/paligemma-3b-pt-224.

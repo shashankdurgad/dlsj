@@ -68,6 +68,7 @@ class TrainingPreflightTests(unittest.TestCase):
         output = Path(self.temp.name) / "run"
         revision = (train.HERE / "versions.env").read_text().split("STUDIO_COMMIT=", 1)[1].strip()
         argv = ["train.py", str(self.root), "--gpus", "8", "--batch", "4",
+                "--pretrained-model", "/models/pi05_base",
                 "--output", str(output), "--resume", str(output / "last.ckpt")]
         with patch("sys.argv", argv), patch.object(train.subprocess, "check_output", return_value=revision), \
              patch.object(train.subprocess, "run") as run, patch.dict(train.os.environ, {}, clear=True), \
@@ -78,12 +79,26 @@ class TrainingPreflightTests(unittest.TestCase):
         self.assertEqual(run.call_args.kwargs["env"]["NCCL_P2P_LEVEL"], "SYS")
         config = json.loads((output / "training-config.json").read_text())
         self.assertEqual(config["trainer"]["devices"], 8)
+        self.assertEqual(config["model"]["init_args"]["pretrained_name_or_path"], "/models/pi05_base")
         callbacks = config["trainer"]["callbacks"]
         self.assertEqual(callbacks[1]["init_args"]["every_n_train_steps"], 250)
         self.assertNotEqual(callbacks[0]["init_args"]["dirpath"], callbacks[1]["init_args"]["dirpath"])
         self.assertEqual(callbacks[1]["init_args"]["dirpath"], str(output.resolve() / "checkpoints/resume"))
         self.assertEqual(config["data"]["init_args"]["root"], str(self.root.resolve()))
         self.assertEqual(config["model"]["init_args"]["scheduler_warmup_steps"], 34)
+
+    def test_smoke_disables_checkpoint_callbacks_and_logging(self):
+        output = Path(self.temp.name) / "smoke"
+        revision = (train.HERE / "versions.env").read_text().split("STUDIO_COMMIT=", 1)[1].strip()
+        argv = ["train.py", str(self.root), "--gpus", "1", "--smoke", "--output", str(output)]
+        with patch("sys.argv", argv), patch.object(train.subprocess, "check_output", return_value=revision), \
+             patch.object(train.subprocess, "run"), contextlib.redirect_stdout(io.StringIO()):
+            train.main()
+        config = json.loads((output / "training-config.json").read_text())
+        self.assertEqual(config["trainer"]["fast_dev_run"], 1)
+        self.assertFalse(config["trainer"]["enable_checkpointing"])
+        self.assertFalse(config["trainer"]["logger"])
+        self.assertEqual(config["trainer"]["callbacks"], [])
 
 
 if __name__ == "__main__":

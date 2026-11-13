@@ -1,0 +1,40 @@
+INFO:physicalai.policies.pi05.model:Enabled gradient checkpointing for Pi05Model
+WARNING:physicalai.policies.pi05.policy:Missing keys when loading pretrained weights: 4 keys
+WARNING:physicalai.policies.pi05.policy:  - target_time_mlp_in.weight
+WARNING:physicalai.policies.pi05.policy:  - target_time_mlp_in.bias
+WARNING:physicalai.policies.pi05.policy:  - target_time_mlp_out.weight
+WARNING:physicalai.policies.pi05.policy:  - target_time_mlp_out.bias
+WARNING:physicalai.data.lerobot.datamodule:Val split (10%): 1 val episodes [0], 1 train episodes (of 2 total)
+INFO:physicalai.data.datamodules:DataLoader workers: 4
+Using bfloat16 Automatic Mixed Precision (AMP)
+GPU available: True (cuda), used: True
+TPU available: False, using: 0 TPU cores
+💡 Tip: For seamless cloud logging and experiment tracking, try installing [litlogger](https://pypi.org/project/litlogger/) to enable LitLogger, which logs metrics and artifacts automatically to the Lightning Experiments platform.
+`Trainer(limit_val_batches=1.0)` was configured so 100% of the batches will be used..
+You are using a CUDA device ('NVIDIA RTX PRO 6000 Blackwell Server Edition') that has Tensor Cores. To properly utilize them, you should set `torch.set_float32_matmul_precision('medium' | 'high')` which will trade-off precision for performance. For more details, read https://pytorch.org/docs/stable/generated/torch.set_float32_matmul_precision.html#torch.set_float32_matmul_precision
+INFO:physicalai.policies.pi05.policy:Updating preprocessor stats for fine-tuning dataset
+LOCAL_RANK: 0 - CUDA_VISIBLE_DEVICES: [0]
+Loading `train_dataloader` to estimate number of stepping batches.
+/home/w3joe/dlsj/training/pi05/.studio/library/.venv/lib/python3.12/site-packages/lightning/pytorch/utilities/_pytree.py:21: `isinstance(treespec, LeafSpec)` is deprecated, use `isinstance(treespec, TreeSpec) and treespec.is_leaf()` instead.
+/home/w3joe/dlsj/training/pi05/.studio/library/.venv/lib/python3.12/site-packages/lightning/pytorch/utilities/model_summary/model_summary.py:242: Precision bf16-mixed is not supported by the model summary.  Estimated model size in MB will not be accurate. Using 32 bits instead.
+┏━━━┳━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━━━━━┳━━━━━━━━┳━━━━━━━┳━━━━━━━┓
+┃   ┃ Name           ┃ Type              ┃ Params ┃ Mode  ┃ FLOPs ┃
+┡━━━╇━━━━━━━━━━━━━━━━╇━━━━━━━━━━━━━━━━━━━╇━━━━━━━━╇━━━━━━━╇━━━━━━━┩
+│ 0 │ val_rollout    │ Rollout           │      0 │ train │     0 │
+│ 1 │ test_rollout   │ Rollout           │      0 │ train │     0 │
+│ 2 │ model          │ Pi05Model         │  4.1 B │ train │     0 │
+│ 3 │ _preprocessor  │ Pi05Preprocessor  │     24 │ train │     0 │
+│ 4 │ _postprocessor │ Pi05Postprocessor │     12 │ train │     0 │
+└───┴────────────────┴───────────────────┴────────┴───────┴───────┘
+Trainable params: 4.1 B
+Non-trainable params: 36
+Total params: 4.1 B
+Total estimated model params size (MB): 16,582.016
+Modules in train mode: 869
+Modules in eval mode: 0
+Total FLOPs: 0
+/home/w3joe/dlsj/training/pi05/.studio/library/.venv/lib/python3.12/site-packages/lightning/pytorch/trainer/connectors/data_connector.py:378: You have overridden `transfer_batch_to_device` in `LightningModule` but have passed in a `LightningDataModule`. It will use the implementation from `LightningModule` instance.
+/home/w3joe/dlsj/training/pi05/.studio/library/.venv/lib/python3.12/site-packages/lightning/pytorch/utilities/data.py:79: Trying to infer the `batch_size` from an ambiguous collection. The batch size we found is 8. To avoid any miscalculations, use `self.log(..., batch_size=batch_size)`.
+`Trainer.fit` stopped: `max_steps=30` reached.
+PI05_BENCHMARK_RESULT {"gpu": "NVIDIA RTX PRO 6000 Blackwell Server Edition", "gpus": 1, "per_gpu_batch": 8, "precision": "bf16-mixed", "optimizer_steps": 30, "validation_batches": 1, "timed_intervals": 20, "median_seconds_per_update": 1.0250943670000083, "mean_seconds_per_update": 1.0626295282499996, "max_seconds_per_update": 1.3033281210000496, "peak_allocated_gib": 39.60001468658447, "peak_reserved_gib": 40.20703125, "synthetic_data": true, "validation_and_checkpointing_included": false}
+Epoch 3/99 ━━━━━━━━━━━━━━━      6/8 0:00:16 • 0:00:03 0.94it/s train/loss: 0.842

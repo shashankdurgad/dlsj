@@ -60,6 +60,9 @@ Copy/clone this checkout to the VM, install NVIDIA drivers and
 [uv](https://docs.astral.sh/uv/), then run from the repository root:
 
 ```bash
+# Ubuntu 24.04 system libraries needed by OpenCV and video decoding.
+sudo apt-get update
+sudo apt-get install -y --no-install-recommends libgl1 libglib2.0-0t64 ffmpeg libturbojpeg python3.12-dev build-essential
 bash training/pi05/setup.sh
 training/pi05/.studio/library/.venv/bin/hf auth login
 ```
@@ -71,6 +74,29 @@ the pinned Runtime source. That lock currently selects PyTorch 2.11/cu128 and
 LeRobot 0.6.0. Do not install these into the recorder's LeRobot 0.7 environment.
 `STUDIO_DIR` can relocate the checkout, but must be used consistently for setup
 and training. The matching Studio/Runtime revision should also be used for export.
+
+## Restore the cached base weights from GCS
+
+The private `onflow-30k-pi05-artifacts` bucket in `europe-north1` contains the
+base model at the exact Hugging Face revision below, with a checksum manifest.
+The 14.47 GB weights were restored and their full SHA-256 verified against the
+Hugging Face source. No authentication tokens are stored in the bucket.
+Authenticate `gcloud` on the VM with an identity permitted to read this bucket:
+
+```bash
+mkdir -p "$HOME/models/pi05_base"
+gcloud storage rsync --recursive \
+  gs://onflow-30k-pi05-artifacts/models/lerobot/pi05_base/22c30e5b34f9e7ab738b1b34fc2fc5ecfe2d28f0/ \
+  "$HOME/models/pi05_base/"
+python3 training/pi05/train.py /data/so101_sft \
+  --pretrained-model "$HOME/models/pi05_base" --gpus 4 --batch 8 \
+  --output /checkpoints/pi05-run1
+```
+
+This avoids downloading the base weights from Hugging Face on each new VM.
+The PaliGemma tokenizer is a separate small Hugging Face dependency; keep the
+HF authentication steps above. Model initialization and moving weights into GPU
+memory still happen at startup. Datasets and trained checkpoints are separate.
 
 ## Prepare the data
 
@@ -166,8 +192,13 @@ python3 -m unittest discover -s training/pi05 -p 'test_*.py'
 bash -n training/pi05/setup.sh
 ```
 
-The training environment and optimizer step must still be tested on the real GCP
-VM. No GPU memory, throughput, export, or robot success measurement is claimed here.
+On 2026-11-13, a GCP `g4-standard-48` Spot VM passed 30 full-model optimizer
+updates and one validation batch on synthetic three-camera data. With one RTX
+PRO 6000, batch 8 and BF16 mixed precision, 20 post-warmup intervals averaged
+1.063 seconds/update (median 1.025); peak allocated memory was 39.60 GiB.
+See [the recorded configuration, results and limitations](validation/2026-11-13/REPORT.md).
+Four-GPU Spot allocations were unavailable/preempted, so multi-GPU operation is
+still unverified. No real-data quality, export, or robot success is claimed.
 
 Sources: [GCP G4 specifications and P2P settings](https://docs.cloud.google.com/compute/docs/accelerator-optimized-machines),
 [pinned Studio SO-101 recipe](https://github.com/open-edge-platform/physical-ai-studio/blob/8f1324161ece2b24f2d38765b6e943ed1961258c/library/configs/physicalai/pi05/so101/snapflow.yaml),

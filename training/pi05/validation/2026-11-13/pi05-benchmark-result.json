@@ -1,0 +1,16 @@
+{
+  "gpu": "NVIDIA RTX PRO 6000 Blackwell Server Edition",
+  "gpus": 1,
+  "per_gpu_batch": 8,
+  "precision": "bf16-mixed",
+  "optimizer_steps": 30,
+  "validation_batches": 1,
+  "timed_intervals": 20,
+  "median_seconds_per_update": 1.0250943670000083,
+  "mean_seconds_per_update": 1.0626295282499996,
+  "max_seconds_per_update": 1.3033281210000496,
+  "peak_allocated_gib": 39.60001468658447,
+  "peak_reserved_gib": 40.20703125,
+  "synthetic_data": true,
+  "validation_and_checkpointing_included": false
+}

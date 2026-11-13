@@ -65,6 +65,8 @@ def main():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("dataset", type=Path, help="Finalized success-only local dataset snapshot")
     p.add_argument("--repo-id", default="local/so101_sft")
+    p.add_argument("--pretrained-model", default="lerobot/pi05_base",
+                   help="Hugging Face repo ID or local model directory restored from GCS")
     p.add_argument("--gpus", type=int, choices=(1, 2, 4, 8), default=4)
     p.add_argument("--batch", type=int, default=8, help="Samples per GPU")
     p.add_argument("--accumulate", type=int, default=1)
@@ -83,6 +85,7 @@ def main():
     except (ValueError, OSError, KeyError) as exc:
         p.error(str(exc))
     plan.update({"dataset_metadata_sha256": digest, "total_frames": info["total_frames"],
+                 "pretrained_model": args.pretrained_model,
                  "instructions": sorted({label["task"] for label in labels})})
     print(json.dumps(plan, indent=2), flush=True)
     if args.plan_only:
@@ -96,6 +99,7 @@ def main():
     if output.exists() and not args.resume and not args.smoke:
         p.error("Output directory already exists; choose a new --output or explicitly --resume")
     config = json.loads((HERE / "full.json").read_text())
+    config["model"]["init_args"]["pretrained_name_or_path"] = args.pretrained_model
     config["data"]["init_args"].update(root=str(root), repo_id=args.repo_id, train_batch_size=args.batch)
     config["trainer"].update(devices=args.gpus, max_epochs=args.epochs,
                               accumulate_grad_batches=args.accumulate, default_root_dir=str(output))
@@ -104,7 +108,8 @@ def main():
     # Keep LR warmup near 5% of this dataset-dependent budget.
     config["model"]["init_args"]["scheduler_warmup_steps"] = max(1, round(plan["optimizer_steps"] * 0.05))
     if args.smoke:
-        config["trainer"]["fast_dev_run"] = 1
+        config["trainer"].update(fast_dev_run=1, enable_checkpointing=False,
+                                  callbacks=[], logger=False)
     output.mkdir(parents=True, exist_ok=True)
     config_path = output / "training-config.json"
     config_path.write_text(json.dumps(config, indent=2) + "\n")

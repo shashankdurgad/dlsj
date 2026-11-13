@@ -1,0 +1,56 @@
+{
+  "model": {
+    "class_path": "physicalai.policies.Pi05",
+    "init_args": {
+      "pretrained_name_or_path": "/tmp/pi05-restored-model",
+      "dtype": "bfloat16",
+      "chunk_size": 50,
+      "n_action_steps": 50,
+      "image_resolution": [
+        224,
+        224
+      ],
+      "empty_cameras": 0,
+      "gradient_checkpointing": true,
+      "compile_model": false,
+      "freeze_vision_encoder": false,
+      "train_expert_only": false,
+      "lora_enabled": false,
+      "snapflow_enabled": false,
+      "optimizer_lr": 2.5e-05,
+      "optimizer_weight_decay": 0.01,
+      "optimizer_grad_clip_norm": 1.0,
+      "scheduler_warmup_steps": 3,
+      "scheduler_decay_lr": 2.5e-06
+    }
+  },
+  "data": {
+    "class_path": "physicalai.data.lerobot.LeRobotDataModule",
+    "init_args": {
+      "repo_id": "local/so101_sft",
+      "root": "/tmp/pi05-synthetic-dataset",
+      "data_format": "physicalai",
+      "train_batch_size": 8,
+      "val_batch_size": 8,
+      "num_workers": 4,
+      "val_split": 0.1,
+      "val_split_seed": 42
+    }
+  },
+  "trainer": {
+    "accelerator": "gpu",
+    "devices": 1,
+    "num_nodes": 1,
+    "strategy": "auto",
+    "precision": "bf16-mixed",
+    "max_epochs": 8,
+    "accumulate_grad_batches": 1,
+    "log_every_n_steps": 10,
+    "check_val_every_n_epoch": 1,
+    "default_root_dir": "/tmp/pi05-final-smoke-run",
+    "callbacks": [],
+    "fast_dev_run": 1,
+    "enable_checkpointing": false,
+    "logger": false
+  }
+}

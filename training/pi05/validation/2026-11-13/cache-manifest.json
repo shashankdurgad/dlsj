@@ -1,0 +1,15 @@
+{
+  "model_id": "lerobot/pi05_base",
+  "hf_revision": "22c30e5b34f9e7ab738b1b34fc2fc5ecfe2d28f0",
+  "studio_revision": "8f1324161ece2b24f2d38765b6e943ed1961258c",
+  "weights": {
+    "filename": "model.safetensors",
+    "size_bytes": 14467165872,
+    "sha256": "0eb11ca9587678c1d2ef8cf32807c29f8ce53a2bfdfc1aa4a4c96f16fca59b0f",
+    "gcs_generation": "1794605426912315",
+    "gcs_crc32c_base64": "kdpi+Q=="
+  },
+  "cache_uri": "gs://onflow-30k-pi05-artifacts/models/lerobot/pi05_base/22c30e5b34f9e7ab738b1b34fc2fc5ecfe2d28f0/",
+  "verification": "Downloaded weights back from GCS to a new directory; full SHA-256 matches the Hugging Face cached source.",
+  "credentials_included": false
+}
