@@ -857,6 +857,7 @@ Measure on the XPS (median and p99 over ≥100 runs, after warmup, on mains powe
 | INT8 with a 64-token prompt instead of 200 | −7% on the raw model | |
 | Intel pi05-rtc-ov INT8 on OV 2026.4.1 (comparison) | 212 ms | same as Studio |
 | **Fine-tuned team model** `w3joe/pi05-junction-so101-20261114`, Studio export INT8, `InferenceModel` GPU (14 Nov, recorder running in parallel) | **188 / 191 ms** (p99 194) | 2.5× vs PyTorch baseline; 3.3 GB RSS; compile 10.7 s |
+| **Recommended: fine-tuned INT8 + 64-token prompt + 5 denoising steps** (`pi05_junction_int8_tok64_5step`) | **140 / 141 ms** | **3.3×** vs 467 ms; k10 action error −1.2% vs the FP16 10-step reference (held-out, 301 frames); details in `deploy/pi05/opt/README.md` |
 
 - **Paired findings:**
   - INT8 is 25–30% faster than FP16 on a quiet machine.

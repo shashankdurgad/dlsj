@@ -31,6 +31,7 @@ run yet: no fine-tuned checkpoint existed when this was written.
 """
 
 import argparse
+import dataclasses
 import glob
 import json
 import os
@@ -44,15 +45,26 @@ import torch
 DEFAULT_MODEL = "lerobot/pi05_base"
 
 
-def load_policy(pretrained: str, ckpt: str | None, steps: int | None) -> torch.nn.Module:
+def load_policy(pretrained: str, ckpt: str | None, steps: int | None, tokens: int | None = None) -> torch.nn.Module:
     """Build a Pi05 policy on CPU in fp32; the IR is traced in fp32 and saved as FP16."""
     from physicalai.policies import Pi05
 
     if ckpt:
         policy = Pi05.load_from_checkpoint(ckpt, map_location="cpu")
+        # Pi05Config is a frozen dataclass: swap in a modified copy instead of assigning fields.
+        changes = {}
         if steps is not None:  # Pi05Model reads this at sample time; the export unrolls that many steps
-            policy.config.num_inference_steps = steps
+            changes["num_inference_steps"] = steps
             policy.inner_model._num_inference_steps = steps
+        if tokens is not None:
+            # The prompt length also sets the tokenizer preprocessor, which builds the trace sample (so the IR's
+            # static [1, tokens] input) and the exported tokenizer spec, so rebuild the preprocessors after it.
+            changes["tokenizer_max_length"] = tokens
+            policy.inner_model._tokenizer_max_length = tokens
+        if changes:
+            policy.config = dataclasses.replace(policy.config, **changes)
+        if tokens is not None:
+            policy._update_preprocessor_stats(policy._dataset_stats)
     else:
         kwargs = {"num_inference_steps": steps} if steps is not None else {}
         policy = Pi05(pretrained_name_or_path=pretrained, dtype="float32", gradient_checkpointing=False, **kwargs)
@@ -127,9 +139,7 @@ def main() -> None:
         pretrained = args.pretrained
         if args.tokens and not args.ckpt:
             pretrained = with_token_length(pretrained, args.tokens, Path(tempfile.gettempdir()) / "pi05_models")
-        elif args.tokens:
-            raise SystemExit("--tokens is only wired for --pretrained; set tokenizer_max_length when training instead")
-        policy = load_policy(pretrained, args.ckpt, args.steps)
+        policy = load_policy(pretrained, args.ckpt, args.steps, args.tokens if args.ckpt else None)
         t1 = time.perf_counter()
         before = set(glob.glob(os.path.join(tempfile.gettempdir(), "tmp*.onnx.data")))
         try:

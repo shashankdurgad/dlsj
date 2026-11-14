@@ -14,6 +14,12 @@ at revision `22c30e5b34f9e7ab738b1b34fc2fc5ecfe2d28f0`. Large artifacts stay on 
 | `run_benchmarks.sh` | (calls the above) | The full latency matrix → `~/inference/logs/pi05/final_*.jsonl` |
 | `summarize.py` | any python | JSONL → the Markdown table below |
 
+## Optimised deployment of the fine-tuned checkpoint (14 Nov run)
+
+See **`opt/README.md`**: latency *and* held-out accuracy for every variant. Recommended:
+`~/inference/exports/pi05_junction_int8_tok64_5step` (INT8_SYM weights, 64-token prompt, 5 steps): 140 ms median runtime
+call, k=10 action error within −1.2% of the FP16 10-step export. `studio_export.py --ckpt` now supports `--tokens` and `--steps`.
+
 ## Recommended path (for the fine-tuned checkpoint)
 
 **Studio export + Studio INT8 hook, run with `InferenceModel` on `GPU`.** It is the judged stack, it bundles
