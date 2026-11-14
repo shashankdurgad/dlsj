@@ -93,6 +93,8 @@ def main() -> None:
     ap.add_argument("--exclude", default="", help="old episodes to drop, comma-separated")
     ap.add_argument("--min-approach-s", type=float, default=1.0)
     ap.add_argument("--corrections", type=Path)
+    ap.add_argument("--keep", type=Path, help='json {"new": [...], "pick": [...], "old": [...]} explicit episode '
+                    "keep-lists (e.g. from a video review); replaces the old-demo ranking and filters new/pick too")
     ap.add_argument("--video-review", type=Path,
                     help="json {episode: {verdict, issues, note}} for old demos; flagged ones are excluded")
     ap.add_argument("--offsets", type=Path, required=True)
@@ -134,16 +136,34 @@ def main() -> None:
              and (p := plan(meta_old, table, old_labels, e, 9, 12)) and p["grasp"] >= min_approach]
     plans.sort(key=lambda r: (r["closings"] != 1, r["directness"]))
     keep = sorted(p["episode"] for p in plans[: args.n_old])
-    scores = {p["episode"]: p for p in plans}
+    keeps = json.loads(args.keep.read_text()) if args.keep else None
+    if keeps:
+        keep = sorted(int(e) for e in keeps["old"])
+    scores = {p["episode"]: p for e in range(meta_old.total_episodes) if (p := plan(meta_old, table, old_labels, e, 9, 12))}
     print(f"old demos: {len(plans)} usable, keeping {len(keep)}", flush=True)
     drop = [e for e in range(meta_old.total_episodes) if e not in set(keep)]
     old_sel = work / "old_sel"
     edit(["--repo_id", "local/old", "--root", str(old_full), "--new_repo_id", "local/old_sel",
           "--new_root", str(old_sel), "--operation.type", "delete_episodes", "--operation.episode_indices", json.dumps(drop)])
 
-    # 2. pick-only takes: a copy
+    # 2. pick-only takes (and the new demos): a copy, or the kept subset
     pick = work / "pick"
-    shutil.copytree(args.pick, pick)
+    pick_n = LeRobotDatasetMetadata("local/pick", root=args.pick).total_episodes
+    pick_keep = sorted(int(e) for e in keeps["pick"]) if keeps else list(range(pick_n))
+    if len(pick_keep) < pick_n:
+        edit(["--repo_id", "local/pick", "--root", str(args.pick), "--new_repo_id", "local/pick", "--new_root", str(pick),
+              "--operation.type", "delete_episodes", "--operation.episode_indices",
+              json.dumps([e for e in range(pick_n) if e not in set(pick_keep)])])
+    else:
+        shutil.copytree(args.pick, pick)
+    new_keep = sorted(int(e) for e in keeps["new"]) if keeps else list(range(meta_new.total_episodes))
+    new_root = args.new
+    if len(new_keep) < meta_new.total_episodes:
+        new_root = work / "new_sel"
+        edit(["--repo_id", "local/new", "--root", str(args.new), "--new_repo_id", "local/new", "--new_root", str(new_root),
+              "--operation.type", "delete_episodes", "--operation.episode_indices",
+              json.dumps([e for e in range(meta_new.total_episodes) if e not in set(new_keep)])])
+    print(f"keeping new {len(new_keep)}, pick {len(pick_keep)}, old {len(keep)}", flush=True)
 
     # 3. old calibration -> new frame
     for root in (old_sel, pick):
@@ -153,14 +173,13 @@ def main() -> None:
     # 4. merge: new, pick, old (in that order)
     edit(["--new_repo_id", f"local/{args.out.name}", "--new_root", str(args.out), "--operation.type", "merge",
           "--operation.repo_ids", json.dumps(["local/new", "local/pick", "local/old_sel"]),
-          "--operation.roots", json.dumps([str(args.new), str(pick), str(old_sel)]),
+          "--operation.roots", json.dumps([str(new_root), str(pick), str(old_sel)]),
           "--operation.concatenate_videos", "false", "--operation.concatenate_data", "false"])
 
     # 5. labels + provenance
     rows, prov = [], []
-    sources = [("duplo_teleop_cal2", args.new, list(range(meta_new.total_episodes)), labels_of(args.new), "native"),
-               ("duplo_pick", args.pick, list(range(LeRobotDatasetMetadata("local/pick", root=args.pick).total_episodes)),
-                labels_of(args.pick), "old->new"),
+    sources = [("duplo_teleop_cal2", args.new, new_keep, labels_of(args.new), "native"),
+               ("duplo_pick", args.pick, pick_keep, labels_of(args.pick), "old->new"),
                ("duplo_teleop", args.old, keep, labels_of(args.old), "old->new")]
     i = 0
     for name, root, eps, labels, cal in sources:
@@ -175,7 +194,7 @@ def main() -> None:
                  "calibration": "new (recal_2026-11-14)" if cal == "native" else "old, shifted into new",
                  "joint_offset_added_deg": None if cal == "native" else dict(zip(joints, offset.tolist())),
                  "plate_corrected": name == "duplo_teleop" and e in corrected}
-            if name == "duplo_teleop":
+            if name == "duplo_teleop" and e in scores:
                 p.update({k: scores[e][k] for k in ("grasp", "closings", "directness")})
                 if review:
                     p["video_review"] = review.get(e, {"verdict": "not reviewed"})
