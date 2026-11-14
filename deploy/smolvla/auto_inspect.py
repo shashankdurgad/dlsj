@@ -70,6 +70,7 @@ class AutoInspector:
         self.early_stop, self.max_attempts, self.grasp_empty_pos = early_stop, max_attempts, grasp_empty_pos
         self.out_root = Path(out_root).expanduser()
         self.abort = threading.Event()
+        self.listener = None  # optional callable(event: dict): live per-frame results for a dashboard
 
     # ------------------------------------------------------------------ one sweep
     def _sweep_once(self, robot, start_cmd: np.ndarray):
@@ -85,6 +86,11 @@ class AutoInspector:
         def infer(frame, i, angle):
             c = self.insp.classify(frame)
             crops[i] = c["crop"]
+            if self.listener is not None:
+                try:
+                    self.listener({"kind": "frame", "i": i, "angle": float(angle), "frame": frame, **c})
+                except Exception:  # noqa: BLE001  a dashboard must never break the sweep
+                    log.exception("inspection listener failed")
             return self.insp.to_frame(i, angle, c)
 
         def on_frame(frame, angle):
