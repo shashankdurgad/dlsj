@@ -15,7 +15,7 @@ observation horizon 2, prediction horizon 16, 8 actions executed per call, ResNe
 separate encoder per camera, spatial-softmax keypoints), 360x480 images (75% of the 480x640 frames; the cropped
 560x480 top view is padded to 640 wide first, so aspect ratios are kept) with a random 324x432 crop (~90%), DDPM training with 100 steps and DDIM with 16 steps at inference, AdamW lr 1e-4 / wd 1e-6, cosine schedule
 with 500 warmup steps, and the reference EMA (power 0.75, LeRobot `--ema.type=warmup`). Colour/brightness image
-augmentation (UMI, Chi et al. 2024) is on for robustness to lighting. Metrics go to W&B (Modal secret `wandb`).
+augmentation (UMI, Chi et al. 2024) is on for robustness to lighting. Metrics go to W&B (Modal secret `wandb-dlsj`, entity james-j-carver-university-of-cambridge).
 """
 
 import re
@@ -69,9 +69,9 @@ def parse_log_line(line: str) -> dict[str, float] | None:
 
 
 @app.function(image=image, gpu="H100:8", cpu=64, memory=262144, timeout=12 * 3600,
-              volumes={"/data": data, "/runs": runs}, secrets=[modal.Secret.from_name("wandb")])
+              volumes={"/data": data, "/runs": runs}, secrets=[modal.Secret.from_name("wandb-dlsj")])
 def train(dataset: str = "duplo_pickset_300", run: str = "dp_pick_v1", steps: int = 20_000, batch_size: int = 32,
-          gpus: int = 8, workers: int = 4, save_freq: int = 2_000, wandb_project: str = "dlsj-dp",
+          gpus: int = 8, workers: int = 7, save_freq: int = 2_000, wandb_project: str = "dlsj-dp",
           crop: str = "324,432", wandb_entity: str = "james-j-carver-university-of-cambridge") -> str:
     import os
 
@@ -143,7 +143,7 @@ def check() -> str:
 
 @app.local_entrypoint()
 def main(dataset: str = "duplo_pickset_300", run: str = "dp_pick_v1", steps: int = 20_000, batch_size: int = 32,
-         gpus: int = 8, workers: int = 4, save_freq: int = 2_000, crop: str = "324,432", wandb_entity: str = "james-j-carver-university-of-cambridge"):
+         gpus: int = 8, workers: int = 7, save_freq: int = 2_000, crop: str = "324,432", wandb_entity: str = "james-j-carver-university-of-cambridge"):
     """--crop H,W: random-crop size, ~90% of the stored images (360x480 -> 324,432; 288x384 -> 260,346)."""
     fn = train.with_options(gpu=f"H100:{gpus}", cpu=min(64, 8 * gpus), memory=32768 * gpus)  # Modal: <= 64 cores
     print(fn.remote(dataset=dataset, run=run, steps=steps, batch_size=batch_size, gpus=gpus, workers=workers,
