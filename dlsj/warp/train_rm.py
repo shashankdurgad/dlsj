@@ -72,11 +72,13 @@ def main() -> None:
     p.add_argument("--n", type=int, default=16)
     p.add_argument("--stride-s", type=float, default=0.5)
     p.add_argument("--ref-quantile", type=float, default=0.4)
-    p.add_argument("--steps", type=int, default=8000)
+    p.add_argument("--steps", type=int, default=4000)
     p.add_argument("--bs", type=int, default=256)
     p.add_argument("--lr", type=float, default=2e-4)
-    p.add_argument("--d-model", type=int, default=512)
-    p.add_argument("--layers", type=int, default=6)
+    p.add_argument("--d-model", type=int, default=256)
+    p.add_argument("--layers", type=int, default=4)
+    p.add_argument("--feat-noise", type=float, default=0.1, help="Gaussian noise on input features, x feature std")
+    p.add_argument("--eval-every", type=int, default=250)
     p.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
     args = p.parse_args()
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -96,32 +98,46 @@ def main() -> None:
     sched = torch.optim.lr_scheduler.LambdaLR(
         opt, lambda s: (s + 1) / warm if s < warm else 0.5 * (1 + math.cos(math.pi * (s - warm) / (args.steps - warm))))
     rng = np.random.default_rng(0)
-    vrng = np.random.default_rng(1)
+    vx, vy = batch_windows(cfg, feats, val, np.random.default_rng(1), 4096)  # fixed held-out windows
+    fstd = torch.from_numpy(np.concatenate(list(feats.values())).std(0)).float()
+    best = {"mae": float("inf")}
     out = Path(args.out).expanduser()
     out.mkdir(parents=True, exist_ok=True)
     t0 = time.time()
     for step in range(1, args.steps + 1):
         model.train()
         x, y = batch_windows(cfg, feats, train, rng, args.bs)
+        if args.feat_noise > 0:
+            x = x + args.feat_noise * fstd * torch.randn_like(x)
         loss = model.loss(x.to(args.device), y.to(args.device))
         opt.zero_grad()
         loss.backward()
         torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
         opt.step()
         sched.step()
-        if step % 500 == 0 or step == args.steps:
+        if step % args.eval_every == 0 or step == args.steps:
             model.eval()
             with torch.no_grad():
-                vx, vy = batch_windows(cfg, feats, val, vrng, args.bs)
-                vloss = model.loss(vx.to(args.device), vy.to(args.device)).item()
+                vloss = vmae = 0.0
+                for i in range(0, len(vx), 1024):
+                    bx, by = vx[i: i + 1024].to(args.device), vy[i: i + 1024].to(args.device)
+                    vloss += model.loss(bx, by).item() * len(bx) / len(vx)
+                    vmae += (model.expected(bx) - by).abs().mean().item() * len(bx) / len(vx)
             fwd, bwd = direction_check(model, cfg, feats, val, args.device)
-            log.info("step %d loss %.3f val %.3f | held-out velocity fwd %.2f (want ~1) bwd %.2f (want ~-1) | %.0fs",
-                     step, loss.item(), vloss, fwd, bwd, time.time() - t0)
-    torch.save({"state_dict": model.state_dict(), "feat_dim": dim, "cameras": cams, "warp": asdict(cfg),
+            tag = ""
+            if vmae < best["mae"]:
+                best = {"mae": vmae, "loss": vloss, "step": step, "fwd": fwd, "bwd": bwd,
+                        "state": {k: v.detach().cpu().clone() for k, v in model.state_dict().items()}}
+                tag = " *best*"
+            log.info("step %d loss %.3f | val loss %.3f, progress MAE %.3f | held-out velocity fwd %.2f bwd %.2f "
+                     "(want +-1) | %.0fs%s", step, loss.item(), vloss, vmae, fwd, bwd, time.time() - t0, tag)
+    vloss, fwd, bwd = best["loss"], best["fwd"], best["bwd"]
+    log.info("keeping step %d (val progress MAE %.3f)", best["step"], best["mae"])
+    torch.save({"state_dict": best["state"], "feat_dim": dim, "cameras": cams, "warp": asdict(cfg),
                 "d_model": args.d_model, "layers": args.layers,
                 "reference": [e.index for e in train], "val": [e.index for e in val]}, out / "warp_rm.pt")
     (out / "train_summary.json").write_text(json.dumps(
-        {"val_loss": vloss, "val_forward_velocity": fwd, "val_reverse_velocity": bwd, "ref_len_cut_s": cut / fps,
+        {"best_step": best["step"], "val_progress_mae": best["mae"], "val_loss": vloss, "val_forward_velocity": fwd, "val_reverse_velocity": bwd, "ref_len_cut_s": cut / fps,
          "n_reference": len(train), "n_val": len(val)}, indent=2))
     log.info("saved %s", out / "warp_rm.pt")
 

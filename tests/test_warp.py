@@ -181,3 +181,33 @@ def test_chunk_ending_in_place_is_judged_by_place_pace():
     assert (late_pick.stage_end == 1).all() and (late_pick.weight == 0).all()
     early_pick = df[df.frame_index < 40]  # chunks end in pick: 0.5/0.4 = 1.25 > tau
     assert (early_pick.weight > 0).all()
+
+
+def test_train_rm_and_score_end_to_end_on_fake_data(tmp_path, monkeypatch):
+    import json
+    import sys
+
+    from dlsj.warp import score, train_rm
+
+    root = tmp_path / "ds"
+    n_eps = 24
+    lengths = [150 + 10 * (i % 6) for i in range(n_eps)]
+    _fake_dataset(root, lengths, [L // 2 for L in lengths], [True] * n_eps)
+    for cam in ("top", "wrist"):
+        (tmp_path / "feats" / cam).mkdir(parents=True)
+        for ep, L in enumerate(lengths):
+            t = np.linspace(0, 1, L)[:, None]
+            np.save(tmp_path / "feats" / cam / f"episode_{ep:06d}.npy", (t * np.ones((1, 8))).astype(np.float16))
+    monkeypatch.setattr(sys, "argv", ["x", "--root", str(root), "--feats", str(tmp_path / "feats"), "--out",
+                                      str(tmp_path / "rm"), "--steps", "60", "--bs", "16", "--eval-every", "30",
+                                      "--d-model", "32", "--layers", "1", "--device", "cpu", "--ref-quantile", "1.0"])
+    train_rm.main()
+    summ = json.loads((tmp_path / "rm" / "train_summary.json").read_text())
+    assert summ["best_step"] in (30, 60)
+    monkeypatch.setattr(sys, "argv", ["x", "--root", str(root), "--feats", str(tmp_path / "feats"), "--rm",
+                                      str(tmp_path / "rm" / "warp_rm.pt"), "--out", str(tmp_path / "w"),
+                                      "--chunk", "30", "--device", "cpu"])
+    score.main()
+    w = pd.read_parquet(tmp_path / "w" / "warp_weights.parquet")
+    assert len(w) == sum(lengths) and set(w.reason) <= {"pace", "protected", "coverage", "dropped"}
+    assert w["index"].is_monotonic_increasing
