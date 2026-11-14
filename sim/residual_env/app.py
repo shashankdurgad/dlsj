@@ -6,11 +6,14 @@ and every camera renders from the world origin (constant ~8 mm depth, black RGB)
 from __future__ import annotations
 
 import math
+import os
 import sys
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
-KIT_ARGS = "--/app/useFabricSceneDelegate=false --/rtx/hydra/readTransformsFromFabricInRenderDelegate=false"
+GB10_KIT_ARGS = "--/app/useFabricSceneDelegate=false --/rtx/hydra/readTransformsFromFabricInRenderDelegate=false"
+# DLSJ_KIT_ARGS overrides the Kit flags (e.g. "" = Isaac Lab's default Fabric render path, for x86 render checks).
+KIT_ARGS = os.environ.get("DLSJ_KIT_ARGS", GB10_KIT_ARGS)
 DEFAULT_SCENE_PARAMS = str(HERE / "scene_params.json")
 DEFAULT_SERVO_PARAMS = str(HERE / "servo_params.json")
 
