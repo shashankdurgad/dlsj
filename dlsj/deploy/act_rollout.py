@@ -95,6 +95,9 @@ def main() -> int:
     p.add_argument("--cam-fps", type=int, default=30)
     p.add_argument("--fps", type=int, default=30, help="control rate (training data: 30)")
     p.add_argument("--n-action-steps", type=int, help="override how many actions of each chunk are executed")
+    p.add_argument("--num-inference-steps", type=int, default=None,
+                   help="Diffusion Policy: DDIM denoising steps per chunk (trained with 16; fewer is faster)")
+    p.add_argument("--amp", action="store_true", help="mixed precision (autocast) for the policy forward pass")
     p.add_argument("--ov-export", default=None,
                    help="OpenVINO ACT export dir (dlsj.deploy.act_export): predict chunks with it instead of PyTorch")
     p.add_argument("--ov-device", default="GPU", help="OpenVINO device for --ov-export (GPU fp16 ~21 ms on the XPS)")
@@ -136,6 +139,8 @@ def main() -> int:
         p.error("--temporal-ensemble and --ov-export are ACT-only")
     if args.n_action_steps:
         cfg.n_action_steps = args.n_action_steps
+    if args.num_inference_steps:
+        cfg.num_inference_steps = args.num_inference_steps
     if args.temporal_ensemble is not None:
         cfg.temporal_ensemble_coeff = args.temporal_ensemble
         cfg.n_action_steps = 1
@@ -245,7 +250,7 @@ def main() -> int:
                         ov_queue = list(ov_policy(state, imgs)[: cfg.n_action_steps])
                     target = np.asarray(ov_queue.pop(0), dtype=np.float32)
             else:
-                action = predict_action(obs, policy, device, pre, post, use_amp=False)
+                action = predict_action(obs, policy, device, pre, post, use_amp=args.amp)
                 target = action.squeeze(0).detach().cpu().numpy().astype(np.float32)
             lat.append((time.perf_counter() - t_inf) * 1e3)
             cmd = teleop_web.step_toward(cmd if not args.dry_run else state, target, step_cap)
