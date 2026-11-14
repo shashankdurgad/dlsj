@@ -1,7 +1,9 @@
 #!/bin/bash
 # Fine-tuned MolmoAct2 (cal2-456 3-stage LoRA) on the follower, web console http://<xps>:${PORT:-8020}.
 #
-#   EXPORT=~/inference/exports/molmo_opt/ft_cal2_456/rtc_int8 BRICK=red ~/inference/deploy/molmoact2/run_finetuned.sh
+#   BRICK=red ~/inference/deploy/molmoact2/run_finetuned.sh
+#   EXPORT defaults to ~/inference/exports/molmo_opt/ft_cal2_456/rtc_int8 (export_finetuned.sh), else to an
+#   OpenVINO export (a folder with manifest.json) in ~/Downloads
 #   CHECK=1 ... run_finetuned.sh     validate prompts / crop / export only (no arm, no cameras)
 #   AUTO=1  ... run_finetuned.sh     the run-time loop (auto_control.py: automatic inspect + bowl decision)
 #
@@ -12,7 +14,12 @@
 #   Space first eases the arm to the median start pose of the training episodes.
 set -euo pipefail
 CFG=~/inference/deploy/molmoact2/finetune_cal2_456.json
-EXPORT=${EXPORT:?set EXPORT=<OpenVINO export dir of the fine-tuned model>}
+if [ -z "${EXPORT:-}" ]; then
+  EXPORT=~/inference/exports/molmo_opt/ft_cal2_456/rtc_int8
+  [ -f "$EXPORT/manifest.json" ] || EXPORT=$(dirname "$(ls -t ~/Downloads/manifest.json ~/Downloads/*/manifest.json ~/Downloads/*/*/manifest.json 2>/dev/null | head -1)")
+fi
+[ -f "$EXPORT/manifest.json" ] || { echo "no export found: run export_finetuned.sh on the checkpoint in ~/Downloads first"; exit 1; }
+echo "export: $EXPORT"
 BRICK=${BRICK:-red}
 READY=$(python3 -c "import json; print(','.join(str(v) for v in json.load(open('$(eval echo $CFG)'))['ready_pose']))")
 cd ~/inference/dlsj-smolvla

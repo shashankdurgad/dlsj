@@ -1,15 +1,18 @@
 #!/bin/bash
 # Fine-tuned MolmoAct2 (cal2-456 3-stage LoRA) -> tested OpenVINO exports on the XPS.
 #
-#   ~/inference/deploy/molmoact2/export_finetuned.sh /path/to/checkpoint.ckpt [name] [variants]
+#   ~/inference/deploy/molmoact2/export_finetuned.sh [checkpoint.ckpt] [name] [variants]
+#   (no checkpoint: the newest *.ckpt in ~/Downloads)
 #
 # Builds the FP16 / 10-step reference, INT8 and INT8+RTC from the Studio Lightning checkpoint (LoRA merged by
 # Studio), checks them on recorded cal2 frames with the TRAINING prompts and top crop (finetune_cal2_456.json), and
 # writes ~/inference/exports/molmo_opt/<name>/report.md. Re-traces peak ~44 GB RAM: nothing else heavy may run, and
 # optimize.py waits while a robot controller is running. Then:
-#   EXPORT=~/inference/exports/molmo_opt/<name>/rtc_int8 BRICK=red ~/inference/deploy/molmoact2/run_finetuned.sh
+#   BRICK=red ~/inference/deploy/molmoact2/run_finetuned.sh     (finds ~/inference/exports/molmo_opt/ft_cal2_456/rtc_int8)
 set -euo pipefail
-CKPT=${1:?usage: export_finetuned.sh CHECKPOINT.ckpt [name] [variants]}
+CKPT=${1:-$(ls -t ~/Downloads/*.ckpt ~/Downloads/*/*.ckpt 2>/dev/null | head -1)}
+[ -n "$CKPT" ] || { echo "no checkpoint given and no *.ckpt in ~/Downloads"; exit 1; }
+echo "checkpoint: $CKPT ($(du -h "$CKPT" | cut -f1))"
 NAME=${2:-ft_cal2_456}
 VARIANTS=${3:-fp16_ref,int8_sym,rtc_int8}
 D=~/inference/deploy/molmoact2
