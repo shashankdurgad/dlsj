@@ -47,7 +47,7 @@ Studio's MolmoAct2 has no RTC (`rtc_enabled` is ignored at export). `export.py -
 inside the graph (checkpoint frame + quantile normalisation). MolmoAct2 integrates t = 0 -> 1, so the guidance is
 Studio's training-free RTC with x1 = x_t + (1 - t) v and v += w(t) W (prev - x1), w(t) Studio's schedule with
 tau = t. The runtime preprocessors drop unknown keys, so `rtc_patch.MolmoRTCPolicy` adds the RTC inputs after
-preprocessing; `deploy/smolvla/smolvla_control.py` picks it automatically for MolmoAct2 exports (RTC if the export
+preprocessing; `deploy/smolvla/smolvla_control.py` (manual testing) and `auto_control.py` (the run-time loop) pick it automatically for MolmoAct2 exports (RTC if the export
 has the inputs, else crossfade). Chunk is 30, so `--rtc-horizon` <= 15.
 
 ## Notes

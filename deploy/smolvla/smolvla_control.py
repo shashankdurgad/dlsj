@@ -1,4 +1,8 @@
-"""SmolVLA (3-stage, wrist + top) on the SO-101 via Desmond's console (`dlsj.deploy.pi05_control`), with RTC.
+"""MANUAL / TESTING CONTROLLER. The loop we actually run is `auto_control.py` (wraps this file and adds the
+automatic spin-and-inspect + bowl decision). Use this one only to test the VLA by hand (M + 1/2/3); keep its classes
+and main() stable because auto_control.py patches `make_controller_class` and calls `main()`.
+
+SmolVLA (3-stage, wrist + top) on the SO-101 via Desmond's console (`dlsj.deploy.pi05_control`), with RTC.
 
 Reuses that controller (web console :8010, speed limits, Q = hold, ramp home on exit) and changes:
 * prompts: the 3-stage strings the model was trained on. Space = "pick up the brick"; M (once grasped) = "bring the

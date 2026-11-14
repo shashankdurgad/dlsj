@@ -1,4 +1,6 @@
-"""Automatic 3-stage controller: same as `smolvla_control.py` (SmolVLA / MolmoAct2, console :8010, RTC) plus
+"""THE RUN-TIME LOOP (demo / judging / end-to-end runs). `smolvla_control.py` is the manual testing path only.
+
+Automatic 3-stage controller: same as `smolvla_control.py` (SmolVLA / MolmoAct2, console :8010, RTC) plus
 automatic spin-and-inspect. `smolvla_control.py` stays the manual path (M + 1/2/3 to choose the bowl).
 
 Flow: Space = pick; M (brick grasped) = bring to the inspection camera; M again (brick at the camera) = pause the
