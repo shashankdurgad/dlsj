@@ -4,6 +4,7 @@ Keys (also buttons on the page):
 * Space  start a take: the policy drives the arm with the pick prompt.
 * M      mark the inspection moment: switch to "place the brick in the <plate> bowl" (as the data was labelled).
 * 1/2/3  choose the plate (the place prompt's colour). Allowed any time; used from the next mark.
+* + / -  raise / lower the per-tick speed limit (x1.25) while running.
 * Q      stop now: discard queued and in-flight actions and hold the arm where it is (torque stays on).
 
 Why the prompt switch is manual: the training data switches the instruction at the operator's mark, and the
@@ -11,12 +12,19 @@ in-view classifier fires much earlier than that mark on the RealSense inspection
 would condition the policy differently from training.
 
 Control: a 30 Hz loop sends one joint target per tick. A worker thread runs the policy on the newest frames and
-state whenever fewer than `--replan` actions are queued. The new chunk replaces the queue, minus the actions
-already stale by the time inference finished. Every target is rate-limited (`--max-step` units per tick, the
-gripper `--max-step-gripper`) on top of LeRobot's `max_relative_target`. On exit the arm ramps to its saved home
-pose before torque is released; it is never dropped mid-air.
+state, and asks again as soon as fewer than `--replan` future actions remain (default: always, i.e. back to back,
+~5 chunks/s on the XPS GPU). Each chunk is stamped with the tick its observation was taken at, so action j of a
+chunk is meant for tick t0 + j: actions whose time passed during inference are skipped automatically.
+Consecutive chunks are combined with `--blend`:
+* ensemble   (default) ACT temporal ensembling: every chunk still covering this tick votes, weighted
+             w_i = exp(-k * i) with i = 0 the OLDEST chunk (ACT's convention; k = `--ensemble-k`, small k ≈ mean).
+* crossfade  the new chunk replaces the plan, fading in linearly from the old plan over `--blend-steps` ticks.
+* none       the new chunk replaces the plan outright (the first version; jumps at chunk switches).
+Every target is then rate-limited (`--max-step` units per tick, the gripper `--max-step-gripper`), and LeRobot's
+`--max-relative-target` stays as the hard per-command clamp. On exit the arm ramps to its saved home pose before
+torque is released; it is never dropped mid-air.
 
-    python -m dlsj.deploy.pi05_control --export ~/desmond/exports/pi05_ft_int8 --device GPU \
+    python -m dlsj.deploy.pi05_control --export ~/inference/exports/pi05_junction_int8 --device GPU \
         --cameras wrist=/dev/v4l/by-id/usb-Sonix_..-video-index0 --realsense top=346422061366,inspect=243722062690
 
 The teleop recorder must be stopped first: it owns the follower and the cameras.
@@ -26,7 +34,6 @@ import argparse
 import collections
 import json
 import logging
-import math
 import queue
 import threading
 import time
@@ -38,27 +45,34 @@ from dlsj.deploy.pi05_runtime import PICK, PLACE
 
 log = logging.getLogger("pi05_control")
 CAMS = ("wrist", "top", "inspect")
+BLENDS = ("ensemble", "crossfade", "none")
+# Recorded teleop actions change by p95 3-5 and p99 5-8 units per 30 Hz tick (max ~13), per joint incl. gripper.
+DEFAULT_MAX_STEP = 8.0
 
 
 class Controller:
     """Policy → follower loop. `arm` needs read() -> (6,) and send((6,)); cameras need `.frame` (BGR)."""
 
     def __init__(self, arm, cameras: dict, policy, bowls=("yellow", "purple", "orange"), fps: int = 30,
-                 max_step: float = 2.0, max_step_gripper: float = 4.0, replan: int = 20, sync: bool = False):
+                 max_step: float = DEFAULT_MAX_STEP, max_step_gripper: float = DEFAULT_MAX_STEP, replan: int = 50,
+                 blend: str = "ensemble", ensemble_k: float = 0.01, blend_steps: int = 10, sync: bool = False):
+        if blend not in BLENDS:
+            raise ValueError(f"blend must be one of {BLENDS}")
         self.arm, self.cameras, self.policy = arm, cameras, policy
         self.bowls, self.fps, self.replan, self.sync = list(bowls), fps, replan, sync
+        self.blend, self.ensemble_k, self.blend_steps = blend, ensemble_k, blend_steps
         self.max_step = np.array([max_step] * 5 + [max_step_gripper], dtype=float)
         self.phase = "idle"  # idle -> running -> stopped (Q) / idle
         self.stage = "pick"
         self.bowl: str | None = None
         self.message = "Press Space to start"
-        self.queue: collections.deque = collections.deque()
+        self.t = 0  # control tick counter: chunks are aligned on it
+        self.chunks: list[tuple[int, np.ndarray]] = []  # (tick of action 0, (n, 6) actions), oldest first
         self.cmd: np.ndarray | None = None
         self.generation = 0  # bumped by start/stop/mark: results from older requests are dropped
         self.inflight = False
         self.lat_ms: collections.deque = collections.deque(maxlen=30)
         self.last_chunk_t = 0.0
-        self.ticks = 0
         self.sent = 0
         self.lock = threading.RLock()  # re-entrant: Q and sync-mode inference take it from inside tick()
         self.commands: queue.Queue[str] = queue.Queue()
@@ -86,6 +100,11 @@ class Controller:
             imgs[name] = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         return np.asarray(self.arm.read(), dtype=float), imgs
 
+    def _replan_now(self) -> None:
+        """Forget the current plan (new prompt or restart); in-flight results become stale."""
+        self.generation += 1
+        self.chunks.clear()
+
     def _handle(self, c: str) -> None:
         if c in ("q", "stop"):
             self._hold("Stopped: holding position. Space to start again")
@@ -95,11 +114,9 @@ class Controller:
             if 0 <= i < len(self.bowls):
                 self.bowl = self.bowls[i]
                 if self.phase == "running" and self.stage == "place":
-                    self.generation += 1  # replan with the new colour
-                    self.queue.clear()
+                    self._replan_now()  # replan with the new colour
         elif c in ("start", "space") and self.phase != "running":
-            self.generation += 1
-            self.queue.clear()
+            self._replan_now()
             self.phase, self.stage, self.message = "running", "pick", ""
             self.cmd = np.asarray(self.arm.read(), dtype=float)
         elif c in ("mark", "m") and self.phase == "running" and self.stage == "pick":
@@ -107,26 +124,61 @@ class Controller:
                 self.message = "Choose a plate (1–3) before marking"
                 return
             self.stage = "place"
-            self.generation += 1
-            self.queue.clear()
+            self._replan_now()
+        elif c in ("faster", "slower"):
+            self.max_step = self.max_step * (1.25 if c == "faster" else 0.8)
 
     def _hold(self, message: str) -> None:
         """Drop all pending motion and hold the present position."""
-        self.generation += 1
-        self.queue.clear()
+        self._replan_now()
         present = np.asarray(self.arm.read(), dtype=float)
         self.arm.send(present)
         self.cmd = present
         self.message = message
 
+    # ------------------------------------------------------------------ plan
+    def _add_chunk(self, t0: int, chunk: np.ndarray) -> None:
+        """Merge a chunk whose action j is meant for tick t0 + j (called at tick self.t)."""
+        now = self.t
+        if self.blend == "ensemble":
+            self.chunks.append((t0, chunk))
+        else:
+            fresh = chunk[max(0, now - t0):]  # from the current tick on
+            if self.blend == "crossfade" and self.chunks:
+                n = min(self.blend_steps, len(fresh))
+                old = [self._planned(now + j) for j in range(n)]
+                for j in range(n):
+                    if old[j] is not None:
+                        a = (j + 1) / (n + 1)  # 0 -> 1: old plan fades out, new one in
+                        fresh[j] = (1 - a) * old[j] + a * fresh[j]
+            self.chunks = [(max(now, t0), fresh)]
+        self.chunks = [(s, c) for s, c in self.chunks if s + len(c) > now]  # drop expired
+
+    def _planned(self, t: int) -> np.ndarray | None:
+        """The plan's target for tick t: weighted over every chunk covering t (ensemble), else the one plan."""
+        votes = [c[t - s] for s, c in self.chunks if s <= t < s + len(c)]
+        if not votes:
+            return None
+        if len(votes) == 1:
+            return np.array(votes[0], dtype=float)
+        w = np.exp(-self.ensemble_k * np.arange(len(votes)))  # i = 0 is the oldest chunk, as in ACT
+        return (w[:, None] * np.asarray(votes)).sum(0) / w.sum()
+
+    def remaining(self) -> int:
+        """Future ticks covered by the newest chunk."""
+        if not self.chunks:
+            return 0
+        s, c = self.chunks[-1]
+        return max(0, s + len(c) - self.t)
+
     # ------------------------------------------------------------------ inference
     def _request(self) -> None:
-        gen, task = self.generation, self.prompt()
+        gen, task, t0 = self.generation, self.prompt(), self.t
         state, imgs = self._obs()
         self.inflight = True
 
         def work():
-            t0 = time.perf_counter()
+            t_start = time.perf_counter()
             try:
                 chunk = np.asarray(self.policy(state, imgs, task), dtype=float)
             except Exception as e:  # noqa: BLE001
@@ -136,14 +188,13 @@ class Controller:
                     self.command("q")  # hold first, then say why
                     self.message = f"Inference failed: {e}. Holding position"
                 return
-            dt = time.perf_counter() - t0
+            dt = time.perf_counter() - t_start
             with self.lock:
                 self.inflight = False
                 self.lat_ms.append(dt * 1e3)
                 if gen != self.generation or self.phase != "running":
                     return  # stopped, restarted or re-prompted meanwhile
-                stale = min(len(chunk) - 1, math.ceil(dt * self.fps))  # actions whose time has passed
-                self.queue = collections.deque(chunk[stale:])
+                self._add_chunk(t0, chunk)
                 self.last_chunk_t = time.perf_counter()
 
         if self.sync:
@@ -161,16 +212,19 @@ class Controller:
             with self.lock:
                 self._handle(c)
         with self.lock:
-            self.ticks += 1
-            if self.phase != "running":
-                return
-            if not self.inflight and len(self.queue) <= self.replan:
-                self._request()
-            if self.queue:
-                target = self.queue.popleft()
-                self.cmd = self.cmd + np.clip(target - self.cmd, -self.max_step, self.max_step)
-                self.arm.send(self.cmd)
-                self.sent += 1
+            try:
+                if self.phase != "running":
+                    return
+                if not self.inflight and self.remaining() <= self.replan:
+                    self._request()
+                target = self._planned(self.t)
+                if target is not None:
+                    self.cmd = self.cmd + np.clip(target - self.cmd, -self.max_step, self.max_step)
+                    self.arm.send(self.cmd)
+                    self.sent += 1
+            finally:
+                self.t += 1
+                self.chunks = [(s, c) for s, c in self.chunks if s + len(c) > self.t]
 
     def run(self) -> None:
         period = 1.0 / self.fps
@@ -198,11 +252,12 @@ class Controller:
             lat = list(self.lat_ms)
             return {"phase": self.phase, "stage": self.stage, "bowl": self.bowls and self.bowl, "bowls": self.bowls,
                     "prompt": self.prompt() if self.stage == "pick" or self.bowl else PICK,
-                    "message": self.message, "queued": len(self.queue), "inflight": self.inflight,
+                    "message": self.message, "queued": self.remaining(), "chunks": len(self.chunks),
+                    "inflight": self.inflight, "blend": self.blend,
                     "latency_ms": round(lat[-1], 1) if lat else None,
                     "latency_median_ms": round(float(np.median(lat)), 1) if lat else None,
                     "chunk_age_s": round(time.perf_counter() - self.last_chunk_t, 2) if self.last_chunk_t else None,
-                    "sent": self.sent, "max_step": self.max_step.tolist(),
+                    "sent": self.sent, "max_step": np.round(self.max_step, 2).tolist(),
                     "cmd": None if self.cmd is None else np.round(self.cmd, 1).tolist()}
 
 
@@ -278,20 +333,21 @@ button:focus-visible{outline:2px solid var(--fg);outline-offset:2px}
  <div class="prompt" id="prompt"></div><div class="msg" id="msg"></div>
  <div class="plates" id="plates"></div>
  <div class="btns"><button class="k" onclick="cmd('start')">Start <kbd>Space</kbd></button><button class="k" onclick="cmd('mark')">Mark inspection <kbd>M</kbd></button></div>
- <div class="stats"><span><b id="lat">–</b>ms last inference</span><span><b id="med">–</b>ms median</span><span><b id="q">–</b>actions queued</span><span><b id="age">–</b>s since last chunk</span></div>
+ <div class="stats"><span><b id="lat">–</b>ms last inference</span><span><b id="med">–</b>ms median</span><span><b id="q">–</b>actions queued</span><span><b id="age">–</b>s since last chunk</span><span><b id="spd">–</b>max step per tick <kbd>+</kbd><kbd>-</kbd></span><span><b id="bl">–</b>chunk blending</span></div>
 </aside></div>
 <script>
 const $=id=>document.getElementById(id),SW={yellow:'#f2c230',purple:'#9b7fe0',orange:'#f08a24'};
 function cmd(c){fetch('/ctl/'+c,{method:'POST'})}
 addEventListener('keydown',e=>{if(e.repeat)return;const k=e.key.toLowerCase();
- if(k==='q'){cmd('q');e.preventDefault()}else if(k===' '){cmd('start');e.preventDefault()}else if(k==='m')cmd('mark');else if('123'.includes(k)&&k)cmd('bowl'+k)});
+ if(k==='q'){cmd('q');e.preventDefault()}else if(k===' '){cmd('start');e.preventDefault()}else if(k==='m')cmd('mark');
+ else if(k==='+'||k==='=')cmd('faster');else if(k==='-'||k==='_')cmd('slower');else if('123'.includes(k)&&k)cmd('bowl'+k)});
 async function tick(){try{const r=await fetch('/ctl/state').then(x=>x.json());
  $('app').className='app '+(r.phase==='running'?'run':r.phase);
  $('state').textContent=r.phase==='running'?(r.stage==='pick'?'Running · pick':'Running · place'):r.phase==='stopped'?'Stopped':'Idle';
  $('prompt').textContent=r.prompt;$('msg').textContent=r.message||'';
  const p=$('plates');if(!p.children.length)r.bowls.forEach((c,i)=>{const b=document.createElement('button');b.className='plate';b.style.background=SW[c]||c;b.setAttribute('aria-label',c+' plate');b.innerHTML='<kbd>'+(i+1)+'</kbd>';b.onclick=()=>cmd('bowl'+(i+1));p.appendChild(b)});
  [...p.children].forEach((b,i)=>b.classList.toggle('sel',r.bowl===r.bowls[i]));
- $('lat').textContent=r.latency_ms??'–';$('med').textContent=r.latency_median_ms??'–';$('q').textContent=r.queued;$('age').textContent=r.chunk_age_s??'–';
+ $('lat').textContent=r.latency_ms??'–';$('med').textContent=r.latency_median_ms??'–';$('q').textContent=r.queued;$('age').textContent=r.chunk_age_s??'–';$('spd').textContent=r.max_step[0];$('bl').textContent=r.blend+' ('+r.chunks+')';
 }catch(e){$('state').textContent='Disconnected'}}
 setInterval(tick,150);tick();
 </script></body></html>"""
@@ -301,7 +357,7 @@ def make_handler(streams: dict, ctl: Controller):
     from dlsj import teleop_web
 
     base = teleop_web.make_handler(streams, None)
-    allowed = {"q", "stop", "start", "mark", *(f"bowl{i}" for i in range(1, 10))}
+    allowed = {"q", "stop", "start", "mark", "faster", "slower", *(f"bowl{i}" for i in range(1, 10))}
 
     class Handler(base):
         def do_GET(self):
@@ -319,6 +375,15 @@ def make_handler(streams: dict, ctl: Controller):
             return self._send(404, b"", "text/plain")
 
     return Handler
+
+
+def warmup(policy, n: int = 2) -> None:
+    """The first calls after compiling are slow (0.4-2.6 s); spend them before the arm is live."""
+    blank = {c: np.zeros((480, 640, 3), np.uint8) for c in CAMS}
+    for _ in range(n):
+        t = time.perf_counter()
+        policy(np.zeros(6, np.float32), blank, PICK)
+        log.info("warm-up inference: %.0f ms", (time.perf_counter() - t) * 1e3)
 
 
 def make_policy(args):
@@ -347,16 +412,22 @@ def main() -> None:
     p.add_argument("--realsense", default="", help="name=serial,..., e.g. top=346422061366,inspect=243722062690")
     p.add_argument("--bowls", default="yellow,purple,orange")
     p.add_argument("--fps", type=int, default=30)
-    p.add_argument("--max-step", type=float, default=2.0, help="joint target change per tick (calibrated units)")
-    p.add_argument("--max-step-gripper", type=float, default=4.0)
+    p.add_argument("--max-step", type=float, default=DEFAULT_MAX_STEP,
+                   help="joint target change per tick (calibrated units); demos move p99 5-8/tick. +/- keys tune it")
+    p.add_argument("--max-step-gripper", type=float, default=DEFAULT_MAX_STEP)
+    p.add_argument("--blend", choices=BLENDS, default="ensemble", help="how consecutive chunks are combined")
+    p.add_argument("--ensemble-k", type=float, default=0.01, help="ensemble weights exp(-k*i), i=0 the oldest chunk")
+    p.add_argument("--blend-steps", type=int, default=10, help="crossfade length in ticks")
     p.add_argument("--max-relative-target", type=float, default=10.0, help="LeRobot's per-command safety clamp")
-    p.add_argument("--replan", type=int, default=20, help="request a new chunk when this few actions remain")
+    p.add_argument("--replan", type=int, default=50,
+                   help="request a new chunk when this few future actions remain (50 = back to back)")
     p.add_argument("--host", default="0.0.0.0")
     p.add_argument("--port", type=int, default=8010)
     args = p.parse_args()
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 
     policy = make_policy(args)  # compile first: slow, and the arm should not wait torqued meanwhile
+    warmup(policy)
     streams: dict = {}
     for name, dev in teleop_web.parse_cameras(args.cameras, 8).items() if args.cameras else []:
         streams[name] = teleop_web.CameraStream(name, dev, 640, 480, 30, 80).start()
@@ -371,7 +442,7 @@ def main() -> None:
     arm = FollowerArm(port, args.follower_id, args.max_relative_target)
     arm.connect()
     ctl = Controller(arm, streams, policy, args.bowls.split(","), args.fps, args.max_step, args.max_step_gripper,
-                     args.replan)
+                     args.replan, args.blend, args.ensemble_k, args.blend_steps)
     loop = threading.Thread(target=ctl.run, name="control", daemon=True)
     loop.start()
     teleop_web.install_stop_signals()

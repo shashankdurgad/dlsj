@@ -78,10 +78,10 @@ def test_q_holds_present_position_and_drops_queued_actions():
     ctl = make()
     ctl.command("start")
     run_ticks(ctl, 10)
-    assert ctl.queue
+    assert ctl.chunks
     here = ctl.arm.pos.copy()
     ctl.command("q")  # immediate, no tick needed
-    assert ctl.phase == "stopped" and not ctl.queue
+    assert ctl.phase == "stopped" and not ctl.chunks
     np.testing.assert_allclose(ctl.arm.sent[-1], here)  # last command = hold where it is
     n = len(ctl.arm.sent)
     run_ticks(ctl, 20)
@@ -102,7 +102,7 @@ def test_in_flight_chunk_is_discarded_after_q():
     policy.release.set()  # the late chunk arrives after the stop
     time.sleep(0.2)
     run_ticks(ctl, 10)
-    assert not ctl.queue and len(ctl.arm.sent) == n
+    assert not ctl.chunks and len(ctl.arm.sent) == n
 
 
 def test_prompt_switches_at_the_mark_with_the_chosen_plate():
@@ -121,13 +121,78 @@ def test_prompt_switches_at_the_mark_with_the_chosen_plate():
     assert ctl.policy.prompts[-1] == "place the brick in the yellow bowl"
 
 
-def test_stale_actions_are_skipped_by_inference_latency():
-    ctl = make(FakePolicy(delay=0.2), fps=30)  # 0.2 s at 30 fps -> first 6 actions already stale
+class ClockPolicy(FakePolicy):
+    """Action j of every chunk = j on all joints, so a sent value says which chunk index was used."""
+
+    def __call__(self, state, images, task):
+        super().__call__(state, images, task)
+        return np.repeat(np.arange(50.0)[:, None], 6, 1)
+
+
+def test_actions_stale_by_inference_time_are_skipped():
+    policy = ClockPolicy()
+    policy.release.clear()
+    ctl = make(policy, sync=False, max_step=100, blend="none")
     ctl.command("start")
+    ctl.tick()  # tick 0: request, observation taken now
+    for _ in range(6):  # inference takes 6 ticks
+        ctl.tick()
+    assert ctl.arm.sent == []  # nothing planned yet: hold
+    policy.release.set()
+    deadline = time.time() + 2
+    while not ctl.chunks and time.time() < deadline:
+        time.sleep(0.01)
+    ctl.tick()  # tick 7 -> chunk index 7
+    assert ctl.arm.sent[0][0] == 7.0
+    assert ctl.snapshot()["latency_ms"] > 0
+
+
+def test_ensemble_aligns_chunks_by_time_and_favours_the_oldest():
+    ctl = make(blend="ensemble", ensemble_k=0.5)
+    ctl.t = 10
+    ctl._add_chunk(4, np.repeat(np.arange(4.0, 54.0)[:, None], 6, 1))  # value = the tick it is meant for
+    ctl._add_chunk(8, np.repeat(np.arange(8.0, 58.0)[:, None], 6, 1))
+    np.testing.assert_allclose(ctl._planned(10), 10.0)  # both agree on tick 10 only if aligned by time
+    ctl.chunks.clear()
+    ctl._add_chunk(10, np.zeros((50, 6)))  # older
+    ctl._add_chunk(10, np.ones((50, 6)))  # newer
+    w = np.exp(-0.5 * np.arange(2))
+    np.testing.assert_allclose(ctl._planned(12), w[1] / w.sum())  # ACT: the oldest chunk weighs most
+    assert ctl._planned(12)[0] < 0.5
+
+
+class JitterPolicy(FakePolicy):
+    """Consecutive chunks disagree by 12 units (+6 / -6): what made the arm jitter on the first live run."""
+
+    def __call__(self, state, images, task):
+        super().__call__(state, images, task)
+        return np.full((50, 6), 6.0 * (-1) ** self.calls)
+
+
+def _max_jump(blend):
+    ctl = make(JitterPolicy(), blend=blend, max_step=100, replan=40, blend_steps=10)
+    ctl.command("start")
+    run_ticks(ctl, 80)
+    assert ctl.policy.calls >= 6
+    return float(np.abs(np.diff(np.array(ctl.arm.sent)[:, 0])).max())
+
+
+def test_blending_smooths_chunk_switches():
+    raw = _max_jump("none")
+    assert raw >= 12.0  # without blending every switch jumps the whole disagreement
+    assert _max_jump("crossfade") <= 12.0 / 11 * 2 + 1e-9  # <= 2 fade steps per tick even when fades overlap
+    assert _max_jump("ensemble") <= raw / 2
+
+
+def test_speed_keys_change_the_step_limit():
+    ctl = make(max_step=8.0)
+    ctl.command("faster")
     ctl.tick()
-    assert len(ctl.queue) in (50 - 6 - 1, 50 - 7 - 1)  # ceil(0.2 s x 30) = 6 (+1 for overhead) skipped, 1 sent
-    snap = ctl.snapshot()
-    assert snap["latency_ms"] >= 200 and snap["phase"] == "running"
+    assert ctl.max_step[0] == pytest.approx(10.0)
+    ctl.command("slower")
+    ctl.command("slower")
+    ctl.tick()
+    assert ctl.max_step[0] == pytest.approx(6.4)
 
 
 def test_inference_error_stops_and_holds():
