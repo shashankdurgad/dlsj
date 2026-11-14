@@ -36,7 +36,7 @@ app = modal.App("dlsj-act")
 image = (
     modal.Image.debian_slim(python_version="3.12")
     .apt_install("ffmpeg", "libgl1", "libglib2.0-0")
-    .uv_pip_install("lerobot[dataset]==0.7.0", "wandb")
+    .uv_pip_install("lerobot[dataset,training]==0.7.0", "wandb")
 )
 
 data = modal.Volume.from_name("dlsj-teleop-data", create_if_missing=True)
