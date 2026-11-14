@@ -70,19 +70,21 @@ def parse_log_line(line: str) -> dict[str, float] | None:
 @app.function(image=image, gpu="H100:8", cpu=64, memory=262144, timeout=12 * 3600,
               volumes={"/data": data, "/runs": runs}, secrets=[modal.Secret.from_name("wandb")])
 def train(dataset: str = "duplo_pickset_300", run: str = "dp_pick_v1", steps: int = 20_000, batch_size: int = 32,
-          gpus: int = 8, workers: int = 7, save_freq: int = 2_000, wandb_project: str = "dlsj-dp") -> str:
+          gpus: int = 8, workers: int = 7, save_freq: int = 2_000, wandb_project: str = "dlsj-dp",
+          crop: str = "324,432") -> str:
     import wandb
 
     cmd = [
         "torchrun", "--standalone", f"--nproc_per_node={gpus}", "-m", "lerobot.scripts.lerobot_train",
         f"--dataset.repo_id=local/{dataset}", f"--dataset.root=/data/{dataset}", "--dataset.video_backend=pyav",
-        *DP_ARGS, "--policy.device=cuda", "--policy.push_to_hub=false",
+        *[a for a in DP_ARGS if not a.startswith("--policy.crop_shape=")], f"--policy.crop_shape=[{crop}]",
+        "--policy.device=cuda", "--policy.push_to_hub=false",
         f"--output_dir=/runs/{run}", f"--job_name={run}", f"--batch_size={batch_size}", f"--steps={steps}",
         f"--save_freq={save_freq}", f"--log_freq={LOG_FREQ}", f"--num_workers={workers}",
     ]
     print(" ".join(cmd), flush=True)
     config = {"dataset": dataset, "steps": steps, "batch_size_per_gpu": batch_size, "gpus": gpus,
-              "global_batch": batch_size * gpus, "policy": "diffusion", "gpu": "H100", "args": DP_ARGS}
+              "global_batch": batch_size * gpus, "policy": "diffusion", "gpu": "H100", "args": DP_ARGS, "crop": crop}
     try:
         wb = wandb.init(project=wandb_project, name=run, config=config)
     except Exception as e:  # noqa: BLE001  tracking must never stop training
@@ -134,7 +136,8 @@ def check() -> str:
 
 @app.local_entrypoint()
 def main(dataset: str = "duplo_pickset_300", run: str = "dp_pick_v1", steps: int = 20_000, batch_size: int = 32,
-         gpus: int = 8, workers: int = 7, save_freq: int = 2_000):
+         gpus: int = 8, workers: int = 7, save_freq: int = 2_000, crop: str = "324,432"):
+    """--crop H,W: random-crop size, ~90% of the stored images (360x480 -> 324,432; 288x384 -> 260,346)."""
     fn = train.with_options(gpu=f"H100:{gpus}", cpu=min(64, 8 * gpus), memory=32768 * gpus)  # Modal: <= 64 cores
     print(fn.remote(dataset=dataset, run=run, steps=steps, batch_size=batch_size, gpus=gpus, workers=workers,
-                    save_freq=save_freq))
+                    save_freq=save_freq, crop=crop))
