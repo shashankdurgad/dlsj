@@ -144,7 +144,7 @@ def test_full_cycle_then_done(build):
     run(c, clock, 1.0, grip=5.6, cmd_grip=0.0)  # squeezing at brick width
     assert c.L["step"] == "bring" and c.stage == "bring"
     with c.lock:
-        c.perc["inspect_seen"] = {"t": clock.now + 10, "conf": 0.7}
+        c.perc["inspect_seen"] = {"t": clock.now + 10, "conf": 0.7, "close": True}
     run(c, clock, 3.0, grip=5.6, cmd_grip=0.0, pose=np.ones(5))
     assert insp.done.wait(2.0)
     for _ in range(100):

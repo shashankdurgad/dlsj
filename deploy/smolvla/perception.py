@@ -181,3 +181,31 @@ def annotate_top(bgr: np.ndarray, table: list[Brick], sorted_: list[Brick], plat
         cv2.putText(img, banner, (8, img.shape[0] - 8), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1,
                     cv2.LINE_AA)
     return img
+
+
+def inspect_reference(bgr: np.ndarray) -> np.ndarray:
+    """Blurred grey inspection frame with the arm away: the background `select_held` compares against."""
+    return cv2.GaussianBlur(cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY), (9, 9), 0)
+
+
+def select_held(bgr: np.ndarray, dets, ref: np.ndarray | None, min_frac: float = 0.35, min_side: int = 24,
+                diff: int = 28):
+    """(detection, foreground fraction) of the brick in the gripper on the fixed inspection camera.
+
+    The held brick is what differs from `ref` (taken with the arm away); bricks lying on the table behind it don't,
+    so they are never chosen. Without a reference: the largest detection. None if nothing qualifies."""
+    dets = [d for d in dets if min(d.box[2] - d.box[0], d.box[3] - d.box[1]) >= min_side]
+    if not dets:
+        return None, 0.0
+    if ref is None or ref.shape != bgr.shape[:2]:
+        return max(dets, key=lambda d: (d.box[2] - d.box[0]) * (d.box[3] - d.box[1])), 0.0
+    g = inspect_reference(bgr)
+    fg = cv2.morphologyEx((cv2.absdiff(g, ref) > diff).astype(np.uint8), cv2.MORPH_OPEN, np.ones((5, 5), np.uint8))
+    best, best_score, best_frac = None, 0.0, 0.0
+    for d in dets:
+        x0, y0, x1, y1 = (int(v) for v in d.box)
+        frac = float(fg[y0:y1, x0:x1].mean()) if x1 > x0 and y1 > y0 else 0.0
+        score = frac * np.sqrt((x1 - x0) * (y1 - y0))
+        if frac >= min_frac and score > best_score:
+            best, best_score, best_frac = d, score, frac
+    return best, best_frac

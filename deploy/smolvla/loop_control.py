@@ -41,7 +41,8 @@ import smolvla_control as S  # noqa: E402
 log = logging.getLogger("loop_control")
 LCFG = SimpleNamespace(hold_min=4.0, hold_max=9.0, lost_below=3.0, open_above=12.0, pick_timeout=45.0,
                        bring_timeout=25.0, place_timeout=40.0, max_cycles=12, max_attempts=3,
-                       workspace=(0, 60, 560, 480), empty_seconds=2.0, perception_hz=4.0, held_min_px=110,
+                       workspace=(0, 60, 560, 480), empty_seconds=2.0, perception_hz=4.0, held_min_px=150,
+                       held_band=(0.25, 0.75), fg_frac=0.35,
                        log_dir="~/inference/logs/loop")
 STEPS = ["survey", "pick", "bring", "inspect", "place", "home"]
 
@@ -87,10 +88,16 @@ def make_loop_controller_class(base):
                 pass
             self.detector = getattr(getattr(self.auto_inspector, "insp", None), "detector", None)
             self.auto_inspector.listener = self._on_inspect_frame
+            self._insp_ref = None  # blurred grey inspection frame with the arm away (taken while surveying)
+            insp = getattr(self.auto_inspector, "insp", None)
+            if insp is not None and hasattr(insp, "crop_box"):
+                self._roi_crop_box = insp.crop_box
+                insp.crop_box = self._crop_box_held  # YOLO crops the HELD brick, not bricks on the table behind it
             self.L = {"mode": "off", "step": "idle", "since": time.monotonic(), "cycle": 0, "attempts": 0,
                       "target": None, "message": "Press Start loop", "cycles": [], "tallies": {},
                       "grasp": {"state": "open"}, "started": None, "events": collections.deque(maxlen=40)}
-            self.perc = {"t": 0.0, "table": [], "sorted": [], "plates": [], "target": None, "inspect_seen": None}
+            self.perc = {"t": 0.0, "table": [], "sorted": [], "plates": [], "target": None, "inspect_seen": None,
+                         "inspect": None, "workspace": list(LCFG.workspace)}
             self._plates: dict[str, P.Plate] = {}
             self._count_hist: collections.deque = collections.deque(maxlen=64)  # (t, n bricks on the table)
             self._pose_hist: collections.deque = collections.deque(maxlen=20)
@@ -245,6 +252,7 @@ def make_loop_controller_class(base):
             if self.L["attempts"] >= LCFG.max_attempts:
                 self._pause(f"{self.L['attempts']} failed picks in a row: check the scene, then Resume")
                 return
+            self._capture_inspect_reference()
             colour = target["colour"]
             self.L["cycle"] += 1
             self.L["target"] = target
@@ -289,9 +297,10 @@ def make_loop_controller_class(base):
                 return
             settled = len(self._pose_hist) >= 15 and float(np.ptp(np.stack(self._pose_hist)[:, :5], axis=0).max()) < 2.0
             seen = self.perc.get("inspect_seen")
-            sees = seen is not None and time.monotonic() - seen["t"] < 0.6 and seen["conf"] >= 0.4
-            arrived = (self._held_for("settled_seen", settled and sees, 0.4)
-                       or self._held_for("settled", settled, 2.5) or self._elapsed() > LCFG.bring_timeout)
+            # close and centred like the hand-posed sweeps (brick ~230 px wide, mid-frame); the VLA keeps bringing it
+            # closer until then (an early "arm paused" cut it off at the image edge on 15 Nov)
+            sees = seen is not None and time.monotonic() - seen["t"] < 0.8 and seen.get("close", False)
+            arrived = self._held_for("settled_seen", settled and sees, 0.4) or self._elapsed() > LCFG.bring_timeout
             if arrived:
                 self._cycle(t_inspect=round(time.time() - self.L["cycles"][-1]["t0"], 1), camera_saw=bool(sees))
                 self._insp_frames, self._insp_crops = [], []
@@ -356,14 +365,7 @@ def make_loop_controller_class(base):
 
         def _perceive_once(self, detect_top: bool = True, detect_inspect: bool = True) -> None:
             top = getattr(self.real_cameras.get("top"), "frame", None)
-            if top is not None and not detect_top:  # arm moving: last overlay on the live image, no detector
-                top = top.copy()
-                last = self._last_top
-                if last is not None:
-                    table, srt, plates, target = last
-                    self.perc_streams["perc_top"].publish(P.annotate_top(
-                        top, table, srt, plates, target, LCFG.workspace,
-                        f"{self.L['step'].upper()}   (detector paused while the arm moves)"))
+            if not detect_top:  # arm moving: keep the last result (the page overlays it on the live video)
                 top = None
             if top is not None:
                 top = top.copy()
@@ -383,9 +385,7 @@ def make_loop_controller_class(base):
                     if not arm_busy:  # the arm itself can hide bricks: only count while it is home
                         self._count_hist.append((now, len(table)))
                     step = self.L["step"]
-                banner = f"{step.upper()}   bricks on table: {len(table)}   sorted: {len(srt)}"
-                self.perc_streams["perc_top"].publish(P.annotate_top(top, table, srt, plates, target, LCFG.workspace,
-                                                                     banner))
+                self.perc["workspace"] = list(LCFG.workspace)
             if self.phase != "inspecting" and detect_inspect:
                 insp = getattr(self.real_cameras.get("inspect"), "frame", None)
                 if insp is not None:
@@ -396,25 +396,40 @@ def make_loop_controller_class(base):
 
             dets = self.detector.detect(frame) if self.detector is not None else []
             h, w = frame.shape[:2]
-            best = None
-            for d in dets:
-                x0, y0, x1, y1 = d.box
-                cx, cy = (x0 + x1) / 2, (y0 + y1) / 2
-                big = max(x1 - x0, y1 - y0) >= LCFG.held_min_px  # held at the camera = close = big; table bricks are small
-                if big and abs(cx - w / 2) < w * 0.3 and abs(cy - h / 2) < h * 0.35 and (best is None or d.confidence > best.confidence):
-                    best = d
-            img = frame
+            best, frac = self._held_brick(frame, dets)
+            close = False
             if best is not None:
-                cv2.rectangle(img, best.box[:2], best.box[2:], (0, 255, 120), 2)
-                cv2.putText(img, f"held brick {best.confidence:.2f}", (best.box[0], max(14, best.box[1] - 6)),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 255, 120), 2, cv2.LINE_AA)
-                with self.lock:
-                    self.perc["inspect_seen"] = {"t": time.monotonic(), "conf": round(float(best.confidence), 2)}
-            for d in dets:  # every detection, thin grey: shows what the camera sees without counting it as arrival
-                if d is not best:
-                    cv2.rectangle(img, d.box[:2], d.box[2:], (150, 150, 150), 1)
-            _banner(img, "INSPECTION CAMERA  " + ("held brick at the camera" if best is not None else "waiting for a held brick"))
-            self.perc_streams["perc_inspect"].publish(img)
+                x0, y0, x1, y1 = best.box
+                cx = (x0 + x1) / 2
+                close = (max(x1 - x0, y1 - y0) >= LCFG.held_min_px
+                         and LCFG.held_band[0] * w <= cx <= LCFG.held_band[1] * w)
+            with self.lock:
+                if best is not None:
+                    self.perc["inspect_seen"] = {"t": time.monotonic(), "conf": round(float(best.confidence), 2),
+                                                 "close": close, "box": [int(v) for v in best.box],
+                                                 "fg": round(frac, 2)}
+                self.perc["inspect"] = {"held": None if best is None else [int(v) for v in best.box],
+                                        "close": close, "band": list(LCFG.held_band),
+                                        "others": [[int(v) for v in d.box] for d in dets if d is not best],
+                                        "t": time.monotonic()}
+
+        # ------------------------------------------------------------------ held-brick selection (no training)
+        def _capture_inspect_reference(self) -> None:
+            f = getattr(self.real_cameras.get("inspect"), "frame", None)
+            if f is not None:
+                self._insp_ref = P.inspect_reference(f)
+
+        def _held_brick(self, bgr, dets):
+            return P.select_held(bgr, dets, self._insp_ref, LCFG.fg_frac)
+
+        def _crop_box_held(self, bgr):
+            """Replaces YoloInspector.crop_box during the spin: the held brick anywhere in the frame, else the ROI."""
+            det = getattr(self.auto_inspector.insp, "detector", None)
+            if det is not None:
+                best, _ = self._held_brick(bgr, det.detect(bgr))
+                if best is not None:
+                    return tuple(int(v) for v in best.box), "held"
+            return self._roi_crop_box(bgr)
 
         def _on_inspect_frame(self, ev: dict) -> None:
             import cv2
@@ -465,6 +480,11 @@ def make_loop_controller_class(base):
                 d["loop"]["inspect_frames"] = self._insp_frames[-12:]
                 d["perception"] = {k: v for k, v in self.perc.items() if k != "t"}
                 d["perception"]["age_s"] = round(time.monotonic() - self.perc["t"], 1) if self.perc["t"] else None
+                ins = self.perc.get("inspect")
+                if ins:
+                    d["perception"]["inspect"] = {**{k: v for k, v in ins.items() if k != "t"},
+                                                  "age_s": round(time.monotonic() - ins["t"], 1)}
+                d["perception"].pop("inspect_seen", None)
                 d["loop"]["config"] = {"hold": [LCFG.hold_min, LCFG.hold_max], "lost_below": LCFG.lost_below,
                                        "open_above": LCFG.open_above}
             return d
@@ -536,7 +556,7 @@ def main() -> None:
     ap.add_argument("--workspace", default="0,60,560,480", help="x0,y0,x1,y1 of the top image the loop looks at")
     ap.add_argument("--empty-seconds", type=float, default=LCFG.empty_seconds)
     ap.add_argument("--held-min-px", type=int, default=LCFG.held_min_px,
-                    help="a brick box this big (px) on the inspection camera counts as held at the camera")
+                    help="held brick at least this big (px) on the inspection camera = close enough to spin")
     ap.add_argument("--inspect-device", default="NPU")
     ap.add_argument("--inspect-roi", default="")
     ap.add_argument("--inspect-frames", type=int, default=12)

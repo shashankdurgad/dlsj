@@ -26,6 +26,8 @@ kbd{font:600 11px ui-monospace,monospace;color:var(--mute);margin-left:4px}
 .card h2{font-size:12px;font-weight:600;color:var(--mute);text-transform:uppercase;letter-spacing:.7px;margin-bottom:8px;display:flex;justify-content:space-between;gap:8px}
 .card h2 em{font-style:normal;color:var(--fg);text-transform:none;letter-spacing:0;font-weight:500}
 img.cam{width:100%;display:block;border-radius:8px;background:#000;aspect-ratio:4/3;object-fit:cover}
+.camwrap{position:relative}.camwrap canvas{position:absolute;inset:0;width:100%;height:100%;pointer-events:none}
+.tag{position:absolute;left:8px;bottom:8px;background:rgba(0,0,0,.65);padding:3px 8px;border-radius:6px;font-size:12px}
 .col{display:flex;flex-direction:column;gap:14px;min-width:0}
 .kv{display:grid;grid-template-columns:auto 1fr;gap:4px 12px;font-size:13px}.kv dt{color:var(--mute)}.kv dd{text-align:right;font-variant-numeric:tabular-nums}
 .prompt{font-size:15px;padding:8px 10px;background:var(--panel2);border-radius:8px;margin-bottom:8px}
@@ -59,12 +61,12 @@ th{color:var(--mute);font-weight:500;text-align:left;padding:4px 6px;border-bott
 <div class="msg" id="msg">Connecting...</div>
 <main class="grid">
  <div class="col">
-  <section class="card"><h2>Perceive &middot; top camera <em id="ptop"></em></h2><img class="cam" src="/stream/perc_top" alt="Top camera with detected bricks and plates"></section>
+  <section class="card"><h2>Perceive &middot; top camera <em id="ptop"></em></h2><div class="camwrap"><img class="cam" src="/stream/top" alt="Top camera with detected bricks and plates"><canvas id="ovtop" width="640" height="480"></canvas></div></section>
   <section class="card"><h2>Table &amp; plates <em id="remain"></em></h2>
    <div class="plates" id="plates"></div><div class="bricks" id="bricks"></div></section>
  </div>
  <div class="col">
-  <section class="card"><h2>Detect &middot; inspection camera <em id="pinsp"></em></h2><img class="cam" src="/stream/perc_inspect" alt="Inspection camera with YOLO result"></section>
+  <section class="card"><h2>Detect &middot; inspection camera <em id="pinsp"></em></h2><div class="camwrap"><img class="cam" id="inspimg" src="/stream/inspect" alt="Inspection camera with YOLO result"><canvas id="ovinsp" width="640" height="480"></canvas><span class="tag" id="insptag">live</span></div></section>
   <section class="card"><h2>Wrist camera <em class="mute">policy input</em></h2><img class="cam" src="/stream/wrist" alt="Wrist camera"></section>
  </div>
  <div class="col">
@@ -89,7 +91,7 @@ addEventListener('keydown',e=>{if(e.repeat||e.target.tagName==='INPUT')return;co
  if(k==='q'){L('stop');e.preventDefault()}else if(k==='s')L('start');else if(k==='p')L('pause');else if(k==='r')L('resume');else if(k==='h')L('home')});
 $('pipe').innerHTML=STEPS.map(s=>`<div class="chip" id="c_${s[0]}"><b>${s[1]}</b><span>${s[2]}</span></div>`).join('');
 let stripSeq=-1;
-async function tick(){let r;try{r=await fetch('/ctl/state').then(x=>x.json())}catch(e){$('msg').textContent='Disconnected from the robot';return}
+async function tick(){let r;try{r=await fetch('/ctl/state').then(x=>x.json());window._last=r}catch(e){$('msg').textContent='Disconnected from the robot';return}
  const lp=r.loop||{},pc=r.perception||{};
  $('mode').textContent=lp.mode||'off';$('mode').className='pill '+(lp.mode||'');
  $('cyc').textContent=lp.cycle?`cycle ${lp.cycle}`+(lp.attempts?` · ${lp.attempts} retry`:''):'';
@@ -107,7 +109,7 @@ async function tick(){let r;try{r=await fetch('/ctl/state').then(x=>x.json())}ca
  $('remain').textContent=`${tb.length} on the table · ${so.length} in plates`;$('ptop').textContent=pc.age_s!=null?`${pc.age_s}s ago`:'';
  const tally=lp.tallies||{};$('plates').innerHTML=['yellow','orange','purple'].map(c=>`<div class="plate"><i style="background:${COL[c]}"></i><b>${tally[c]||0}</b><span class="mute">${c} · this run</span></div>`).join('');
  $('bricks').innerHTML=tb.map(b=>`<span class="bk${tgt&&b.box+''==tgt.box+''?' t':''}" style="color:${COL[b.colour]||'#ccc'}">${b.colour} ${b.conf.toFixed(2)}</span>`).join('')||'<span class="mute">no bricks on the table</span>';
- const seen=pc.inspect_seen;$('pinsp').textContent=r.phase==='inspecting'?'spinning':(seen?`brick ${seen.conf}`:'');
+ const ins0=pc.inspect;$('pinsp').textContent=r.phase==='inspecting'?'spinning':(ins0&&ins0.held?(ins0.close?'held brick close':'held brick far'):'');
  const fr=lp.inspect_frames||[];$('ifr').textContent=fr.length?`${fr.length} frames`:'';
  if(fr.length!==stripSeq){stripSeq=fr.length;$('strip').src='/loop/strip.jpg?'+Date.now()}
  const ins=r.inspection||{};
@@ -118,5 +120,25 @@ async function tick(){let r;try{r=await fetch('/ctl/state').then(x=>x.json())}ca
  $('cycles').innerHTML=cy.slice().reverse().map(c=>`<tr><td>${c.n}</td><td style="color:${COL[c.brick]||'#ccc'}">${c.brick}</td><td>${c.grip!=null?c.grip+' @'+c.t_grasp+'s':'–'}</td><td>${c.outcome?(LBL[c.outcome]||c.outcome)+' ('+c.frames+'f, '+c.inspect_s+'s)':'–'}</td><td>${c.bowl?`<span style="color:${COL[c.bowl]}">${c.bowl}</span>`:'–'}</td><td>${c.seconds!=null?c.seconds+' s':'–'}</td><td class="${c.result==='sorted'?'ok':c.result==='running'?'mute':'bad'}">${c.result}</td></tr>`).join('')||'<tr><td colspan="7" class="mute">no cycles yet</td></tr>';
  $('ev').innerHTML=(lp.events||[]).map(e=>`<div>${new Date(e.t*1000).toLocaleTimeString()} · ${e.kind} ${e.step||e.bowl||e.outcome||''} ${e.message||''}</div>`).join('');
 }
+function box(c,b,col,w,label){c.strokeStyle=col;c.lineWidth=w;c.strokeRect(b[0],b[1],b[2]-b[0],b[3]-b[1]);
+ if(label){c.font='600 15px system-ui';const tw=c.measureText(label).width;c.fillStyle='rgba(0,0,0,.6)';c.fillRect(b[0],Math.max(0,b[1]-20),tw+8,19);c.fillStyle=col;c.fillText(label,b[0]+4,Math.max(15,b[1]-5))}}
+function drawTop(pc,step){const c=$('ovtop').getContext('2d');c.clearRect(0,0,640,480);const ws=pc.workspace||[0,60,560,480];
+ c.fillStyle='rgba(0,0,0,.4)';c.fillRect(0,0,640,ws[1]);c.fillRect(ws[2],ws[1],640-ws[2],480-ws[1]);
+ const PC={yellow:'#f2c230',orange:'#f08a24',purple:'#b9a2ff'};
+ (pc.plates||[]).forEach(p=>{c.strokeStyle=PC[p.colour]||'#ccc';c.lineWidth=3;c.beginPath();c.arc(p.cx,p.cy,p.r,0,7);c.stroke();
+  c.font='600 14px system-ui';c.fillStyle=PC[p.colour]||'#ccc';c.fillText(p.colour+' plate',p.cx-p.r*.6,p.cy+p.r+16)});
+ (pc.sorted||[]).forEach(b=>box(c,b.box,'#999',1));
+ const t=pc.target;(pc.table||[]).forEach(b=>{const isT=t&&b.box+''==t.box+'';box(c,b.box,isT?'#3eff8e':(COL[b.colour]||'#ccc'),isT?4:2,(isT?'TARGET ':'')+b.colour+' '+b.conf.toFixed(2))});
+ if(!['survey','idle','done','paused'].includes(step)){c.font='13px system-ui';c.fillStyle='rgba(255,255,255,.8)';c.fillText('last survey result (detector paused while the arm moves)',8,ws[1]+18)}}
+let inspMode='live';
+function drawInsp(r){const pc=r.perception||{},c=$('ovinsp').getContext('2d');c.clearRect(0,0,640,480);
+ const spin=r.phase==='inspecting';const want=spin?'spin':'live';
+ if(want!==inspMode){inspMode=want;$('inspimg').src=spin?'/stream/perc_inspect':'/stream/inspect'}
+ $('insptag').textContent=spin?'spin: YOLO on every frame (NPU)':'live';if(spin)return;
+ const ins=pc.inspect;if(!ins||ins.age_s>1.5)return;
+ c.strokeStyle='rgba(255,255,255,.25)';c.lineWidth=1;[ins.band[0]*640,ins.band[1]*640].forEach(x=>{c.beginPath();c.moveTo(x,0);c.lineTo(x,480);c.stroke()});
+ (ins.others||[]).forEach(b=>box(c,b,'rgba(170,170,170,.8)',1));
+ if(ins.held)box(c,ins.held,ins.close?'#3eff8e':'#ffc93c',4,ins.close?'held brick: close, ready to spin':'held brick: bringing closer')}
+const _tick=tick;tick=async function(){await _tick();try{const r=window._last;if(r){drawTop(r.perception||{},(r.loop||{}).step);drawInsp(r)}}catch(e){}};
 setInterval(tick,150);tick();
 </script></body></html>"""
