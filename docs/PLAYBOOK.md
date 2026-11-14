@@ -850,11 +850,12 @@ Measure on the XPS (median and p99 over ≥100 runs, after warmup, on mains powe
 |---|---|---|
 | PyTorch-XPU bf16, 10 steps | 469 / 471 ms | 1.0× |
 | Studio export **FP16**, 10 steps, `physicalai` `InferenceModel` | 283 / 285 ms | 1.66× |
-| Studio export **INT8_SYM**, 10 steps | **212 / 215 ms** | **2.21×** |
+| Studio export **INT8_SYM**, 10 steps (pi05_base) | **212 / 215 ms** | **2.21×** |
 | INT8, 5 steps (accuracy untested) | 175 / 177 ms | 2.68× |
 | INT8, 1 step (needs SnapFlow distillation) | 147 / 149 ms | 3.19× |
 | INT8 with a 64-token prompt instead of 200 | −7% on the raw model | |
 | Intel pi05-rtc-ov INT8 on OV 2026.4.1 (comparison) | 212 ms | same as Studio |
+| **Fine-tuned team model** `w3joe/pi05-junction-so101-20261114`, Studio export INT8, `InferenceModel` GPU (14 Nov, recorder running in parallel) | **188 / 191 ms** (p99 194) | 2.5× vs PyTorch baseline; 3.3 GB RSS; compile 10.7 s |
 
 - **Paired findings:**
   - INT8 is 25–30% faster than FP16 on a quiet machine.
