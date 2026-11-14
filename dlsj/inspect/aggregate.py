@@ -23,6 +23,22 @@ plain brick look anomalous. The rule therefore weighs evidence instead of averag
 * `median`: the classic 3-frame rule (median score, UNCERTAIN when frames disagree; mean P(cross)). On a sweep
   of a one-face mark the frames always "disagree", so it mostly says UNCERTAIN.
 
+Strategies for a 3-class classifier (frames carry `FrameInspection.probs`, e.g. the YOLO brick classifier in
+`dlsj.inspect.yolo_inspector`). A frame is *confident* when its top probability >= `yolo_min_conf` (0.8) and its
+top-2 margin >= `yolo_min_margin` (0.2), the release's own gate applied per frame:
+
+* `yolo_topk` (evidence-aware, default for YOLO sweeps)
+    MARKED  if >= `yolo_min_marked_frames` (2) frames are confidently circle or cross (a mark may show on a few
+            angles only; one glare frame can't flip a plain brick);
+    PLAIN   if at most `yolo_max_outlier_frames` (1) frame is confidently marked and >= `yolo_plain_frac` (80 %)
+            of the frames are confidently plain;
+    otherwise UNCERTAIN.
+    circle vs cross: confidence-weighted vote over the confidently-marked frames (each votes its class with
+    weight = its top probability); the winner's share minus the loser's must be >= `yolo_mark_min_margin` (0.4,
+    i.e. a 70/30 split), else UNKNOWN (re-inspect, then the purple bowl).
+* `yolo_mean` (the release's naive rule): mean of all frames' probability vectors, argmax, confidence >= 0.8 and
+  margin >= 0.2, else UNCERTAIN. Kept for comparison: on a one-face mark the plain angles dominate the mean.
+
 Every result carries `summary` (counts, top-k mean, class probabilities, which frame localised the mark) and the
 outcome each other strategy would have given (`summary["alternatives"]`), so sweeps can be compared offline
 (`python -m dlsj.loop.sweep_test eval`). Pure NumPy; no OpenCV / OpenVINO.
@@ -39,7 +55,10 @@ import numpy as np
 
 from dlsj.contracts import FrameInspection, InspectionResult, Label, MarkType, mark_outcome
 
-STRATEGIES = ("topk", "majority", "max", "median")
+STRATEGIES = ("topk", "majority", "max", "median")  # anomaly-score strategies (any FrameInspection)
+YOLO_STRATEGIES = ("yolo_topk", "yolo_mean")  # need FrameInspection.probs (plain/circle/cross)
+ALL_STRATEGIES = STRATEGIES + YOLO_STRATEGIES
+YOLO_CLASSES = ("plain", "circle", "cross")
 
 
 @dataclass(frozen=True)
@@ -53,10 +72,17 @@ class AggregateConfig:
     min_mark_margin: float = 0.3  # stage 2: P(winner) - P(runner-up)
     min_mark_found_frac: float = 0.5  # stage 2: marked frames in which the classifier found a mark
     max_mark_weight: float = 4.0  # topk: cap on one frame's vote weight
+    # 3-class (YOLO) strategies
+    yolo_min_conf: float = 0.8  # per frame: top probability (release gate)
+    yolo_min_margin: float = 0.2  # per frame: top-2 margin (release gate)
+    yolo_min_marked_frames: int = 2  # confidently circle/cross frames needed to call the brick marked
+    yolo_max_outlier_frames: int = 1  # confidently marked frames a plain brick may still have
+    yolo_plain_frac: float = 0.8  # fraction of frames confidently plain needed to call the brick plain
+    yolo_mark_min_margin: float = 0.4  # circle-vs-cross weighted vote: winner share - loser share
 
     def __post_init__(self):
-        if self.strategy not in STRATEGIES:
-            raise ValueError(f"unknown aggregation strategy {self.strategy!r}; choose from {STRATEGIES}")
+        if self.strategy not in ALL_STRATEGIES:
+            raise ValueError(f"unknown aggregation strategy {self.strategy!r}; choose from {ALL_STRATEGIES}")
 
 
 @dataclass
@@ -188,6 +214,93 @@ def _stage2(strategy: str, frames, label: Label, cfg: AggregateConfig, threshold
     return win, conf, info | {"mark_reason": f"{win.value} P={conf:.2f} margin {margin:.2f}"}
 
 
+# ----------------------------------------------------------------------------- 3-class (YOLO) strategies
+def frame_probs(f: FrameInspection) -> dict[str, float]:
+    if not f.probs or any(c not in f.probs for c in YOLO_CLASSES):
+        raise ValueError(f"frame {f.index} has no plain/circle/cross probabilities (YOLO strategies need them)")
+    return {c: float(f.probs[c]) for c in YOLO_CLASSES}
+
+
+def gate(probs: dict[str, float], min_conf: float, min_margin: float) -> tuple[str | None, str, float, float]:
+    """(confident class or None, argmax class, top probability, top-2 margin) of one probability vector."""
+    ranked = sorted(probs.items(), key=lambda kv: kv[1], reverse=True)
+    top, conf = ranked[0]
+    margin = conf - ranked[1][1]
+    return (top if conf >= min_conf and margin >= min_margin else None), top, float(conf), float(margin)
+
+
+def _yolo(strategy: str, frames: Sequence[FrameInspection], cfg: AggregateConfig) -> Aggregate:
+    P = [frame_probs(f) for f in frames]
+    n = len(frames)
+    gates = [gate(p, cfg.yolo_min_conf, cfg.yolo_min_margin) for p in P]
+    conf_cls = [g[0] for g in gates]
+    counts = {"n": n, **{f"n_{c}": conf_cls.count(c) for c in YOLO_CLASSES},
+              "n_unsure": conf_cls.count(None)}
+    marked_idx = [i for i, c in enumerate(conf_cls) if c in ("circle", "cross")]
+    mean = {c: float(np.mean([p[c] for p in P])) for c in YOLO_CLASSES}
+    marked_p = np.array([1.0 - p["plain"] for p in P])
+    k = max(1, min(cfg.k, n))
+    topk_mean = float(np.sort(marked_p)[::-1][:k].mean())
+    summary: dict = {"strategy": strategy, **counts, "mean_probs": {c: round(v, 4) for c, v in mean.items()},
+                     "topk": k, "topk_marked_mean": round(topk_mean, 4),
+                     "distribution": [{"i": f.index, "angle": None if f.angle_deg is None else round(float(f.angle_deg), 2),
+                                       **{c: round(p[c], 4) for c in YOLO_CLASSES},
+                                       "confident": cc} for f, p, cc in zip(frames, P, conf_cls)]}
+    if strategy == "yolo_mean":
+        conf_c, top, conf, margin = gate(mean, cfg.yolo_min_conf, cfg.yolo_min_margin)
+        summary |= {"mean_top": top, "mean_conf": round(conf, 4), "mean_margin": round(margin, 4)}
+        if conf_c is None:
+            summary["reason"] = (f"mean of {n} frames: {top} P={conf:.2f} margin {margin:.2f} (need "
+                                 f"{cfg.yolo_min_conf:.2f} / {cfg.yolo_min_margin:.2f})")
+            return Aggregate(strategy, Label.UNCERTAIN, 1.0 - mean["plain"], None, conf, None, summary)
+        summary["reason"] = f"mean of {n} frames: {top} P={conf:.2f} margin {margin:.2f}"
+        if conf_c == "plain":
+            return Aggregate(strategy, Label.PERFECT, 1.0 - mean["plain"], None, conf, None, summary)
+        best = int(np.argmax([p[conf_c] for p in P]))
+        return Aggregate(strategy, Label.DEFECTIVE, 1.0 - mean["plain"], MarkType(conf_c), conf,
+                         frames[best].index, summary)
+    # yolo_topk
+    need = max(1, min(cfg.yolo_min_marked_frames, n))
+    if len(marked_idx) >= need:
+        label = Label.DEFECTIVE
+        why = f"{len(marked_idx)}/{n} frames confidently marked ({counts['n_circle']} circle, {counts['n_cross']} cross)"
+    elif len(marked_idx) <= cfg.yolo_max_outlier_frames and counts["n_plain"] >= cfg.yolo_plain_frac * n:
+        label = Label.PERFECT
+        why = f"{counts['n_plain']}/{n} frames confidently plain"
+        if marked_idx:
+            why += f", {len(marked_idx)} marked outlier frame ignored"
+    else:
+        label = Label.UNCERTAIN
+        why = (f"{counts['n_plain']} plain / {counts['n_circle']} circle / {counts['n_cross']} cross confident, "
+               f"{counts['n_unsure']} unsure of {n} (plain needs >= {math.ceil(cfg.yolo_plain_frac * n)} plain, "
+               f"marked needs >= {need} marked)")
+    summary["reason"] = why
+    if label is not Label.DEFECTIVE:
+        return Aggregate(strategy, label, topk_mean, None, 0.0, None, summary)
+    votes = {"circle": 0.0, "cross": 0.0}
+    for i in marked_idx:
+        votes[conf_cls[i]] += gates[i][2]
+    total = votes["circle"] + votes["cross"]
+    share = {c: v / total for c, v in votes.items()}
+    win = "cross" if share["cross"] >= share["circle"] else "circle"
+    margin = abs(share["cross"] - share["circle"])
+    best = max(marked_idx, key=lambda i: (conf_cls[i] == win, gates[i][2]))
+    summary |= {"mark_frames": [frames[i].index for i in marked_idx],
+                "mark_votes": {c: round(v, 4) for c, v in votes.items()},
+                "mark_probs": {c: round(v, 4) for c, v in share.items()}, "mark_margin": round(margin, 4)}
+    if margin < cfg.yolo_mark_min_margin:
+        summary["mark_reason"] = (f"circle/cross conflict: weighted vote circle {share['circle']:.2f} / cross "
+                                  f"{share['cross']:.2f}, margin {margin:.2f} < {cfg.yolo_mark_min_margin:.2f}")
+        return Aggregate(strategy, label, topk_mean, MarkType.UNKNOWN, share[win], frames[best].index, summary)
+    summary["mark_reason"] = (f"{win}: weighted vote {share[win]:.2f} vs {1 - share[win]:.2f} over "
+                              f"{len(marked_idx)} marked frames (margin {margin:.2f})")
+    return Aggregate(strategy, label, topk_mean, MarkType(win), share[win], frames[best].index, summary)
+
+
+def has_probs(frames: Sequence[FrameInspection]) -> bool:
+    return bool(frames) and all(f.probs and all(c in f.probs for c in YOLO_CLASSES) for f in frames)
+
+
 # ----------------------------------------------------------------------------- public API
 def aggregate(frames: Sequence[FrameInspection], threshold: float, band_low: float, band_high: float,
               cfg: AggregateConfig = AggregateConfig(), strategy: str | None = None) -> Aggregate:
@@ -195,8 +308,10 @@ def aggregate(frames: Sequence[FrameInspection], threshold: float, band_low: flo
     if not frames:
         raise ValueError("no frames to aggregate")
     strategy = strategy or cfg.strategy
-    if strategy not in STRATEGIES:
-        raise ValueError(f"unknown aggregation strategy {strategy!r}; choose from {STRATEGIES}")
+    if strategy not in ALL_STRATEGIES:
+        raise ValueError(f"unknown aggregation strategy {strategy!r}; choose from {ALL_STRATEGIES}")
+    if strategy in YOLO_STRATEGIES:
+        return _yolo(strategy, frames, cfg)
     label, score, why = _stage1(strategy, frames, cfg, threshold, band_low, band_high)
     mark, conf, info = _stage2(strategy, frames, label, cfg, threshold, band_high)
     s = np.array([f.score for f in frames], dtype=np.float64)
@@ -219,8 +334,11 @@ def aggregate(frames: Sequence[FrameInspection], threshold: float, band_low: flo
 
 
 def aggregate_all(frames: Sequence[FrameInspection], threshold: float, band_low: float, band_high: float,
-                  cfg: AggregateConfig = AggregateConfig(), strategies: Sequence[str] = STRATEGIES
+                  cfg: AggregateConfig = AggregateConfig(), strategies: Sequence[str] | None = None
                   ) -> dict[str, Aggregate]:
+    """Every strategy's decision; by default the anomaly strategies, plus the YOLO ones when frames carry probs."""
+    if strategies is None:
+        strategies = ALL_STRATEGIES if has_probs(frames) else STRATEGIES
     return {s: aggregate(frames, threshold, band_low, band_high, cfg, s) for s in strategies}
 
 
@@ -231,6 +349,8 @@ def sweep_result(frames: Sequence[FrameInspection], threshold: float, band_low: 
     """The `InspectionResult` of a sweep: the chosen strategy's decision, every frame, and the alternatives."""
     results = aggregate_all(frames, threshold, band_low, band_high, cfg)
     strategy = strategy or cfg.strategy
+    if strategy not in results:
+        results[strategy] = aggregate(frames, threshold, band_low, band_high, cfg, strategy)
     agg = results[strategy]
     summary = dict(agg.summary)
     summary["alternatives"] = {s: a.outcome().value for s, a in results.items()}
@@ -253,14 +373,16 @@ def frames_record(frames: Sequence[FrameInspection]) -> list[dict]:
              "mark": None if f.mark is None else f.mark.value, "mark_confidence": round(float(f.mark_confidence), 4),
              "p_cross": None if f.p_cross is None else round(float(f.p_cross), 4),
              "latency_ms": round(float(f.latency_ms), 3),
-             **({"pred_label": int(f.pred_label)} if f.pred_label is not None else {})} for f in frames]
+             **({"pred_label": int(f.pred_label)} if f.pred_label is not None else {}),
+             **({"probs": {c: round(float(v), 5) for c, v in f.probs.items()}} if f.probs else {})} for f in frames]
 
 
 def frames_from_record(rec: list[dict]) -> list[FrameInspection]:
     return [FrameInspection(int(d["i"]), d.get("angle"), float(d["score"]), Label(d["label"]),
                             tuple(d["region"]) if d.get("region") else None,
                             MarkType(d["mark"]) if d.get("mark") else None, float(d.get("mark_confidence", 0.0)),
-                            d.get("p_cross"), float(d.get("latency_ms", 0.0)), d.get("pred_label")) for d in rec]
+                            d.get("p_cross"), float(d.get("latency_ms", 0.0)), d.get("pred_label"),
+                            d.get("probs")) for d in rec]
 
 
 # ----------------------------------------------------------------------------- inspectors: sweep support
@@ -329,5 +451,6 @@ class SweepInspectorMixin:
                             device=meta["device"], mark_device=meta["mark_device"], stage_latency_ms=lat)
 
 
-__all__ = ["SweepSession", "SweepInspectorMixin", "STRATEGIES", "AggregateConfig", "Aggregate", "aggregate", "aggregate_all", "sweep_result", "frame_label",
+__all__ = ["SweepSession", "SweepInspectorMixin", "STRATEGIES", "YOLO_STRATEGIES", "ALL_STRATEGIES", "YOLO_CLASSES",
+           "gate", "has_probs", "AggregateConfig", "Aggregate", "aggregate", "aggregate_all", "sweep_result", "frame_label",
            "frames_record", "frames_from_record", "mark_outcome"]

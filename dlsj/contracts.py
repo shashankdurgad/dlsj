@@ -64,6 +64,9 @@ class FrameInspection:
     p_cross: float | None = None
     latency_ms: float = 0.0  # this frame's share of stage 1 (+ its stage-2 crop when run)
     pred_label: int | None = None  # the export's own pred_label output, if the model has one
+    # 3-class classifiers (YOLO plain/circle/cross, `dlsj.inspect.yolo_inspector`): this frame's full class
+    # probability vector, e.g. {"plain": .9, "circle": .06, "cross": .04}. None for Anomalib frames.
+    probs: dict[str, float] | None = field(default=None, hash=False)
 
 
 @dataclass(frozen=True)
