@@ -6,7 +6,7 @@ Laptop dry run (fake robot, cameras, inspector and scripted policy; status page 
 
 Plates (three-class task; colours are configurable, the minor plate's yellow is a placeholder):
 
-    --plates good=blue,minor=yellow,defective=pink        # instruction "place the brick on the <colour> plate"
+    --plates good=yellow,minor=orange,defective=purple   # instruction "place the brick in the <colour> bowl"
     --plates plates.json                                  # {"minor": {"colour": "green", "instruction": "...",
                                                           #   "pose": "green"}, ...}
 
@@ -92,7 +92,7 @@ def parse_args(argv=None) -> argparse.Namespace:
                    help='mark classifier: "shape" | "none" | CNN classifier.json (default: manifest, else shape)')
     p.add_argument("--stage2-device", default=None, help="OpenVINO device of the stage-2 CNN (default NPU)")
     p.add_argument("--plates", default=None,
-                   help='plate colours/strings: "good=blue,minor=yellow,defective=pink" or a JSON file')
+                   help='bowl colours/strings: "good=yellow,minor=orange,defective=purple" (default) or a JSON file')
     p.add_argument("--policy", choices=["fake", "openvino", "lerobot-server"], default="fake")
     p.add_argument("--policy-path", default=None, help="OpenVINO export dir")
     p.add_argument("--policy-device", default="GPU")
@@ -154,7 +154,7 @@ def build(args):
 
     world = robot = None
     if args.robot == "fake":
-        role_pose = {"good": "blue", "minor": "yellow", "defective": "pink"}  # fake plate positions per role
+        role_pose = {"good": "yellow", "minor": "orange", "defective": "purple"}  # fake plate positions per role
         wposes = {k: fakes.DEFAULT_POSES[k].copy() for k in SCRIPTED_POSES}
         for pl in plates.all():  # only the configured plates exist in the fake world
             wposes[pl.pose] = fakes.DEFAULT_POSES[role_pose[pl.role]].copy()

@@ -24,11 +24,11 @@
 
 **Our concrete task (team decision): three classes, three plates, two-stage detection.**
 
-| Brick | Meaning | Plate (⚠️ colours are placeholders, configurable) | π0.5 instruction |
+| Brick | Meaning | Bowl (team decision; strings match Desmond's recorded task strings) | π0.5 instruction |
 |---|---|---|---|
-| **Plain** | good | blue | `"place the brick on the blue plate"` |
-| **Circle** drawn on it | minor defect | yellow | `"place the brick on the yellow plate"` |
-| **Cross** drawn on it | defective | pink | `"place the brick on the pink plate"` |
+| **Plain** | good | **yellow bowl** | `"place the brick in the yellow bowl"` |
+| **Circle** drawn on it | minor defect | **orange bowl** | `"place the brick in the orange bowl"` |
+| **Cross** drawn on it | defective | **purple bowl** | `"place the brick in the purple bowl"` |
 
 ```
 inspect frames ─► Stage 1: Anomalib PaDiM (NPU), trained on plain bricks ── plain ──► good plate
@@ -46,9 +46,8 @@ inspect frames ─► Stage 1: Anomalib PaDiM (NPU), trained on plain bricks ─
 - **The decision tree** lives in the loop's REASON step (`dlsj/loop/reasoner.py`). The VLA only executes the chosen place instruction, which keeps sorting deterministic for the reliability criterion.
 - Further extension: numbered bricks (Section 8.2).
 - **Our choice (team decision): no ACT. One VLA, π0.5, does every movement**, switched by instruction:
-  - `"pick up the brick and show it to the inspection camera"`;
-  - `"place the brick on the blue plate"`;
-  - `"place the brick on the pink plate"`.
+  - `"pick up the brick and hold it in front of the inspection camera"`;
+  - `"place the brick in the yellow bowl"` / `"orange bowl"` / `"purple bowl"` (good / minor / defective).
 
   Anomalib decides between the two place instructions. This makes the VLA the whole "ACT" stage, which is what the 20-point VLA criterion rewards. SmolVLA (Intel's reference VLA) is the fallback, doing the same job.
 
@@ -128,7 +127,7 @@ inspect frames ─► Stage 1: Anomalib PaDiM (NPU), trained on plain bricks ─
 | **PERCEIVE** | Cameras | `wrist`, `top`, `inspect` at 640×480@30, exposure/WB locked; the arm picks a brick and **presents it to `inspect`** | CPU |
 | **DETECT** | Defect detection | **Anomalib PaDiM/PatchCore** on the **`inspect` view of the presented brick**, OpenVINO, **static shapes**; anomaly map → **defect localization** (region on the brick) | **NPU** |
 | **REASON** | Decision | Kickoff rules + defect result (+ brick colour/type) → **which plate** → a **language instruction**, e.g. "place the brick on the reject plate" | CPU |
-| **ACT** | Manipulation | **π0.5 does every movement**, by instruction: pick and show to `inspect`, then place on the blue or pink plate. Fine-tuned via Physical AI Studio on cloud GPUs (Modal), exported to OpenVINO **INT8**, `physicalai` runtime with RTC/async. No ACT | **GPU** |
+| **ACT** | Manipulation | **π0.5 does every movement**, by instruction: pick and show to `inspect`, then place in the yellow, orange or purple bowl. Fine-tuned via Physical AI Studio on cloud GPUs (Modal), exported to OpenVINO **INT8**, `physicalai` runtime with RTC/async. No ACT | **GPU** |
 | **OPTIMIZE** | Evidence | Latency table: PyTorch-XPU vs OpenVINO FP16 vs INT8 vs NPU; per-stage timings; tasks/min (Section 8.1) | all |
 | *Phase 2* | Numbered sorting | Number reader on `top` (NPU) → planner orders bricks → π0.5 picks the **marked** brick → number + defect check on `inspect` → place in order (Section 8.2) | NPU/CPU/GPU |
 
@@ -270,7 +269,7 @@ pip install "physicalai[so101,realsense]"
 
 **SO-101 benchmark** ([arXiv 2606.08881](https://arxiv.org/html/2606.08881)), average success: **π0.5 56.25%**, ACT 33.75%, SmolVLA 32.5%. Selective colour sorting was **0–10% for all three**, which is why sorting needs a separate perception step (Section 5.6).
 
-**Decision (after kickoff, updated): no ACT.** **π0.5 does every movement** (pick and show to `inspect`, place on the blue or pink plate), selected by instruction; **SmolVLA** (Intel's reference VLA) is the fallback. Train on the Modal GPU instance. The ACT rows above are background only.
+**Decision (after kickoff, updated): no ACT.** **π0.5 does every movement** (pick and show to `inspect`, place in the yellow, orange or purple bowl), selected by instruction; **SmolVLA** (Intel's reference VLA) is the fallback. Train on the Modal GPU instance. The ACT rows above are background only.
 
 ### 2.1 Which VLA (updated after research, see `reports/XPU kernels and Chinese VLAs.md`)
 
@@ -303,15 +302,16 @@ pip install "physicalai[so101,realsense]"
 
 ### 3.1b Language instructions (for π0.5)
 - One π0.5 model learns **three skills**, recorded as separate episodes, each with its own **task string**:
-  1. `"pick up the brick and show it to the inspection camera"`: from a brick on the table to holding it still at the `inspect` spot;
-  2. `"place the brick on the blue plate"`: from the `inspect` spot to the blue (good) plate;
-  3. `"place the brick on the yellow plate"`: from the `inspect` spot to the yellow (minor-defect) plate;
-  4. `"place the brick on the pink plate"`: from the `inspect` spot to the pink (defective) plate. Use **one fixed string per destination** from the kickoff rules, and the exact same strings at run time (REASON step, Section 8).
+  1. `"pick up the brick and hold it in front of the inspection camera"`: from a brick on the table to holding it still at the `inspect` spot;
+  2. `"place the brick in the yellow bowl"`: from the `inspect` spot to the yellow (good) bowl;
+  3. `"place the brick in the orange bowl"`: from the `inspect` spot to the orange (minor-defect) bowl;
+  4. `"place the brick in the purple bowl"`: from the `inspect` spot to the purple (defective) bowl.
+  - These are exactly the task strings Desmond's `dlsj.teleop_record` writes; each episode has both a pick and a place task, split per frame. Use **one fixed string per destination** from the kickoff rules, and the exact same strings at run time (REASON step, Section 8).
 - **Balance the demos across instructions**, and vary which object goes where, so the policy listens to the instruction instead of guessing from the object's look.
 - With `dlsj.teleop_record` / `dlsj.kinesthetic_web` this is `--task "..."`. Record each instruction as its own `--repo-id`, or as a `--resume` batch, and merge.
-- **Mix plain, circled and crossed bricks in every skill's demos.** The policy must not learn "cross → go pink" or "circle → go yellow" by itself: the plate comes only from the instruction, which Anomalib's result chooses. Place demos for each plate should use both kinds of brick.
+- **Mix plain, circled and crossed bricks in every skill's demos.** The policy must not learn "cross → go purple" or "circle → go orange" by itself: the plate comes only from the instruction, which Anomalib's result chooses. Place demos for each plate should use both kinds of brick.
 - Splitting at the `inspect` spot is what lets Anomalib + REASON choose skill 2 or 3. Record roughly **as many pick demos as place demos combined**, and the three place skills equally.
-- Optional fourth skill for recovery: `"turn the brick and show it to the inspection camera again"` (Section 8, uncertainty band).
+- Optional fourth skill for recovery: `"turn the brick and hold it in front of the inspection camera again"` (Section 8, uncertainty band).
 
 ### 3.2 Demo quality = policy speed
 - The policy copies your speed and hesitation. **Demo at the speed you want the robot to move**, decisively, with no fumbling. (Lesson from [Flash ALOHA](https://flash-aloha.github.io), which reached >80% success at near-human speed with 50 demos per task.)
@@ -808,11 +808,11 @@ The same "fully closed = nothing grasped" override improved disturbance recovery
 | Stretch | π0.5 **action expert on the NPU**, KV cache shared zero-copy (Intel's split, Section 4.5 step 9) | Overlaps VLM and expert under RTC |
 
 **Task state machine:**
-1. `PICK`: run **π0.5** with `"pick up the brick and show it to the inspection camera"` until the brick is held at the `inspect` spot. → `VERIFY_GRASP` (gripper current; on EMPTY, retry up to 2).
+1. `PICK`: run **π0.5** with `"pick up the brick and hold it in front of the inspection camera"` until the brick is held at the `inspect` spot. → `VERIFY_GRASP` (gripper current; on EMPTY, retry up to 2).
 2. `DETECT`: wait for `Moving` = 0, grab 3 `inspect` frames, crop the brick, run Anomalib on the **NPU** (median score). Output a **structured signal** `{label: perfect|defective, score, region}`:
    - `region` = the anomaly map thresholded → connected components → bounding box on the brick: the **localization signal** the brief requires;
    - also log it and draw it as a heatmap overlay.
-3. `REASON`: apply the **kickoff rules** to (label, score, region, brick colour/type via HSV on the `inspect` crop, anything else the rules use) → **which plate** (our task: **plain → blue, cross → pink**).
+3. `REASON`: apply the **kickoff rules** to (label, score, region, brick colour/type via HSV on the `inspect` crop, anything else the rules use) → **which plate** (our task: **plain → yellow bowl, circle → orange bowl, cross → purple bowl**).
    - **Uncertainty band (reliability criterion, 10 pts):** if the score is within a margin of the threshold, or the 3 frames disagree, don't guess. Re-inspect: wait, re-grab frames, or run the optional `"turn the brick and show it ... again"` skill. If it's still uncertain after 2 tries, treat it as **defective** (the safe default) and log it.
    - Then pick the instruction → one of a fixed set of instruction strings, e.g. `"place the brick on the reject plate"`. Keep the strings **identical** to the training demos. A rule table is enough; an LLM is optional narration only.
 4. `PLACE`: run **π0.5** with that instruction until the brick is released on the plate.
@@ -899,7 +899,7 @@ Reference points:
       │                                    π0.5 "pick up the marked brick and show it ..." (GPU)
       │                                                                        ▼
       │                         inspect: number check + Anomalib (NPU) ──► wrong number → put back, re-plan
-      │                                                                        │ defective → pink plate
+      │                                                                        │ defective → purple bowl
       └──────────── re-plan ◄── π0.5 "place the brick in slot k" (GPU) ◄───────┘ perfect
 ```
 

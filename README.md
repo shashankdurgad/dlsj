@@ -10,8 +10,8 @@ The full plan, commands, code snippets and sources are in **[docs/PLAYBOOK.md](d
 |---|---|---|
 | **PERCEIVE** | Cameras `wrist`, `top`, `inspect`; the arm picks a brick and presents it to `inspect` | CPU |
 | **DETECT** | Stage 1: Anomalib PaDiM (OpenVINO) → plain vs marked + region; stage 2: cross vs circle classifier on the region | **NPU** / CPU |
-| **REASON** | Decision tree: plain → good, circle → minor, cross → defective plate; uncertain → re-inspect → defective | CPU |
-| **ACT** | π0.5 does every movement: pick and show to `inspect`, then place on the blue or pink plate (OpenVINO INT8, `physicalai` runtime) | **GPU** |
+| **REASON** | Decision tree: plain → yellow bowl, circle → orange bowl, cross → purple bowl; uncertain → re-inspect → purple | CPU |
+| **ACT** | π0.5 does every movement: pick and show to `inspect`, then place in the yellow (good), orange (minor) or purple (defective) bowl (OpenVINO INT8, `physicalai` runtime) | **GPU** |
 | **OPTIMIZE** | Baseline (PyTorch-XPU) vs OpenVINO FP16 / INT8 / NPU latency, tasks/min | all |
 
 No ACT: one π0.5 model handles pick and place by instruction (Intel's reference uses ACT + SmolVLA; SmolVLA is our fallback). Training runs on the Modal GPU instance.

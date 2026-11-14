@@ -59,7 +59,7 @@ def test_plain_brick_goes_to_blue_plate():
     reports = ctl.run()
     assert [(r.status, r.label, r.place_skill, r.forced) for r in reports] == [
         ("placed", Label.PERFECT, PLACE_BLUE, False)]
-    assert world.placed == [(1, "plain", "blue")]
+    assert world.placed == [(1, "plain", "yellow")]
     assert ctl.state.value == "done"
 
 
@@ -67,7 +67,7 @@ def test_crossed_brick_goes_to_pink_plate_with_region():
     ctl, world, _, _, runlog = make_loop(["cross"])
     (r,) = ctl.run()
     assert (r.label, r.place_skill) == (Label.DEFECTIVE, PLACE_PINK)
-    assert world.placed == [(1, "cross", "pink")]
+    assert world.placed == [(1, "cross", "purple")]
     insp = events(runlog, "inspection")[0]
     assert insp["label"] == "defective" and insp["score"] > insp["threshold"] and insp["region"] is not None
     x0, y0, x1, y1 = insp["region"]
@@ -78,7 +78,7 @@ def test_crossed_brick_goes_to_pink_plate_with_region():
 def test_several_bricks_in_one_run():
     ctl, world, *_ = make_loop(["plain", "cross", "plain"])
     ctl.run()
-    assert [w for _, _, w in world.placed] == ["blue", "pink", "blue"]
+    assert [w for _, _, w in world.placed] == ["yellow", "purple", "yellow"]
     assert ctl.counts == {"placed_perfect": 2, "placed_defective": 1}
 
 
@@ -87,7 +87,7 @@ def test_uncertain_then_resolved_by_regrab():
     ctl, world, _, policy, runlog = make_loop(["plain"], inspector=insp)
     (r,) = ctl.run()
     assert (r.label, r.forced, len(r.inspections)) == (Label.PERFECT, False, 2)
-    assert world.placed == [(1, "plain", "blue")]
+    assert world.placed == [(1, "plain", "yellow")]
     assert not any("turn the brick" in c for c in policy.calls)  # RESHOW disabled -> plain re-grab
     assert [e["stage"] for e in events(runlog, "retry")] == ["detect"]
 
@@ -98,14 +98,14 @@ def test_uncertain_then_resolved_by_reshow_skill():
     assert [i["label"] for i in r.inspections] == ["uncertain", "defective"]
     assert (r.label, r.forced) == (Label.DEFECTIVE, False)
     assert any("turn the brick" in c for c in policy.calls)
-    assert world.placed == [(1, "hidden_cross", "pink")]
+    assert world.placed == [(1, "hidden_cross", "purple")]
 
 
 def test_glare_resolves_to_perfect_after_reshow():
     ctl, world, *_ = make_loop(["glare"], reshow=True)
     (r,) = ctl.run()
     assert [i["label"] for i in r.inspections] == ["uncertain", "perfect"]
-    assert world.placed == [(1, "glare", "blue")]
+    assert world.placed == [(1, "glare", "yellow")]
 
 
 def test_uncertain_twice_falls_back_to_pink_and_logs_it():
@@ -113,7 +113,7 @@ def test_uncertain_twice_falls_back_to_pink_and_logs_it():
     (r,) = ctl.run()
     assert [i["label"] for i in r.inspections] == ["uncertain", "uncertain"]
     assert (r.label, r.forced, r.place_skill) == (Label.DEFECTIVE, True, PLACE_PINK)
-    assert world.placed == [(1, "faint", "pink")]
+    assert world.placed == [(1, "faint", "purple")]
     (fb,) = events(runlog, "uncertain_fallback")
     assert fb["attempts"] == 2 and fb["label"] == "defective"
 
@@ -157,7 +157,7 @@ def test_abort_mid_skill():
 def test_sync_inference_also_completes():
     ctl, world, *_ = make_loop(["cross"], async_inf=False, latency_s=0.01)
     ctl.run()
-    assert world.placed == [(1, "cross", "pink")]
+    assert world.placed == [(1, "cross", "purple")]
 
 
 # ----------------------------------------------------------------------------- executor
@@ -341,9 +341,9 @@ def test_grasp_state():
 # ----------------------------------------------------------------------------- skills
 def test_skill_library_strings_params_and_overrides(tmp_path):
     lib = SkillLibrary()
-    assert lib[PICK_AND_SHOW].instruction == "pick up the brick and show it to the inspection camera"
-    assert lib[PLACE_BLUE].instruction == "place the brick on the blue plate"
-    assert lib[PLACE_PINK].instruction == "place the brick on the pink plate"
+    assert lib[PICK_AND_SHOW].instruction == "pick up the brick and hold it in front of the inspection camera"
+    assert lib[PLACE_BLUE].instruction == "place the brick in the yellow bowl"
+    assert lib[PLACE_PINK].instruction == "place the brick in the purple bowl"
     assert lib[PLACE_SLOT].render(slot=2) == "place the brick in slot 2"
     with pytest.raises(ValueError):
         lib[PLACE_SLOT].render()
@@ -441,7 +441,7 @@ def test_cli_dry_run(tmp_path, capsys):
                    "--skills-config", str(skills), "--log-dir", str(tmp_path / "run")])
     out = capsys.readouterr().out
     assert rc == 0
-    assert "(1, 'plain', 'blue'), (2, 'cross', 'pink')" in out
+    assert "(1, 'plain', 'yellow'), (2, 'cross', 'purple')" in out
     assert (tmp_path / "run" / "summary.json").exists()
 
 
@@ -485,18 +485,18 @@ def test_decision_tree_uncertain_paths():
 
 def test_plates_config(tmp_path):
     p = Plates.parse(None)
-    assert (p.good.colour, p.minor.colour, p.defective.colour) == ("blue", "yellow", "pink")
-    assert p.minor.instruction == "place the brick on the yellow plate" and p.minor.skill == PLACE_MINOR
+    assert (p.good.colour, p.minor.colour, p.defective.colour) == ("yellow", "orange", "purple")
+    assert p.minor.instruction == "place the brick in the orange bowl" and p.minor.skill == PLACE_MINOR
     p = Plates.parse("good=green, minor=orange,defective=red")
-    assert p.good.instruction == "place the brick on the green plate" and p.good.pose == "green"
+    assert p.good.instruction == "place the brick in the green bowl" and p.good.pose == "green"
     assert p.good.skill == PLACE_BLUE and p.defective.skill == PLACE_PINK  # ids fixed per role
     cfg = tmp_path / "plates.json"
     cfg.write_text(json.dumps({"minor": {"colour": "white", "instruction": "put it on the white tray",
                                          "pose": "tray"}}))
     p = Plates.parse(str(cfg))
-    assert (p.minor.instruction, p.minor.pose, p.good.colour) == ("put it on the white tray", "tray", "blue")
+    assert (p.minor.instruction, p.minor.pose, p.good.colour) == ("put it on the white tray", "tray", "yellow")
     lib = SkillLibrary()
-    assert lib[PLACE_MINOR].instruction == "place the brick on the yellow plate"
+    assert lib[PLACE_MINOR].instruction == "place the brick in the orange bowl"
     p.apply(lib)
     assert lib[PLACE_MINOR].instruction == "put it on the white tray"
     with pytest.raises(ValueError):
@@ -507,8 +507,8 @@ def test_circle_brick_goes_to_minor_plate():
     ctl, world, _, policy, runlog = make_loop(["circle"])
     (r,) = ctl.run()
     assert (r.status, r.label, r.place_skill, r.forced) == ("placed", Label.MINOR, PLACE_MINOR, False)
-    assert world.placed == [(1, "circle", "yellow")]
-    assert "place the brick on the yellow plate" in policy.calls
+    assert world.placed == [(1, "circle", "orange")]
+    assert "place the brick in the orange bowl" in policy.calls
     insp = events(runlog, "inspection")[0]
     assert insp["label"] == "defective" and insp["mark"] == "circle" and insp["outcome"] == "circle"
     assert set(insp["stage_latency_ms"]) == {"stage1", "stage2"}
@@ -518,7 +518,7 @@ def test_circle_brick_goes_to_minor_plate():
 def test_three_plates_in_one_run():
     ctl, world, *_ = make_loop(["plain", "circle", "cross"])
     ctl.run()
-    assert [(k, w) for _, k, w in world.placed] == [("plain", "blue"), ("circle", "yellow"), ("cross", "pink")]
+    assert [(k, w) for _, k, w in world.placed] == [("plain", "yellow"), ("circle", "orange"), ("cross", "purple")]
     assert ctl.counts == {"placed_perfect": 1, "placed_minor": 1, "placed_defective": 1}
     summary = ctl.log.summary()
     assert summary["inspector.stage1"]["n"] == 3 and summary["inspector.stage2"]["n"] == 2
@@ -529,7 +529,7 @@ def test_stage2_uncertain_falls_back_to_defective():
     (r,) = ctl.run()
     assert [i["mark"] for i in r.inspections] == ["unknown", "unknown"]
     assert (r.label, r.forced, r.place_skill) == (Label.DEFECTIVE, True, PLACE_PINK)
-    assert world.placed == [(1, "blob", "pink")]
+    assert world.placed == [(1, "blob", "purple")]
     (fb,) = events(runlog, "uncertain_fallback")
     assert fb["stage"] == "stage2"
 
@@ -539,7 +539,7 @@ def test_stage2_uncertain_then_resolved():
     ctl, world, *_ = make_loop(["circle"], inspector=insp)
     (r,) = ctl.run()
     assert (r.label, r.forced, len(r.inspections)) == (Label.MINOR, False, 2)
-    assert world.placed == [(1, "circle", "yellow")]
+    assert world.placed == [(1, "circle", "orange")]
 
 
 def test_cli_dry_run_three_plates_custom_colours(tmp_path, capsys):
@@ -556,4 +556,4 @@ def test_cli_dry_run_three_plates_custom_colours(tmp_path, capsys):
     assert "(1, 'plain', 'green'), (2, 'circle', 'orange'), (3, 'cross', 'red'), (4, 'blob', 'red')" in out
     ev = [json.loads(x) for x in (tmp_path / "run" / "events.jsonl").read_text().splitlines()]
     cfg = next(e for e in ev if e["event"] == "config")
-    assert cfg["plates"]["minor"]["instruction"] == "place the brick on the orange plate"
+    assert cfg["plates"]["minor"]["instruction"] == "place the brick in the orange bowl"

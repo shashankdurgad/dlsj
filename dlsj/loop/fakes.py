@@ -34,9 +34,9 @@ DEFAULT_POSES = {
     "home": np.array([0, -100, 95, 10, 0, 2], dtype=np.float32),
     "grasp": np.array([0, -10, 30, 70, 0, 70], dtype=np.float32),
     "inspect": np.array([60, -40, 50, 0, 0, 0], dtype=np.float32),
-    "blue": np.array([-50, -20, 40, 50, 0, 0], dtype=np.float32),
-    "pink": np.array([-90, -20, 40, 50, 0, 0], dtype=np.float32),
-    "yellow": np.array([-130, -20, 40, 50, 0, 0], dtype=np.float32),
+    "yellow": np.array([-50, -20, 40, 50, 0, 0], dtype=np.float32),  # good bowl
+    "purple": np.array([-90, -20, 40, 50, 0, 0], dtype=np.float32),  # defective bowl
+    "orange": np.array([-130, -20, 40, 50, 0, 0], dtype=np.float32),  # minor-defect bowl
 }
 NOT_PLATES = ("home", "grasp", "inspect")
 BRICK_RGB = np.array([235, 200, 40], dtype=np.float32)  # yellow brick

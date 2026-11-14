@@ -24,8 +24,9 @@ Instruction strings must be byte-identical to the training demos' task strings (
 Plates (three-class task): `Plates` maps the roles good / minor / defective to a place skill, a plate colour, the
 instruction string and the saved pose name. Skill ids are fixed per role (historic names: PLACE_BLUE = good,
 PLACE_PINK = defective; PLACE_MINOR = minor); colours and strings are configurable (`Plates.parse`, run.py
-`--plates good=blue,minor=yellow,defective=pink` or a JSON file) because the team hasn't fixed the colours.
-The minor plate's yellow is a PLACEHOLDER.
+`--plates good=yellow,minor=orange,defective=purple` or a JSON file).
+Defaults follow the team's bowls and Desmond's recorded task strings (dlsj.teleop_record): yellow = good (plain),
+orange = minor defect (circle), purple = defective (cross).
 
 Phase-2 skills (`PICK_MARKED`, `PLACE_SLOT`) are placeholders whose strings take `{slot}`-style params.
 """
@@ -111,17 +112,16 @@ def default_skills() -> dict[str, Skill]:
                        near_pose="inspect", near_pose_tol_deg=10.0)
     place = Termination(max_duration_s=20.0, min_duration_s=1.0, gripper=released)
     return {
-        PICK_AND_SHOW: Skill(PICK_AND_SHOW, "pick up the brick and show it to the inspection camera", show,
+        PICK_AND_SHOW: Skill(PICK_AND_SHOW, "pick up the brick and hold it in front of the inspection camera", show,
                              "brick on the table -> held still at the inspect spot"),
-        PLACE_BLUE: Skill(PLACE_BLUE, "place the brick on the blue plate", place, "inspect spot -> blue plate"),
-        PLACE_PINK: Skill(PLACE_PINK, "place the brick on the pink plate", place, "inspect spot -> pink plate"),
-        # PLACEHOLDER colour: the minor-defect plate colour is not fixed yet (override with --plates)
-        PLACE_MINOR: Skill(PLACE_MINOR, "place the brick on the yellow plate", place,
-                           "inspect spot -> minor-defect plate (yellow is a placeholder)"),
-        RESHOW: Skill(RESHOW, "turn the brick and show it to the inspection camera again",
+        PLACE_BLUE: Skill(PLACE_BLUE, "place the brick in the yellow bowl", place, "inspect spot -> yellow bowl (good)"),
+        PLACE_PINK: Skill(PLACE_PINK, "place the brick in the purple bowl", place, "inspect spot -> purple bowl (defective)"),
+        PLACE_MINOR: Skill(PLACE_MINOR, "place the brick in the orange bowl", place,
+                           "inspect spot -> orange bowl (minor defect)"),
+        RESHOW: Skill(RESHOW, "turn the brick and hold it in front of the inspection camera again",
                       replace(show, max_duration_s=12.0), "optional recovery skill for uncertain inspections"),
         # phase 2 placeholders (PLAYBOOK 8.2); not trained yet
-        PICK_MARKED: Skill(PICK_MARKED, "pick up the marked brick and show it to the inspection camera", show,
+        PICK_MARKED: Skill(PICK_MARKED, "pick up the marked brick and hold it in front of the inspection camera", show,
                            "phase 2: target brick marked in the top image"),
         PLACE_SLOT: Skill(PLACE_SLOT, "place the brick in slot {slot}", place, "phase 2: ordered placement"),
     }
@@ -129,7 +129,7 @@ def default_skills() -> dict[str, Skill]:
 
 # ----------------------------------------------------------------------------- plates
 ROLE_SKILL = {"good": PLACE_GOOD, "minor": PLACE_MINOR, "defective": PLACE_DEFECTIVE}
-INSTRUCTION_TEMPLATE = "place the brick on the {colour} plate"
+INSTRUCTION_TEMPLATE = "place the brick in the {colour} bowl"
 
 
 @dataclass(frozen=True)
@@ -146,9 +146,9 @@ class Plate:
 
 @dataclass(frozen=True)
 class Plates:
-    good: Plate = Plate("good", "blue", "place the brick on the blue plate", "blue")
-    minor: Plate = Plate("minor", "yellow", "place the brick on the yellow plate", "yellow")  # placeholder colour
-    defective: Plate = Plate("defective", "pink", "place the brick on the pink plate", "pink")
+    good: Plate = Plate("good", "yellow", "place the brick in the yellow bowl", "yellow")
+    minor: Plate = Plate("minor", "orange", "place the brick in the orange bowl", "orange")
+    defective: Plate = Plate("defective", "purple", "place the brick in the purple bowl", "purple")
 
     def all(self) -> list[Plate]:
         return [self.good, self.minor, self.defective]
@@ -158,7 +158,7 @@ class Plates:
 
     @staticmethod
     def parse(spec: str | None) -> "Plates":
-        """None -> defaults; "good=blue,minor=green,defective=red"; or a JSON file
+        """None -> defaults; "good=yellow,minor=orange,defective=purple"; or a JSON file
         {"minor": {"colour": "green", "instruction": "...", "pose": "green"}, ...} (missing keys keep defaults)."""
         base = Plates()
         if not spec:
