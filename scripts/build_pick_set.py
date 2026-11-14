@@ -92,6 +92,9 @@ def main() -> None:
                    help="name in configs/joint_offsets.json: add its offset_deg to state and action of every --old-cal "
                         "source, bringing data recorded under the old calibration into the current one")
     p.add_argument("--old-cal", type=Path, action="append", default=[], help="source root recorded with the old calibration")
+    p.add_argument("--cameras", default=None,
+                   help="comma list of camera names to keep (e.g. wrist,top,inspect); default every video key of the "
+                        "first source. Depth streams are never wanted by the policy.")
     p.add_argument("--crf", type=int, default=30, help="video quality of the output (lower = better, bigger)")
     p.add_argument("--hold-s", type=float, default=0.3)
     p.add_argument("--crop", action="append", default=[], help="key=x,y,w,h")
@@ -142,6 +145,12 @@ def main() -> None:
 
     meta0 = jobs[0][0]
     cams = [k for k in meta0.video_keys]
+    if args.cameras:
+        want = [f"observation.images.{c}" for c in args.cameras.split(",")]
+        missing = [k for k in want if k not in cams]
+        if missing:
+            raise SystemExit(f"--cameras: {missing} not in {cams}")
+        cams = want
     feats = {k: dict(meta0.features[k]) for k in ("observation.state", "action")}
     for k in cams:
         h, w, c = meta0.features[k]["shape"]
