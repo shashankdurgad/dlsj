@@ -371,3 +371,50 @@ def test_checkpoint_seals_earlier_takes_while_recording_continues(tmp_path):
     labels = (r.sidecar / "labels.jsonl").read_text().splitlines()
     assert len(labels) == 3
     assert float(ds[ds.num_frames - 1]["observation.images.top_depth"].float().median()) > 0
+
+
+def test_pick_only_take_stops_after_the_hold_and_needs_no_plate(tmp_path):
+    teleop = FakeTeleop()
+    streams = {"wrist": FakeStream("wrist"), "inspect": FakeStream("inspect")}
+    det = BrickInViewDetector(DetectorConfig(stable_frames=2, downscale=1))
+    r = EpisodeRecorder(teleop, streams, "local/test_pick", fps=30, root=tmp_path / "ds", episode_time_s=60,
+                        bowls=["red", "blue", "green"], detector=det, pick_only=True, pick_hold_s=0.1)
+    r.open_dataset()
+    teleop.go_live()
+    press(r, "space")
+    step(r, 5)  # picking
+    press(r, "inview")
+    mark = r.split_frame
+    assert r.stage == "pick" and r.phase == "recording"  # still recording the hold, still the pick task
+    press(r, "inview")  # a second m does not move the mark
+    assert r.split_frame == mark
+    step(r, 5)  # hold is 0.1 s = 3 frames, then the take stops itself
+    assert r.phase == "review" and "s to save" in r.message
+    frames = r._frames
+    step(r, 3)  # nothing more is recorded in review
+    assert r._frames == frames
+    press(r, "save")  # no plate chosen, still saved
+    assert r.phase == "idle" and r.saved["success"] == 1  # no chaining into a next take
+    r.close()
+
+    lab = json.loads((r.sidecar / "labels.jsonl").read_text().splitlines()[0])
+    assert lab["mode"] == "pick_only" and lab["inspection_frame"] == mark
+    assert lab["bowl"] is None and lab["place_task"] is None
+    from lerobot.datasets import LeRobotDataset
+
+    ds = LeRobotDataset("local/test_pick", root=r.root)
+    assert ds.num_frames == frames == mark + 3
+    assert {ds[i]["task"] for i in range(ds.num_frames)} == {
+        "pick up the brick and hold it in front of the inspection camera"}
+
+
+def test_full_takes_are_labelled_full(rec):
+    rec.teleop.go_live()
+    press(rec, "bowl1", "space")
+    step(rec, 3)
+    press(rec, "inview")
+    step(rec, 3)
+    press(rec, "space", "save")
+    rec.close()
+    lab = json.loads((rec.sidecar / "labels.jsonl").read_text().splitlines()[0])
+    assert lab["mode"] == "full" and lab["bowl"] == "red"
