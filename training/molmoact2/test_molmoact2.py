@@ -49,6 +49,9 @@ class Recipe(unittest.TestCase):
         c = self.config()
         d = c["data"]["init_args"]
         self.assertEqual(c["data"]["class_path"], "phase_data.PhaseDataModule")
+        # 128-token static text, trained in (policy_text.py); must match the export
+        self.assertEqual(c["model"]["class_path"], "policy_text.MolmoAct2Text128")
+        self.assertNotIn("tokenizer_max_length", c["model"]["init_args"])  # not an init arg of Studio's class
         self.assertEqual(d["train_batch_size"] * c["trainer"]["devices"], 32)
         self.assertEqual((d["val_split"], d["val_split_seed"]), (0.1, 42))
         self.assertEqual(d["image_transforms"]["class_path"], "augment.Ai2Augment")

@@ -94,7 +94,7 @@ def build_config(*, dataset, output, gpus, steps=STEPS, global_batch=GLOBAL_BATC
         callbacks.append({"class_path": "lightning.pytorch.callbacks.Timer", "init_args": {
             "duration": {"hours": s // 3600, "minutes": s % 3600 // 60, "seconds": s % 60}, "interval": "step"}})
     config = {
-        "model": {"class_path": "physicalai.policies.MolmoAct2", "init_args": model},
+        "model": {"class_path": "policy_text.MolmoAct2Text128", "init_args": model},  # 128-token text (policy_text.py)
         "data": {"class_path": "phase_data.PhaseDataModule", "init_args": {
             "repo_id": "local/molmoact2", "root": str(dataset), "data_format": "physicalai",
             "train_batch_size": global_batch // gpus, "val_batch_size": 8, "num_workers": 6,
