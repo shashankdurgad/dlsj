@@ -17,3 +17,6 @@ sim/twin/.build/
 sim/twin/assets/so101/
 sim/twin/out/
 sim/twin/data/
+
+# local secrets
+.env
