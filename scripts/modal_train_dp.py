@@ -72,7 +72,7 @@ def parse_log_line(line: str) -> dict[str, float] | None:
               volumes={"/data": data, "/runs": runs}, secrets=[modal.Secret.from_name("wandb")])
 def train(dataset: str = "duplo_pickset_300", run: str = "dp_pick_v1", steps: int = 20_000, batch_size: int = 32,
           gpus: int = 8, workers: int = 4, save_freq: int = 2_000, wandb_project: str = "dlsj-dp",
-          crop: str = "324,432", wandb_entity: str = "") -> str:
+          crop: str = "324,432", wandb_entity: str = "james-j-carver-university-of-cambridge") -> str:
     import os
 
     import wandb
@@ -143,7 +143,7 @@ def check() -> str:
 
 @app.local_entrypoint()
 def main(dataset: str = "duplo_pickset_300", run: str = "dp_pick_v1", steps: int = 20_000, batch_size: int = 32,
-         gpus: int = 8, workers: int = 4, save_freq: int = 2_000, crop: str = "324,432", wandb_entity: str = ""):
+         gpus: int = 8, workers: int = 4, save_freq: int = 2_000, crop: str = "324,432", wandb_entity: str = "james-j-carver-university-of-cambridge"):
     """--crop H,W: random-crop size, ~90% of the stored images (360x480 -> 324,432; 288x384 -> 260,346)."""
     fn = train.with_options(gpu=f"H100:{gpus}", cpu=min(64, 8 * gpus), memory=32768 * gpus)  # Modal: <= 64 cores
     print(fn.remote(dataset=dataset, run=run, steps=steps, batch_size=batch_size, gpus=gpus, workers=workers,
