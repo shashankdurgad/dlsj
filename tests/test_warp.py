@@ -72,10 +72,10 @@ def test_weights_keep_hold_and_cover_every_phase():
     v = np.full(T, 1.5)
     v[140:200] = 0.0  # inspection hold: looks like no progress on camera
     v[20:60] = 0.2  # slow grasp alignment
-    grip = np.r_[np.zeros(60), np.full(T - 60, 80.0)]  # gripper closes at frame 60
+    grip = np.r_[np.full(60, 40.0), np.full(T - 60, 3.0)]  # open (40) until the grasp at frame 60, then closed (3)
     fr = weights.episode_frame_table(0, v, split, grip, fps, cfg)
     df = weights.compute_weights(fr, {0: 1.0, 1: 1.0}, cfg)
-    hold = df[(df.frame_index >= split - 30) & (df.frame_index < split + 45)]
+    hold = df[(df.frame_index >= split - 15) & (df.frame_index < split + 15)]  # +-0.5 s
     assert (hold.weight >= 1.0).all()  # never dropped
     rep = weights.coverage_report(df)
     assert (rep["kept"] >= 0.3 - 1e-9).all()
@@ -211,3 +211,16 @@ def test_train_rm_and_score_end_to_end_on_fake_data(tmp_path, monkeypatch):
     w = pd.read_parquet(tmp_path / "w" / "warp_weights.parquet")
     assert len(w) == sum(lengths) and set(w.reason) <= {"pace", "protected", "coverage", "dropped"}
     assert w["index"].is_monotonic_increasing
+
+
+def test_only_the_successful_grasp_and_the_release_are_protected():
+    cfg = weights.WeightConfig()
+    fps = 30
+    #   open, fumble close @30, re-open @60, real close @100, split @150, release @200
+    grip = np.r_[np.full(30, 40.0), np.full(30, 3.0), np.full(40, 40.0), np.full(100, 3.0), np.full(60, 40.0)]
+    moments = weights.key_grip_moments(grip, 150, fps, cfg)
+    assert len(moments) == 2
+    grasp, release = moments
+    assert 85 <= grasp <= 100 and 185 <= release <= 200
+    fr = weights.episode_frame_table(0, np.zeros(len(grip)), 150, grip, fps, cfg)
+    assert not fr.loc[(fr.frame_index > 25) & (fr.frame_index < 70), "protected"].any()  # fumble not protected

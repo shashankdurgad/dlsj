@@ -7,8 +7,9 @@ aligning a grasp, easing a brick onto the plate. Here we keep the paper's rule b
 
 1. Stage-relative pace: v is divided by the reference demos' median v *for that stage* (pick / place), so a
    stage that is inherently slower on camera is judged against its own normal pace, not the global one.
-2. Protected frames: the inspection hold (around `inspection_frame`) and gripper close/open moments always
-   keep weight >= `protect_weight`.
+2. Protected frames: the inspection hold (around `inspection_frame`), the successful grasp (last gripper close
+   before it) and the release (first open after it) always keep weight >= `protect_weight`. Earlier fumbled
+   closes / re-opens are not protected: those are exactly the hesitations WARP should down-weight.
 3. Coverage floor: each stage is cut into `phase_bins` slices of normalised stage time; if a slice keeps
    fewer than `min_keep` of its chunks across the dataset, its best chunks (highest v) are added back.
 
@@ -26,10 +27,10 @@ class WeightConfig:
     tau: float = 1.0  # paper default: keep chunks ending above the stage's reference pace
     chunk: int = 100  # policy action-chunk length in frames (ACT chunk_size); v is read at its last frame
     protect_weight: float = 1.0
-    hold_before_s: float = 1.0  # protected window around the inspection frame
-    hold_after_s: float = 1.5
-    grip_window_s: float = 0.5  # protected window around gripper open/close events
-    grip_threshold: float = 15.0  # gripper action change (0-100 units) that counts as an event
+    hold_before_s: float = 0.5  # protected window around the inspection frame
+    hold_after_s: float = 0.5
+    grip_window_s: float = 0.4  # protected window around the successful grasp and the final release
+    grip_threshold: float = 15.0  # gripper command change over grip_window_s that counts as a close / open
     phase_bins: int = 10
     min_keep: float = 0.25  # minimum fraction of chunks kept per (stage, phase slice)
     w_max: float = 3.0  # clip very fast segments so a few chunks can't dominate
@@ -52,16 +53,32 @@ def phase_of(stages: np.ndarray, bins: int) -> np.ndarray:
     return out
 
 
-def gripper_events(grip: np.ndarray, fps: float, threshold: float, window_s: float) -> np.ndarray:
-    """Boolean mask of frames within `window_s` of a large gripper command change (grasp / release)."""
-    mask = np.zeros(len(grip), dtype=bool)
-    if len(grip) < 2:
-        return mask
+def gripper_events(grip: np.ndarray, fps: float, threshold: float, window_s: float) -> tuple[np.ndarray, np.ndarray]:
+    """Frames where the gripper command closes (drops by > threshold over window_s) and opens (rises by > it).
+
+    In this dataset low = closed (~3 while holding a brick) and high = open (~30-50).
+    """
     w = max(1, int(round(window_s * fps)))
-    change = np.abs(grip[min(w, len(grip) - 1):] - grip[: len(grip) - min(w, len(grip) - 1)])
-    for t in np.flatnonzero(change > threshold):
-        mask[max(0, t - w): t + 2 * w] = True
-    return mask
+    if len(grip) <= w:
+        return np.array([], int), np.array([], int)
+    d = grip[w:] - grip[:-w]
+    return np.flatnonzero(d < -threshold), np.flatnonzero(d > threshold)
+
+
+def key_grip_moments(grip: np.ndarray, split: int | None, fps: float, cfg: "WeightConfig") -> list[int]:
+    """The successful grasp (last close before the split) and the release (first open after it).
+
+    Earlier fumbled closes and re-opens are deliberately not protected: they are what WARP should down-weight.
+    """
+    closes, opens = gripper_events(np.asarray(grip, float), fps, cfg.grip_threshold, cfg.grip_window_s)
+    out = []
+    before = closes[closes < split] if split is not None else closes
+    if len(before):
+        out.append(int(before[-1]))
+    after = opens[opens >= split] if split is not None else opens[:0]
+    if len(after):
+        out.append(int(after[0]))
+    return out
 
 
 def episode_frame_table(ep: int, v: np.ndarray, split: int | None, grip: np.ndarray | None, fps: float,
@@ -74,7 +91,9 @@ def episode_frame_table(ep: int, v: np.ndarray, split: int | None, grip: np.ndar
         a = max(0, split - int(cfg.hold_before_s * fps))
         protected[a: split + int(cfg.hold_after_s * fps)] = True
     if grip is not None:
-        protected |= gripper_events(np.asarray(grip, float), fps, cfg.grip_threshold, cfg.grip_window_s)
+        w = max(1, int(round(cfg.grip_window_s * fps)))
+        for t in key_grip_moments(grip, split, fps, cfg):
+            protected[max(0, t - w): t + 2 * w] = True  # the change itself spans [t, t + w]
     return pd.DataFrame({
         "episode_index": ep, "frame_index": np.arange(n), "v": v, "v_end": v[end],
         "stage": stages, "stage_end": stages[end], "phase": phase_of(stages, cfg.phase_bins), "protected": protected,
