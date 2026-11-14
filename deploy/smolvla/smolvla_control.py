@@ -44,8 +44,32 @@ PICK = "pick up the brick"
 BRING = "bring the brick to the inspection camera"
 PLACE = "place the brick in the {colour} bowl"
 BRICK = ""
+PICK_TEMPLATE = PICK  # --pick-prompt before {brick} is filled: the brick buttons refill it
+BRICK_COLOURS = ["blue", "brown", "red", "white", "yellow"]  # training colours (contract brick_colours when given)
+STAGES = ("pick", "bring", "place")
 TRAINING_TASKS: set[str] | None = None  # set by --training-tasks: prompts outside it are refused
 HOME_SPEED = 30.0  # deg/s for the Home button
+
+
+CHOOSER = """
+<div class="chooser"><div class="lbl">Brick</div><div class="plates" id="bricks"></div>
+<div class="lbl">Stage</div><div class="btns" id="stages"></div></div>
+<style>.chooser .lbl{font-size:12px;opacity:.7;margin:8px 0 4px}#bricks button,#stages button{cursor:pointer}
+#stages button.sel{outline:3px solid #4a9;font-weight:600}#bricks button.sel{outline:3px solid #4a9}
+#bricks button{min-width:58px;min-height:34px;border-radius:8px;border:1px solid #888;font-size:13px}</style>
+<script>(()=>{const BC={blue:'#3d7be0',brown:'#8b5a2b',red:'#d33b3b',white:'#f4f4f4',yellow:'#f2c230'};
+const NM={pick:'Pick',bring:'Bring to camera',place:'Place'};
+async function chooser(){try{const r=await fetch('/ctl/state').then(x=>x.json());
+ const b=document.getElementById('bricks'),s=document.getElementById('stages');
+ if(b&&!b.children.length)(r.brick_colours||[]).forEach(c=>{const e=document.createElement('button');e.textContent=c;
+  e.style.background=BC[c]||c;e.style.color=(c==='white'||c==='yellow')?'#222':'#fff';e.onclick=()=>cmd('brick_'+c);b.appendChild(e)});
+ if(s&&!s.children.length)(r.stages||[]).forEach(st=>{const e=document.createElement('button');e.className='k';e.dataset.st=st;
+  e.textContent=NM[st]||st;e.onclick=()=>cmd('stage_'+st);s.appendChild(e)});
+ if(b)[...b.children].forEach(e=>e.classList.toggle('sel',e.textContent===r.brick));
+ const cur=(r.phase==='running'||r.phase==='readying')?r.stage:r.start_stage;
+ if(s)[...s.children].forEach(e=>e.classList.toggle('sel',e.dataset.st===cur));
+ const p=document.getElementById('prompt');if(p&&r.prompt)p.textContent=r.prompt;}catch(e){}}
+setInterval(chooser,300);chooser();})();</script>"""
 
 
 def add_home_button(pc) -> None:
@@ -54,8 +78,9 @@ def add_home_button(pc) -> None:
     key = "else if(k==='m')cmd('mark');"
     page = getattr(pc, "PAGE", "")
     if btn in page and key in page:
-        pc.PAGE = page.replace(btn, btn + """<button class="k" onclick="cmd('home')">Home <kbd>H</kbd></button>""") \
-                      .replace(key, key + "else if(k==='h')cmd('home');")
+        page = page.replace(btn, btn + """<button class="k" onclick="cmd('home')">Home <kbd>H</kbd></button>""") \
+                   .replace(key, key + "else if(k==='h')cmd('home');")
+        pc.PAGE = page.replace('<div class="plates" id="plates"></div>', '<div class="plates" id="plates"></div>' + CHOOSER)
     else:
         log.warning("console page layout not recognised: no Home button (POST /ctl/home still works)")
     make_handler = pc.make_handler
@@ -65,8 +90,9 @@ def add_home_button(pc) -> None:
 
         class Handler(base):
             def do_POST(self):
-                if self.path in ("/ctl/home", "/ctl/h"):
-                    ctl.command("home")
+                name = self.path.removeprefix("/ctl/")
+                if name in ("home", "h") or name.startswith(("brick_", "stage_")):
+                    ctl.command(name)
                     return self._send(200, b"{}", "application/json")
                 return super().do_POST()
 
@@ -132,7 +158,9 @@ def make_controller_class(base):
         def prompt(self) -> str:
             # newer consoles keep editable prompts (pick_prompt/place_prompt, set by the page); older ones don't
             if self.stage == "pick":
-                return getattr(self, "pick_prompt", None) or PICK  # PICK has {brick} filled already
+                if "{brick}" in PICK_TEMPLATE:  # the brick-colour buttons choose the colour
+                    return fill(PICK_TEMPLATE, brick=getattr(self, "brick", "") or BRICK)
+                return getattr(self, "pick_prompt", None) or PICK
             if self.stage == "bring":
                 return BRING
             return fill(getattr(self, "place_prompt", None) or PLACE, colour=self.bowl or "yellow")
@@ -164,6 +192,36 @@ def make_controller_class(base):
                 self.cmd = np.asarray(self.arm.read(), dtype=float)
                 self.phase, self.message = "homing", "Going home"
                 return
+            if c.startswith("brick_"):
+                colour = c.removeprefix("brick_")
+                if "{brick}" not in PICK_TEMPLATE or colour not in BRICK_COLOURS:
+                    self.message = f"Brick colour {colour!r} not available"
+                    return
+                self.brick = colour
+                if self.phase == "running" and self.stage == "pick":
+                    self._replan_now()
+                self.message = f"Brick: {colour}"
+                return
+            if c.startswith("stage_") and c.removeprefix("stage_") in STAGES:
+                stage = c.removeprefix("stage_")
+                if stage == "bring" and not BRING:
+                    self.message = "This model has no bring stage"
+                    return
+                if stage == "place" and self.bowl is None:
+                    self.message = "Choose a plate (1-3) first"
+                    return
+                self.start_stage = stage
+                if self.phase in ("running", "readying"):
+                    self.stage = stage
+                    self._replan_now()
+                    self.message = f"Stage: {self.prompt()}"
+                else:
+                    self.message = f"Space starts at: {stage}"
+                return
+            if c in ("start", "space") and self.phase not in ("running", "readying"):
+                super()._handle(c)
+                self.stage = getattr(self, "start_stage", "pick")
+                return
             # The console only sends space / m / 1-3 / +- / q / home, so M advances the stage:
             # pick --M--> bring (brick grasped) --M--> place (needs a bowl chosen with 1/2/3).
             if c in ("g", "grasp", "bring", "mark", "m") and self.phase == "running" and self.stage == "pick" and BRING:
@@ -191,6 +249,14 @@ def make_controller_class(base):
                         self._replan_now()
                         self.phase, self.message = "idle", "Home. Press Space to start"
 
+        def snapshot(self) -> dict:
+            data = super().snapshot()
+            data.update(brick=getattr(self, "brick", "") or BRICK,
+                        brick_colours=BRICK_COLOURS if "{brick}" in PICK_TEMPLATE else [],
+                        stage=self.stage, start_stage=getattr(self, "start_stage", "pick"),
+                        stages=[st for st in STAGES if st != "bring" or BRING], prompt=self.prompt())
+            return data
+
         def _obs(self):
             state, imgs = super()._obs()
             return state, {k: v for k, v in imgs.items() if k in ("wrist", "top")}
@@ -211,7 +277,9 @@ def main() -> None:
     ap.add_argument("--training-tasks", default="", help="json with 'tasks' (and 'top_crop'): refuse other prompts")
     ap.add_argument("--check-only", action="store_true", help="validate prompts/crop/export and exit (no arm)")
     ours, rest = ap.parse_known_args()
+    global PICK_TEMPLATE, BRICK_COLOURS
     PICK, BRING, PLACE, BRICK = ours.pick_prompt, ours.bring_prompt, ours.place_prompt, ours.brick
+    PICK_TEMPLATE = PICK
     if "{brick}" in PICK and not BRICK:
         raise SystemExit("--pick-prompt has {brick}: pass --brick <colour>")
     PICK = fill(PICK, brick=BRICK)
@@ -223,6 +291,8 @@ def main() -> None:
 
         contract = _json.loads(Path(ours.training_tasks).expanduser().read_text())
         TRAINING_TASKS = set(contract["tasks"])
+        if contract.get("brick_colours"):
+            BRICK_COLOURS = [c for c in contract["brick_colours"] if fill(PICK_TEMPLATE, brick=c) in TRAINING_TASKS]
         bad = prompts_outside(TRAINING_TASKS, PICK, BRING, PLACE, bowls, BRICK)
         if bad:
             raise SystemExit(f"prompts not in the training tasks ({ours.training_tasks}): {bad}\n"
