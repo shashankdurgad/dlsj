@@ -418,3 +418,23 @@ def test_full_takes_are_labelled_full(rec):
     rec.close()
     lab = json.loads((rec.sidecar / "labels.jsonl").read_text().splitlines()[0])
     assert lab["mode"] == "full" and lab["bowl"] == "red"
+
+
+def test_mode_toggles_only_between_takes(rec):
+    assert not rec.pick_only
+    press(rec, "toggle_pick")
+    assert rec.pick_only and "Pick only" in rec.message
+    rec.teleop.go_live()
+    press(rec, "space")
+    press(rec, "toggle_pick")  # refused mid-take
+    assert rec.pick_only and "between takes" in rec.message
+    step(rec, 3)
+    press(rec, "inview")
+    step(rec, 12)  # default 0.3 s hold = 9 frames, then review
+    assert rec.phase == "review"
+    press(rec, "save")
+    press(rec, "toggle_pick")  # back to full demos
+    assert not rec.pick_only and rec.snapshot()["pick_only"] is False
+    rec.close()
+    lab = json.loads((rec.sidecar / "labels.jsonl").read_text().splitlines()[0])
+    assert lab["mode"] == "pick_only"
