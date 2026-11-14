@@ -35,8 +35,11 @@ def main() -> None:
     z = np.load(Path(a.frames_cache).expanduser(), allow_pickle=True)
     frame = [f for f in z["frames"] if f["phase"] == "grasp"][0]
     res = {e: {"median_ms": [], "load1": []} for e in a.exports}
+    from optimize import wait_arm_free
+
     for r in range(a.rounds):
         for e in a.exports:
+            wait_arm_free(lambda m: print(m, flush=True))  # never time while the arm is driven
             load1 = os.getloadavg()[0]
             _, lat = H.predict(e, [frame] * a.iters, "GPU", a.cache_dir)
             res[e]["median_ms"].append(lat["median_ms"])
