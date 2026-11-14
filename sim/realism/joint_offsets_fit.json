@@ -1,0 +1,158 @@
+{
+ "old": {
+  "n_frames": 420,
+  "n_episodes": 513,
+  "delta_deg": {
+   "shoulder_pan": 2.64,
+   "shoulder_lift": -1.9,
+   "elbow_flex": 1.28,
+   "wrist_flex": 5.38,
+   "wrist_roll": -0.12
+  },
+  "delta_minus_baseline_deg": {
+   "shoulder_pan": 2.64,
+   "shoulder_lift": -1.9,
+   "elbow_flex": 1.28,
+   "wrist_flex": 5.38,
+   "wrist_roll": -0.12
+  },
+  "delta_boot_std_deg": {
+   "shoulder_pan": 0.3,
+   "shoulder_lift": 0.21,
+   "elbow_flex": 0.2,
+   "wrist_flex": 0.49,
+   "wrist_roll": 0.29
+  },
+  "train_before": {
+   "kp_median_px": 65.1,
+   "kp_p90_px": 96.6,
+   "grasp_z_median_cm": 2.99,
+   "grasp_z_frac_in_band": 0.529,
+   "grasp_z_frac_below_table": 0.045,
+   "inspect_angle_median_deg": 45.8,
+   "inspect_frac_in_fov": 0.053
+  },
+  "train_after": {
+   "kp_median_px": 54.8,
+   "kp_p90_px": 88.2,
+   "grasp_z_median_cm": 2.56,
+   "grasp_z_frac_in_band": 0.552,
+   "grasp_z_frac_below_table": 0.05,
+   "inspect_angle_median_deg": 41.9,
+   "inspect_frac_in_fov": 0.128
+  },
+  "heldout_before": {
+   "kp_median_px": 55.4,
+   "kp_p90_px": 91.3,
+   "grasp_z_median_cm": 3.23,
+   "grasp_z_frac_in_band": 0.5,
+   "grasp_z_frac_below_table": 0.039,
+   "inspect_angle_median_deg": 46.9,
+   "inspect_frac_in_fov": 0.019
+  },
+  "heldout_after": {
+   "kp_median_px": 47.4,
+   "kp_p90_px": 87.6,
+   "grasp_z_median_cm": 2.75,
+   "grasp_z_frac_in_band": 0.519,
+   "grasp_z_frac_below_table": 0.058,
+   "inspect_angle_median_deg": 42.9,
+   "inspect_frac_in_fov": 0.097
+  },
+  "big_pull_joints": [],
+  "offsets_rad_for_sim": [
+   0.04611,
+   -0.30872,
+   0.07879,
+   -0.36352,
+   -0.00216,
+   0.0
+  ]
+ },
+ "cal2": {
+  "n_frames": 299,
+  "n_episodes": 222,
+  "delta_deg": {
+   "shoulder_pan": -18.78,
+   "shoulder_lift": 3.54,
+   "elbow_flex": 4.06,
+   "wrist_flex": 4.69,
+   "wrist_roll": 0.51
+  },
+  "delta_minus_baseline_deg": {
+   "shoulder_pan": 1.57,
+   "shoulder_lift": -4.42,
+   "elbow_flex": 4.24,
+   "wrist_flex": 4.73,
+   "wrist_roll": 0.51
+  },
+  "delta_boot_std_deg": {
+   "shoulder_pan": 0.52,
+   "shoulder_lift": 0.11,
+   "elbow_flex": 0.22,
+   "wrist_flex": 0.57,
+   "wrist_roll": 0.13
+  },
+  "train_before": {
+   "kp_median_px": 76.4,
+   "kp_p90_px": 115.1,
+   "grasp_z_median_cm": 3.35,
+   "grasp_z_frac_in_band": 0.432,
+   "grasp_z_frac_below_table": 0.039,
+   "inspect_angle_median_deg": 43.1,
+   "inspect_frac_in_fov": 0.135
+  },
+  "train_after": {
+   "kp_median_px": 75.2,
+   "kp_p90_px": 115.7,
+   "grasp_z_median_cm": 3.07,
+   "grasp_z_frac_in_band": 0.452,
+   "grasp_z_frac_below_table": 0.032,
+   "inspect_angle_median_deg": 38.5,
+   "inspect_frac_in_fov": 0.284
+  },
+  "heldout_before": {
+   "kp_median_px": 71.3,
+   "kp_p90_px": 122.2,
+   "grasp_z_median_cm": 3.37,
+   "grasp_z_frac_in_band": 0.373,
+   "grasp_z_frac_below_table": 0.075,
+   "inspect_angle_median_deg": 42.1,
+   "inspect_frac_in_fov": 0.045
+  },
+  "heldout_after": {
+   "kp_median_px": 70.2,
+   "kp_p90_px": 116.1,
+   "grasp_z_median_cm": 3.19,
+   "grasp_z_frac_in_band": 0.448,
+   "grasp_z_frac_below_table": 0.075,
+   "inspect_angle_median_deg": 37.5,
+   "inspect_frac_in_fov": 0.254
+  },
+  "big_pull_joints": [],
+  "offsets_rad_for_sim": [
+   -0.32781,
+   -0.21376,
+   0.12722,
+   -0.37561,
+   0.00896,
+   0.0
+  ]
+ },
+ "consistency": {
+  "cal2_minus_old_deg": {
+   "shoulder_pan": -21.42,
+   "shoulder_lift": 5.44,
+   "elbow_flex": 2.77,
+   "wrist_flex": -0.69,
+   "wrist_roll": 0.64
+  },
+  "expected_minus_recal_deg": {
+   "shoulder_pan": -20.35,
+   "shoulder_lift": 7.96,
+   "elbow_flex": -0.18,
+   "wrist_flex": -0.04,
+   "wrist_roll": -0.0
+  }
+ }
+}
