@@ -1,0 +1,385 @@
+"""MolmoAct2 policy runner for the Isaac twin: a light client + a worker process that owns the model.
+
+    from sim.twin.policies.molmoact2 import MolmoAct2Client
+    pol = MolmoAct2Client()                       # spawns the worker, waits until the model is loaded
+    chunk = pol.act({"images": {"top": top, "wrist": wrist}, "state": state, "task": "..."})   # (30, 6)
+    pol.last_latency_s; pol.close()
+
+The client imports only the standard library + numpy, so it is safe inside the Isaac process; the worker
+(`python molmoact2.py --worker`, same file) imports torch + Physical AI Studio. They talk over the worker's
+stdin/stdout (length-prefixed pickles). The worker exits when its stdin closes (client `close()`, `atexit`, or the
+parent dying for any reason) and also has PR_SET_PDEATHSIG=SIGKILL, so it cannot outlive the client.
+
+Model = exactly what the real robot runs (deploy/smolvla/run_molmo.sh -> deploy/molmoact2/export.py `build`):
+  * `allenai/MolmoAct2-SO100_101` zero-shot through Studio's own MolmoAct2 policy (the same pre/post processors that
+    are baked into the OpenVINO export), norm tag `so100_so101_molmoact2`, `adapt_to_so101=True` with the unit-scale
+    calibration (our joints are already LeRobot degrees -> Studio scale exactly 1);
+  * cameras `wrist,top` in that order, 480x640 each, uncropped (export.py `--cams wrist,top --hw 480,640`);
+  * chunk 30 actions (norm tag action_horizon 30, export n_action_steps=30), 10 flow-matching steps (export default),
+    static text length 256 (export default), flow started from Gaussian noise (`use_random_input_noise=True` in
+    export.py `build`; the torch worker seeds it, `noise="zeros"` gives the deterministic start);
+  * prompt "pick up the brick and lift it up" for the pick stage, "put the brick in the {colour} bowl" for place
+    (run_molmo.sh `--pick-prompt/--place-prompt`, no bring stage);
+  * controller side (not in this client, for the env to mirror): RTC horizon 15 (re-plan when 15 + delay planned
+    actions remain), guidance 3, `--max-step 4` deg per 30 Hz tick, ready pose 18.3,-67.0,55.8,60.3,17.5,28.9.
+    `act(..., prev_chunk=, inference_delay=)` runs the same RTC-guided flow loop as the deployed export
+    (deploy/molmoact2/rtc_patch.py, horizon 15, guidance 3); without `prev_chunk` it is a plain chunk.
+
+Units (runtime = the team's LeRobot units in the recorded data's calibration frame, cal2): 5 body joints in degrees
++ gripper 0-100. The checkpoint was trained on the legacy LeRobot SO-100/101 frame; Studio's transform
+(physicalai/policies/molmoact2/so101.py, constants.py) is
+
+    ckpt    = S * runtime + O          S = (1, -1, 1, 1, 1, 1),  O = (0, 90, 90, 0, 0, 0) deg, scale 1
+    runtime = S * (ckpt - O)           gripper 0-100 in both frames
+
+then q01/q99 quantile normalisation with the checkpoint's `norm_stats.json`. The worker lets Studio apply the
+transform (as on the robot); `to_ckpt` / `from_ckpt` here are the same maths, used for diagnostics and the tests.
+
+A fine-tuned Studio Lightning checkpoint (training/molmoact2, LoRA on cal2; none published yet) loads with
+`snap="/path/last.ckpt"`; it was trained with the top camera cropped to x 0-560 (560x480), so pass
+`crops={"top": (0, 0, 560, 480)}` and its three-phase prompts (deploy/molmoact2/harness.py THREE_PHASE).
+"""
+
+from __future__ import annotations
+
+import atexit
+import os
+import pickle
+import signal
+import struct
+import subprocess
+import sys
+import threading
+import time
+from pathlib import Path
+
+import numpy as np
+
+HERE = Path(__file__).resolve().parent
+REPO = HERE.parents[2]
+DEFAULT_SNAP = "allenai/MolmoAct2-SO100_101"
+NORM_TAG = "so100_so101_molmoact2"
+JOINTS = ("shoulder_pan", "shoulder_lift", "elbow_flex", "wrist_flex", "wrist_roll", "gripper")
+S = np.array([1, -1, 1, 1, 1, 1], np.float32)
+O = np.array([0, 90, 90, 0, 0, 0], np.float32)
+CHUNK = 30
+# The real deployment (deploy/smolvla/run_molmo.sh + deploy/molmoact2/export.py), see the module docstring.
+DEPLOY = {
+    "cams": ("wrist", "top"),
+    "pick_prompt": "pick up the brick and lift it up",
+    "place_prompt": "put the brick in the {colour} bowl",
+    "steps": 10,
+    "chunk": CHUNK,
+    "noise": "random",
+    "rtc_horizon": 15,
+    "rtc_guidance": 3.0,
+    "max_step_deg": 4.0,
+    "fps": 30,
+    "ready_pose": (18.3, -67.0, 55.8, 60.3, 17.5, 28.9),
+}
+CAM_ORDER = ("wrist", "top", "inspect")  # deployed order is wrist, top
+
+
+def to_ckpt(runtime) -> np.ndarray:
+    """Team runtime units (cal2 LeRobot degrees, gripper 0-100) -> checkpoint legacy frame. Works on (..., 6)."""
+    return np.asarray(runtime, np.float32) * S + O
+
+
+def from_ckpt(ckpt) -> np.ndarray:
+    """Checkpoint legacy frame -> team runtime units. Inverse of `to_ckpt`."""
+    return S * (np.asarray(ckpt, np.float32) - O)
+
+
+# ----------------------------------------------------------------------------- IPC
+def _send(f, obj) -> None:
+    b = pickle.dumps(obj, protocol=pickle.HIGHEST_PROTOCOL)
+    f.write(struct.pack("<Q", len(b)))
+    f.write(b)
+    f.flush()
+
+
+def _recv(f):
+    h = f.read(8)
+    if len(h) < 8:
+        raise EOFError("MolmoAct2 pipe closed")
+    (n,) = struct.unpack("<Q", h)
+    b = f.read(n)
+    if len(b) < n:
+        raise EOFError("MolmoAct2 pipe closed mid-message")
+    return pickle.loads(b)
+
+
+def _pdeathsig() -> None:  # child side of Popen: die with the parent (Linux)
+    try:
+        import ctypes
+
+        ctypes.CDLL("libc.so.6", use_errno=True).prctl(1, signal.SIGKILL)  # PR_SET_PDEATHSIG
+    except Exception:
+        pass
+
+
+# ----------------------------------------------------------------------------- client
+class MolmoAct2Client:
+    """Owns one MolmoAct2 worker process. `act(obs)` -> (horizon, 6) actions in team runtime units.
+
+    Args:
+        snap: HF repo id / local snapshot dir (zero-shot) or a Studio Lightning `.ckpt` (fine-tune).
+            Default `allenai/MolmoAct2-SO100_101`, what the robot runs.
+        cams: cameras fed to the model. They are always fed in the deployed order wrist, top, inspect
+            (so the default ("top", "wrist") == the robot's "wrist,top"); `keep_order=True` uses the given order.
+        instruction: overrides obs["task"]; None -> obs["task"], or the deployed pick prompt if obs has none.
+        steps: flow-matching steps (10 deployed). horizon: actions returned (<= 30; the robot plans 30 and RTC
+            re-plans after 15). noise: "random" (deployed, seeded with `seed`) or "zeros" (deterministic).
+        crops: {cam: (x, y, w, h)} applied before the model (fine-tune: {"top": (0, 0, 560, 480)}).
+        rtc_horizon / rtc_guidance: RTC settings used when act() gets `prev_chunk` (deployed 15 / 3).
+        python: interpreter for the worker (default: this one; env MOLMOACT2_PYTHON overrides).
+        hf_home: HF cache for the worker (default env HF_HOME, else sim/twin/data/hf).
+    """
+
+    def __init__(self, snap: str | None = None, cams=("top", "wrist"), instruction: str | None = None,
+                 steps: int = DEPLOY["steps"], horizon: int = CHUNK, device: str = "cuda", *,
+                 noise: str = DEPLOY["noise"], seed: int = 0, dtype: str = "bfloat16", keep_order: bool = False,
+                 crops: dict | None = None, rtc_horizon: int = DEPLOY["rtc_horizon"],
+                 rtc_guidance: float = DEPLOY["rtc_guidance"], text_len: int | None = None,
+                 python: str | None = None, hf_home: str | None = None, offline: bool | None = None,
+                 load_timeout_s: float = 1800.0, verbose: bool = True):
+        if not 1 <= horizon <= CHUNK:
+            raise ValueError(f"horizon must be in 1..{CHUNK}")
+        if noise not in ("random", "zeros"):
+            raise ValueError("noise must be 'random' or 'zeros'")
+        self.cams = self._order(cams, keep_order)
+        self.keep_order = keep_order
+        self.instruction, self.horizon, self.crops = instruction, int(horizon), dict(crops or {})
+        self.last_latency_s: float | None = None
+        self.last_info: dict = {}
+        self._closed = False
+        self._lock = threading.Lock()
+        env = dict(os.environ)
+        env["HF_HOME"] = hf_home or env.get("HF_HOME") or str(REPO / "sim/twin/data/hf")
+        if offline or (offline is None and _cached(env["HF_HOME"], snap or DEFAULT_SNAP)):
+            env["HF_HUB_OFFLINE"] = "1"
+        env.setdefault("TOKENIZERS_PARALLELISM", "false")
+        env["PYTHONPATH"] = os.pathsep.join(p for p in (str(REPO), env.get("PYTHONPATH", "")) if p)
+        cfg = {"snap": snap or DEFAULT_SNAP, "cams": list(self.cams), "steps": int(steps), "device": device,
+               "noise": noise, "seed": int(seed), "dtype": dtype, "rtc_horizon": int(rtc_horizon),
+               "rtc_guidance": float(rtc_guidance), "text_len": text_len}
+        py = python or os.environ.get("MOLMOACT2_PYTHON") or sys.executable
+        self._proc = subprocess.Popen([py, "-u", str(Path(__file__).resolve()), "--worker"], stdin=subprocess.PIPE,
+                                      stdout=subprocess.PIPE, stderr=None if verbose else subprocess.DEVNULL,
+                                      env=env, preexec_fn=_pdeathsig if sys.platform.startswith("linux") else None)
+        atexit.register(self.close)
+        _send(self._proc.stdin, cfg)
+        t = time.monotonic()
+        msg = self._reply(timeout=load_timeout_s)
+        self.info = msg | {"spawn_to_ready_s": round(time.monotonic() - t, 1)}
+
+    @staticmethod
+    def _order(cams, keep_order: bool) -> tuple[str, ...]:
+        cams = tuple(cams)
+        if keep_order:
+            return cams
+        return tuple(sorted(cams, key=lambda c: CAM_ORDER.index(c) if c in CAM_ORDER else len(CAM_ORDER)))
+
+    def _reply(self, timeout: float | None = None):
+        box: dict = {}
+
+        def rd():
+            try:
+                box["m"] = _recv(self._proc.stdout)
+            except BaseException as e:  # noqa: BLE001
+                box["e"] = e
+
+        th = threading.Thread(target=rd, daemon=True)
+        th.start()
+        th.join(timeout)
+        if th.is_alive():
+            self.close()
+            raise TimeoutError(f"MolmoAct2 worker did not answer within {timeout}s")
+        if "e" in box:
+            rc = self._proc.poll()
+            self.close()
+            raise RuntimeError(f"MolmoAct2 worker died (exit {rc}); see its stderr") from box["e"]
+        m = box["m"]
+        if isinstance(m, dict) and m.get("error"):
+            raise RuntimeError("MolmoAct2 worker error:\n" + m["error"])
+        return m
+
+    def act(self, obs: dict, *, prev_chunk: np.ndarray | None = None, inference_delay: int = 0,
+            cams=None, task: str | None = None, noise: str | None = None, steps: int | None = None,
+            timeout: float = 120.0) -> np.ndarray:
+        """obs = {"images": {cam: uint8 (H, W, 3)}, "state": (6,) runtime units, "task": str}.
+
+        prev_chunk: the not-yet-executed tail of the current plan (n, 6) runtime units -> RTC-guided chunk
+        (the deployed controller's hand-off); inference_delay = actions that pass during this inference.
+        cams / task / noise / steps: per-call overrides (diagnostics, sweeps). Returns (horizon, 6) float32 runtime units."""
+        if self._closed:
+            raise RuntimeError("MolmoAct2Client is closed")
+        cams = self._order(cams, self.keep_order) if cams is not None else self.cams
+        imgs = {}
+        for c in cams:
+            im = np.asarray(obs["images"][c])
+            if im.dtype != np.uint8 or im.ndim != 3 or im.shape[2] != 3:
+                raise ValueError(f"image {c!r} must be uint8 (H, W, 3), got {im.dtype} {im.shape}")
+            if c in self.crops:
+                x, y, w, h = self.crops[c]
+                im = im[y:y + h, x:x + w]
+            imgs[c] = np.ascontiguousarray(im)
+        state = np.asarray(obs["state"], np.float32).reshape(6)
+        text = task or self.instruction or obs.get("task") or DEPLOY["pick_prompt"]
+        req = {"images": imgs, "cams": list(cams), "state": state, "task": str(text), "noise": noise, "steps": steps}
+        if prev_chunk is not None and len(prev_chunk):
+            req["prev_chunk"] = np.asarray(prev_chunk, np.float32).reshape(-1, 6)[:CHUNK]
+            req["inference_delay"] = int(inference_delay)
+        t = time.perf_counter()
+        with self._lock:
+            _send(self._proc.stdin, req)
+            r = self._reply(timeout)
+        self.last_latency_s = float(r["latency_s"])  # model time in the worker (pre + flow + post)
+        self.last_info = {k: v for k, v in r.items() if k != "actions"} | {"roundtrip_s": time.perf_counter() - t}
+        return np.asarray(r["actions"], np.float32)[: self.horizon]
+
+    def close(self) -> None:
+        if self._closed:
+            return
+        self._closed = True
+        p = getattr(self, "_proc", None)
+        if p is None:
+            return
+        try:
+            p.stdin.close()
+        except Exception:
+            pass
+        try:
+            p.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            p.kill()
+            p.wait(timeout=10)
+        try:
+            atexit.unregister(self.close)
+        except Exception:
+            pass
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        self.close()
+
+    def __del__(self):
+        try:
+            self.close()
+        except Exception:
+            pass
+
+
+def _cached(hf_home: str, snap: str) -> bool:
+    if Path(snap).exists():
+        return True
+    d = Path(hf_home) / "hub" / ("models--" + snap.replace("/", "--")) / "snapshots"
+    return d.is_dir() and any(d.iterdir())
+
+
+# ----------------------------------------------------------------------------- worker
+def _worker() -> None:
+    inp, out = sys.stdin.buffer, sys.stdout.buffer
+    sys.stdout = sys.stderr  # library prints must not corrupt the pipe
+    import traceback
+
+    try:
+        cfg = _recv(inp)
+        w = _Worker(cfg)
+        _send(out, w.ready)
+    except BaseException:  # noqa: BLE001
+        try:
+            _send(out, {"error": traceback.format_exc()})
+        finally:
+            sys.exit(1)
+    while True:
+        try:
+            req = _recv(inp)
+        except EOFError:
+            break
+        try:
+            _send(out, w.act(req))
+        except BrokenPipeError:
+            break
+        except BaseException:  # noqa: BLE001
+            _send(out, {"error": traceback.format_exc()})
+    sys.exit(0)
+
+
+class _Worker:
+    def __init__(self, cfg: dict):
+        import torch
+
+        t0 = time.perf_counter()
+        sys.path.insert(0, str(REPO / "deploy/molmoact2"))
+        from export import build  # the deployed construction (unit-scale calibration, set_features, steps)
+
+        self.torch = torch
+        torch.manual_seed(cfg["seed"])
+        snap = cfg["snap"]
+        ckpt = snap if str(snap).endswith(".ckpt") else None
+        policy = build(DEFAULT_SNAP if ckpt else snap, False, cfg["cams"], 480, 640, ckpt=ckpt,
+                       steps=cfg["steps"], text_len=cfg.get("text_len"))
+        policy.model._use_random_input_noise = cfg["noise"] == "random"
+        self.dev = torch.device(cfg["device"])
+        policy = policy.to(device=self.dev, dtype=getattr(torch, cfg["dtype"])).eval()
+        torch.set_grad_enabled(False)
+        self.policy = policy
+        self.pre, self.post = policy._preprocessor, policy._postprocessor
+        from rtc_patch import patch_policy
+
+        patch_policy(policy)  # adds the RTC branch; without RTC keys it calls the original loop
+        self.rtc_h, self.rtc_g = cfg["rtc_horizon"], cfg["rtc_guidance"]
+        self.noise, self.steps = cfg["noise"], int(cfg["steps"])
+        self.n_calls = 0
+        c = policy.config
+        self.ready = {"model": str(snap), "load_s": round(time.perf_counter() - t0, 1),
+                      "device": torch.cuda.get_device_name(0) if self.dev.type == "cuda" else str(self.dev),
+                      "dtype": cfg["dtype"], "cams": cfg["cams"], "noise": cfg["noise"],
+                      "steps": int(policy.model.backbone.model.flow_matching_num_steps),
+                      "chunk": int(policy.model._chunk_size), "norm_tag": getattr(c, "norm_tag", None),
+                      "adapt_to_so101": getattr(c, "adapt_to_so101", None),
+                      "text_len": getattr(c, "tokenizer_max_length", None), "pid": os.getpid()}
+        print("MOLMOACT2_READY", self.ready, file=sys.stderr, flush=True)
+
+    def act(self, req: dict) -> dict:
+        torch = self.torch
+        cams = req["cams"]
+        self.pre._extractor.image_keys = list(cams)  # model camera order for this call
+        noise, steps = req.get("noise") or self.noise, int(req.get("steps") or self.steps)
+        self.policy.model._use_random_input_noise = noise == "random"
+        self.policy.model.backbone.model.flow_matching_num_steps = steps
+        batch = {"state": torch.as_tensor(req["state"])[None].to(self.dev), "task": [req["task"]],
+                 "images": {c: torch.from_numpy(req["images"][c]).permute(2, 0, 1)[None].to(self.dev) for c in cams}}
+        if self.dev.type == "cuda":
+            torch.cuda.synchronize()
+        t = time.perf_counter()
+        x = self.pre(batch)
+        rtc = "prev_chunk" in req
+        if rtc:  # same inputs the deployed controller builds (deploy/pi05/rtc_control.py rtc_inputs)
+            prev = np.zeros((1, CHUNK, 6), np.float32)
+            tail = req["prev_chunk"][:CHUNK]
+            prev[0, :len(tail)] = tail
+            x = dict(x)
+            x["prev_chunk_left_over"] = torch.from_numpy(prev).to(self.dev)
+            x["inference_delay"] = torch.tensor(int(min(max(req["inference_delay"], 0), self.rtc_h)))
+            x["execution_horizon"] = torch.tensor(int(self.rtc_h))
+            x["max_guidance_weight"] = torch.tensor(float(self.rtc_g))
+        a = self.policy.model.predict_action_chunk(x)
+        a = self.post({"action": a})["action"]
+        a = a.float().cpu().numpy().reshape(-1, 6)
+        if self.dev.type == "cuda":
+            torch.cuda.synchronize()
+        lat = time.perf_counter() - t
+        self.n_calls += 1
+        return {"actions": a, "latency_s": lat, "call": self.n_calls, "rtc": rtc, "cams": cams, "task": req["task"],
+                "noise": noise, "steps": steps}
+
+
+if __name__ == "__main__":
+    if "--worker" in sys.argv:
+        _worker()
+    else:
+        print(__doc__)
