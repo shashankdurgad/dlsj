@@ -375,7 +375,8 @@ physicalai fit --config configs/physicalai/act/pusht/xpu.yaml \
   --trainer.fast_dev_run=true
 # Then drop --trainer.fast_dev_run for the real run
 ```
-- ⚠️ **Unverified:** `--data.val_gym null` parsing and `bf16-mixed` with `xpu_single`. If either fails, fall back to the shipped `precision: 32`.
+- ⚠️ **Measured on the XPS (Lightning 2.6.6, Studio 8f13241): `--trainer.precision bf16-mixed` silently trains in fp32 on XPU.** Lightning only autocasts on CUDA (warning: "CUDA is not available ... Disabling autocast"). Pass the plugin explicitly instead: `trainer.plugins: [MixedPrecision("bf16-mixed", "xpu")]`. `training/xpu/` does this. Don't use `16-mixed` (GradScaler is CUDA-only).
+- **Intel XPU training scripts:** `training/xpu/` (π0.5, SmolVLA, Anomalib, classifier); see its README for what has been validated. The deployed π0.5 was trained on cloud GPUs.
 - **Gotcha:** the other configs (SmolVLA, `lerobot/act.yaml`) default to `accelerator: gpu`. Add `--trainer.accelerator xpu --trainer.strategy xpu_single`.
 - **SmolVLA:** `physicalai fit --config configs/physicalai/smolvla/pusht/default.yaml --trainer.accelerator xpu --trainer.strategy xpu_single --data.repo_id ...`. Change the default `num_cameras: 0` and the PushT `val_gym` for SO-101.
 - **π0.5:** an SO-101 recipe exists at `configs/physicalai/pi05/so101/snapflow.yaml` (bf16, `compile_model: true`, distilled to 1 denoising step; ~2.98× faster chunks reported on H100, not XPU).
@@ -812,6 +813,7 @@ The same "fully closed = nothing grasped" override improved disturbance recovery
 2. `DETECT`: wait for `Moving` = 0, grab 3 `inspect` frames, crop the brick, run Anomalib on the **NPU** (median score). Output a **structured signal** `{label: perfect|defective, score, region}`:
    - `region` = the anomaly map thresholded → connected components → bounding box on the brick: the **localization signal** the brief requires;
    - also log it and draw it as a heatmap overlay.
+   - **Spin-and-inspect (team requirement):** with `--sweep-frames 12` DETECT rotates `wrist_roll` through ±90° (clipped to the calibrated limits), grabs one settled frame per stop, infers each frame while the wrist moves on, and decides with the evidence-aware `topk` rule (marks may be on one face; one glare frame can't flip a plain brick), then returns the roll to its start angle for the place skill. Code: `dlsj/loop/sweep.py`, `dlsj/inspect/aggregate.py`; test pipeline: `python -m dlsj.loop.sweep_test {hardware,collect,eval,synth}`. Anomalib's normal set must then cover every spin angle (`sweep_test collect --label plain`).
 3. `REASON`: apply the **kickoff rules** to (label, score, region, brick colour/type via HSV on the `inspect` crop, anything else the rules use) → **which plate** (our task: **plain → yellow bowl, circle → orange bowl, cross → purple bowl**).
    - **Uncertainty band (reliability criterion, 10 pts):** if the score is within a margin of the threshold, or the 3 frames disagree, don't guess. Re-inspect: wait, re-grab frames, or run the optional `"turn the brick and show it ... again"` skill. If it's still uncertain after 2 tries, treat it as **defective** (the safe default) and log it.
    - Then pick the instruction → one of a fixed set of instruction strings, e.g. `"place the brick on the reject plate"`. Keep the strings **identical** to the training demos. A rule table is enough; an LLM is optional narration only.
@@ -849,11 +851,12 @@ Measure on the XPS (median and p99 over ≥100 runs, after warmup, on mains powe
 |---|---|---|
 | PyTorch-XPU bf16, 10 steps | 469 / 471 ms | 1.0× |
 | Studio export **FP16**, 10 steps, `physicalai` `InferenceModel` | 283 / 285 ms | 1.66× |
-| Studio export **INT8_SYM**, 10 steps | **212 / 215 ms** | **2.21×** |
+| Studio export **INT8_SYM**, 10 steps (pi05_base) | **212 / 215 ms** | **2.21×** |
 | INT8, 5 steps (accuracy untested) | 175 / 177 ms | 2.68× |
 | INT8, 1 step (needs SnapFlow distillation) | 147 / 149 ms | 3.19× |
 | INT8 with a 64-token prompt instead of 200 | −7% on the raw model | |
 | Intel pi05-rtc-ov INT8 on OV 2026.4.1 (comparison) | 212 ms | same as Studio |
+| **Fine-tuned team model** `w3joe/pi05-junction-so101-20261114`, Studio export INT8, `InferenceModel` GPU (14 Nov, recorder running in parallel) | **188 / 191 ms** (p99 194) | 2.5× vs PyTorch baseline; 3.3 GB RSS; compile 10.7 s |
 
 - **Paired findings:**
   - INT8 is 25–30% faster than FP16 on a quiet machine.

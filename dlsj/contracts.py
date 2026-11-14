@@ -46,6 +46,27 @@ class MarkType(str, Enum):
 
 
 @dataclass(frozen=True)
+class FrameInspection:
+    """One frame of an inspection sweep (the brick spun on `wrist_roll`): per-frame stage 1 + stage 2.
+
+    `label` is this frame's own stage-1 call against the uncertainty band (PERFECT = clean, DEFECTIVE = marked,
+    UNCERTAIN = inside the band). Stage 2 only runs on frames stage 1 calls marked: `mark` None = not run;
+    `p_cross` is the classifier's P(cross) (None = it found no mark in the crop).
+    """
+
+    index: int
+    angle_deg: float | None  # measured wrist_roll at capture (None = not a sweep / unknown)
+    score: float  # raw anomaly score of this frame (same units as InspectionResult.threshold)
+    label: Label
+    region: tuple[int, int, int, int] | None = None  # this frame's own anomaly box (the mark moves as it spins)
+    mark: MarkType | None = None
+    mark_confidence: float = 0.0
+    p_cross: float | None = None
+    latency_ms: float = 0.0  # this frame's share of stage 1 (+ its stage-2 crop when run)
+    pred_label: int | None = None  # the export's own pred_label output, if the model has one
+
+
+@dataclass(frozen=True)
 class InspectionResult:
     """Structured defect signal: the brief asks for a label, a score and a localized region."""
 
@@ -63,6 +84,12 @@ class InspectionResult:
     mark_confidence: float = 0.0  # probability of `mark` (for UNKNOWN: of the more likely class)
     mark_device: str = ""  # "SHAPE-CPU" for the shape rules, else the OpenVINO device of the CNN
     stage_latency_ms: dict[str, float] = field(default_factory=dict)  # {"stage1": ms, "stage2": ms}
+    # Sweep inspections only (empty for the classic 3-frame inspection): the per-angle results, the aggregation
+    # strategy that produced `label`/`score`/`mark`, and its summary (counts, top-k mean, class probabilities, the
+    # outcome every other strategy would have given; see `dlsj.inspect.aggregate`).
+    frames: tuple[FrameInspection, ...] = ()
+    aggregation: str = ""
+    summary: dict = field(default_factory=dict)
 
 
 def mark_outcome(result: InspectionResult, min_mark_confidence: float = 0.0) -> MarkType:
@@ -83,7 +110,12 @@ def mark_outcome(result: InspectionResult, min_mark_confidence: float = 0.0) -> 
 
 
 class Inspector(Protocol):
-    """Anything that turns `inspect`-camera frames (HxWx3 uint8 RGB) into an InspectionResult."""
+    """Anything that turns `inspect`-camera frames (HxWx3 uint8 RGB) into an InspectionResult.
+
+    Inspectors that can also judge a sweep (the brick spun through N angles) implement
+    `inspect_sweep(frames, angles, strategy=None) -> InspectionResult` (with `frames`/`summary` filled);
+    the controller falls back to `inspect(frames)` when an inspector does not.
+    """
 
     def inspect(self, frames: list[np.ndarray]) -> InspectionResult: ...
 

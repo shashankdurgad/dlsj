@@ -4,6 +4,19 @@ Laptop dry run (fake robot, cameras, inspector and scripted policy; status page 
 
     uv run python -m dlsj.loop.run --dry-run --bricks plain,cross,circle,blob,faint,hidden_cross --enable-reshow
 
+Spin-and-inspect (DETECT rotates the brick on wrist_roll and decides from every angle; `--sweep-frames 0` keeps the
+classic 3-frame inspection). Dry run with one-face marks and a glint that defeat the naive strategies:
+
+    uv run python -m dlsj.loop.run --dry-run --bricks side_cross,side_circle,glint,plain \
+        --sweep-frames 12 --sweep-range 180 --sweep-settle-ms 150 --aggregate topk
+
+With the team's PatchCore (Anomalib Studio export, no manifest; GPU is idle during the sweep, NPU also works):
+
+    uv run python -m dlsj.loop.run --cameras wrist=0,top=2,inspect=4 --policy ... \
+        --inspector anomalib --inspector-path ~/inference/models/downloads/brick-patchcore-geometry-v1 \
+        --inspect-crop 160,80,480,400 --score-space raw --inspector-device GPU --stage2 shape \
+        --sweep-frames 12 --aggregate topk
+
 Plates (three-class task; colours are configurable, the minor plate's yellow is a placeholder):
 
     --plates good=yellow,minor=orange,defective=purple   # instruction "place the brick in the <colour> bowl"
@@ -44,6 +57,8 @@ from dlsj.loop.executor import ExecConfig, SkillExecutor
 from dlsj.loop.planner import AnyBrickPlanner
 from dlsj.loop.reasoner import ReasonConfig
 from dlsj.loop.skills import RESHOW, Plates, SkillLibrary
+from dlsj.inspect.aggregate import AggregateConfig
+from dlsj.loop.sweep import SweepConfig
 from dlsj.loop.telemetry import RunLog
 
 log = logging.getLogger("loop")
@@ -86,8 +101,23 @@ def parse_args(argv=None) -> argparse.Namespace:
     p.add_argument("--cameras", default="fake", help='"fake" or name=index,... e.g. wrist=0,top=2,inspect=4')
     p.add_argument("--policy-cameras", default=None, help="cameras fed to the policy (default: all)")
     p.add_argument("--inspector", choices=["fake", "anomalib"], default="fake")
-    p.add_argument("--inspector-path", default=None)
-    p.add_argument("--inspector-device", default="NPU", help="OpenVINO device of the stage-1 Anomalib model")
+    p.add_argument("--inspector-path", default=None, help="manifest.json, Anomalib export folder or model.xml")
+    p.add_argument("--inspector-device", default="NPU",
+                   help="OpenVINO device of the stage-1 model (GPU is free during the sweep: pi0.5 is idle)")
+    p.add_argument("--inspector-batch", type=int, default=None, help="static batch (default 3; 1 when sweeping)")
+    p.add_argument("--inspect-crop", default=None, help="x0,y0,x1,y1 ROI for an Anomalib export without a manifest")
+    p.add_argument("--score-space", choices=["raw", "normalized"], default=None,
+                   help="Anomalib exports: raw (cut before the normaliser) or normalized scores")
+    p.add_argument("--sweep-frames", type=int, default=0, help="spin-and-inspect stops (0 = classic 3 frames)")
+    p.add_argument("--sweep-range", type=float, default=180.0, help="total wrist_roll range (deg) around the start")
+    p.add_argument("--sweep-settle-ms", type=float, default=150.0, help="minimum dwell at each stop")
+    p.add_argument("--sweep-speed", type=float, default=90.0, help="wrist_roll speed cap during the sweep (deg/s)")
+    p.add_argument("--sweep-discard", type=int, default=1, help="new frames dropped before the one kept per stop")
+    p.add_argument("--sweep-continuous", action="store_true", help="roll without stopping (motion blur risk)")
+    p.add_argument("--sweep-sync", action="store_true", help="infer after the sweep instead of during it")
+    p.add_argument("--aggregate", default="topk", choices=["topk", "majority", "max", "median"],
+                   help="sweep aggregation strategy (dlsj.inspect.aggregate)")
+    p.add_argument("--topk", type=int, default=3, help="topk: frames averaged")
     p.add_argument("--stage2", default=None,
                    help='mark classifier: "shape" | "none" | CNN classifier.json (default: manifest, else shape)')
     p.add_argument("--stage2-device", default=None, help="OpenVINO device of the stage-2 CNN (default NPU)")
@@ -99,7 +129,8 @@ def parse_args(argv=None) -> argparse.Namespace:
     p.add_argument("--policy-server", default="127.0.0.1:8080")
     p.add_argument("--fake-latency-ms", type=float, default=170.0, help="simulated chunk latency of --policy fake")
     p.add_argument("--bricks", default="plain,cross,circle,faint,hidden_cross",
-                   help="dry-run bricks on the fake table (plain, cross, circle, blob, faint, hidden_cross, glare)")
+                   help="dry-run bricks on the fake table (plain, cross, circle, blob, faint, hidden_cross, glare, "
+                        "side_cross, side_circle, glint)")
     p.add_argument("--max-bricks", type=int, default=None, help="stop after this many bricks (dry run: #bricks)")
     p.add_argument("--fps", type=float, default=30.0)
     p.add_argument("--max-speed", type=float, default=90.0, help="arm joint cap, deg/s (step_toward per tick)")
@@ -184,15 +215,19 @@ def build(args):
         cleanup.append(cameras.stop)
         cameras.wait_ready()
 
+    agg = AggregateConfig(strategy=args.aggregate, k=args.topk)
     if args.inspector == "fake":
         if not isinstance(cameras, fakes.FakeCameras):
             raise SystemExit("--inspector fake only understands the fake cameras' rendering; use --inspector anomalib")
-        inspector = fakes.FakeInspector(cameras.roi)
+        inspector = fakes.FakeInspector(cameras.roi, agg=agg)
     else:
+        from dlsj.inspect.core import parse_box
         from dlsj.loop.hardware import load_inspector
 
+        batch = args.inspector_batch or (1 if args.sweep_frames > 0 else 3)
         inspector = load_inspector(args.inspector_path, device=args.inspector_device, stage2=args.stage2,
-                                   stage2_device=args.stage2_device)
+                                   stage2_device=args.stage2_device, batch=batch,
+                                   crop=parse_box(args.inspect_crop), score_space=args.score_space, agg=agg)
 
     if args.policy == "fake":
         missing = [n for n in SCRIPTED_POSES + [pl.pose for pl in plates.all()] if n not in poses]
@@ -219,7 +254,19 @@ def build(args):
     cleanup.insert(0, executor.close)
     max_bricks = args.max_bricks if args.max_bricks is not None else (len(world.bricks) if world else None)
     planner = AnyBrickPlanner(max_tasks=max_bricks)
+    sweep = None
+    if args.sweep_frames > 0:
+        limits = None
+        if args.robot != "fake":
+            from dlsj import arms
+
+            limits = arms.joint_limits_deg(args.follower_id, "wrist_roll")
+            log.info("wrist_roll limits from calibration: %s", limits)
+        sweep = SweepConfig(frames=args.sweep_frames, range_deg=args.sweep_range, settle_ms=args.sweep_settle_ms,
+                            max_speed_deg_s=args.sweep_speed, discard_frames=args.sweep_discard, limits=limits,
+                            grasp_current_min=args.grasp_current_min, continuous=args.sweep_continuous, fps=args.fps)
     ccfg = ControllerConfig(go_home=not args.no_home, grasp_current_min=args.grasp_current_min,
+                            sweep=sweep, aggregate=args.aggregate, sweep_async=not args.sweep_sync,
                             reason=ReasonConfig(max_uncertain=args.max_uncertain,
                                                 reshow_available=library.available(RESHOW),
                                                 extra_margin=args.extra_margin,

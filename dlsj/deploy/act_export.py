@@ -15,6 +15,11 @@ Shapes are static (batch 1, fixed image sizes), which the NPU needs.
         --out exports/act --precision fp16            # or fp32 / int8 (NNCF weight-only INT8)
 
     uv run python -m dlsj.deploy.act_export --benchmark exports/act --device GPU   # on the laptop
+
+Cropping: if a camera was cropped for training (e.g. the overhead camera to x 0-560), pass the same crop at
+export, e.g. `--crop observation.images.top=0,0,560,480@640x480` (x, y, width, height of the box, then the
+full camera frame size). It is stored in the manifest, and `OpenVINOACT` applies it to full camera frames.
+A frame whose size is neither that full size nor the cropped size is rejected rather than fed to the policy.
 """
 
 import argparse
@@ -101,13 +106,50 @@ def example_inputs(manifest: dict) -> tuple[np.ndarray, ...]:
     return (state, *imgs)
 
 
-def export(policy_path: str | Path, out_dir: str | Path, precision: str = "fp16") -> Path:
+def parse_crop(spec: str) -> tuple[str, dict]:
+    """"observation.images.top=0,0,560,480@640x480" -> (key, {"box": [x, y, w, h], "source": [H, W]})."""
+    try:
+        key, rest = spec.split("=", 1)
+        box, src = rest.split("@", 1)
+        x, y, w, h = (int(v) for v in box.split(","))
+        sw, sh = (int(v) for v in src.lower().split("x"))
+    except ValueError:
+        raise ValueError(f"bad crop {spec!r}; expected key=x,y,width,height@WIDTHxHEIGHT") from None
+    if min(x, y) < 0 or w <= 0 or h <= 0 or x + w > sw or y + h > sh:
+        raise ValueError(f"crop box {x},{y},{w},{h} doesn't fit a {sw}x{sh} frame")
+    return key, {"box": [x, y, w, h], "source": [sh, sw]}
+
+
+def crop_image(img: np.ndarray, key: str, want_hw: tuple[int, int], crops: dict) -> np.ndarray:
+    """Apply the training crop for `key` to a full camera frame; pass through frames already the right size."""
+    if tuple(img.shape[:2]) == tuple(want_hw):
+        return img
+    c = crops.get(key)
+    if c is not None and list(img.shape[:2]) == list(c["source"]):
+        x, y, w, h = c["box"]
+        return img[y:y + h, x:x + w]
+    raise ValueError(f"{key}: got a {img.shape[0]}x{img.shape[1]} (HxW) frame, but the policy expects "
+                     f"{want_hw[0]}x{want_hw[1]}" + (f", or a {c['source'][0]}x{c['source'][1]} frame to crop"
+                                                     if c else " and the export has no crop for this camera"))
+
+
+def export(policy_path: str | Path, out_dir: str | Path, precision: str = "fp16",
+           crops: dict[str, dict] | None = None) -> Path:
     import openvino as ov
 
     if precision not in ("fp32", "fp16", "int8"):
         raise ValueError("precision must be fp32, fp16 or int8")
     policy, wrapper = load_act(policy_path)
     manifest = _manifest(policy)
+    crops = crops or {}
+    for key, c in crops.items():
+        _x, _y, w, h = c["box"]
+        want = next((i["shape"][1:3] for i in manifest["inputs"]["images"] if i["name"] == key), None)
+        if want is None:
+            raise ValueError(f"crop given for {key}, which the policy doesn't use")
+        if [h, w] != list(want):
+            raise ValueError(f"crop for {key} is {w}x{h} but the policy was trained on {want[1]}x{want[0]}")
+    manifest["crops"] = crops
     ex = tuple(torch.from_numpy(x) for x in example_inputs(manifest))
     shapes = [(list(x.shape), ov.Type.f32 if x.dtype == torch.float32 else ov.Type.u8) for x in ex]
     with torch.no_grad():
@@ -148,11 +190,14 @@ class OpenVINOACT:
         self.compiled = core.compile_model(str(export_dir / MODEL_XML), device, config)
         self.request = self.compiled.create_infer_request()
         self.image_keys = [i["name"] for i in self.manifest["inputs"]["images"]]
+        self.image_hw = {i["name"]: tuple(i["shape"][1:3]) for i in self.manifest["inputs"]["images"]}
+        self.crops = self.manifest.get("crops", {})
 
     def __call__(self, state: np.ndarray, images: dict[str, np.ndarray]) -> np.ndarray:
-        """state (S,) float; images {key: (H,W,3) uint8 RGB} -> actions (chunk, A)."""
+        """state (S,) float; images {key: (H,W,3) uint8 RGB, full camera frames} -> actions (chunk, A)."""
         inputs = [np.asarray(state, dtype=np.float32)[None]]
-        inputs += [np.ascontiguousarray(images[k], dtype=np.uint8)[None] for k in self.image_keys]
+        inputs += [np.ascontiguousarray(crop_image(images[k], k, self.image_hw[k], self.crops), dtype=np.uint8)[None]
+                   for k in self.image_keys]
         res = self.request.infer(inputs)
         return np.asarray(next(iter(res.values())))[0]
 
@@ -183,6 +228,8 @@ def main() -> None:
     ap.add_argument("--policy_path", help="LeRobot ACT pretrained_model directory")
     ap.add_argument("--out", default="exports/act")
     ap.add_argument("--precision", default="fp16", choices=["fp32", "fp16", "int8"])
+    ap.add_argument("--crop", action="append", default=[],
+                    help="training crop for a camera, key=x,y,width,height@WIDTHxHEIGHT (repeatable)")
     ap.add_argument("--benchmark", help="export directory to benchmark instead of exporting")
     ap.add_argument("--device", default="CPU", help="CPU, GPU, NPU or AUTO (benchmark only)")
     args = ap.parse_args()
@@ -192,7 +239,8 @@ def main() -> None:
         return
     if not args.policy_path:
         ap.error("--policy_path is required to export")
-    print(f"wrote {export(args.policy_path, args.out, args.precision)}")
+    crops = dict(parse_crop(c) for c in args.crop)
+    print(f"wrote {export(args.policy_path, args.out, args.precision, crops)}")
 
 
 if __name__ == "__main__":

@@ -115,6 +115,12 @@ def inspection_record(result: InspectionResult) -> dict:
            "mark_confidence": round(float(result.mark_confidence), 4), "mark_device": result.mark_device,
            "stage_latency_ms": {k: round(float(v), 3) for k, v in result.stage_latency_ms.items()},
            "outcome": mark_outcome(result).value}
+    if result.frames:  # sweep: the per-angle distribution and the aggregation summary
+        from dlsj.inspect.aggregate import frames_record
+
+        rec["aggregation"] = result.aggregation
+        rec["frames"] = frames_record(result.frames)
+        rec["summary"] = {k: v for k, v in result.summary.items() if k != "config"}
     if result.heatmap is not None:
         rec["heatmap_shape"] = list(result.heatmap.shape)
         rec["heatmap_max"] = round(float(result.heatmap.max()), 4)

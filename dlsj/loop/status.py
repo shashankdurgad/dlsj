@@ -1,7 +1,9 @@
 """Browser status page for the loop (same pattern as `dlsj.teleop_web`): http://localhost:8001
 
 Shows every camera feed, the state machine state and current skill, the last InspectionResult drawn as a
-heatmap overlay with the region box, the last decision, and live per-stage latency (median / p90 / p99).
+heatmap overlay with the region box (for a sweep: the frame that localised the mark), the per-angle score strip of
+a sweep (bar colour = per-frame label, X/O = stage-2 class, dashed line = threshold), the last decision, and live
+per-stage latency (median / p90 / p99).
 Buttons: STOP (abort the loop) and NEXT BRICK (confirm when the loop waits for a brick).
 """
 
@@ -78,6 +80,7 @@ code{color:var(--acc)}
 <div class="cam" style="margin-top:12px"><img id="insp" alt="last inspection"><div class="bar"><b>last inspection</b> heatmap + region</div></div></section>
 <aside class="side">
 <div class="card"><h2>Inspection</h2><div id="label" class="big">–</div><div id="insp_detail" style="color:var(--mute)"></div></div>
+<div class="card" id="sweepcard" style="display:none"><h2>Sweep (score per wrist_roll angle)</h2><div id="sweep"></div><div id="sweep_detail" style="color:var(--mute)"></div></div>
 <div class="card"><h2>Decision</h2><div id="decision">–</div></div>
 <div class="card"><h2>Counts</h2><div id="counts">–</div></div>
 <div class="card"><h2>Latency (ms)</h2><table><thead><tr><th>stage</th><th>n</th><th>median</th><th>p90</th><th>p99</th></tr></thead><tbody id="lat"></tbody></table></div>
@@ -95,12 +98,25 @@ async function tick(){
     const r=c.last_inspection;if(r){const L=document.getElementById('label');const oc={none:'perfect',circle:'minor',cross:'defective',unknown:'uncertain'}[r.outcome]||r.label;
       L.textContent=r.mark?`${r.label.toUpperCase()} · ${r.mark.toUpperCase()}`:r.label.toUpperCase();L.className='big '+oc;
       document.getElementById('insp_detail').innerHTML=`score <b>${r.score.toFixed(3)}</b> / thr ${r.threshold.toFixed(3)} · ${r.latency_ms.toFixed(1)} ms on ${r.device||'?'}${r.mark?` · mark ${r.mark} ${r.mark_confidence.toFixed(2)} on ${r.mark_device}`:''}<br>stages ${Object.entries(r.stage_latency_ms||{}).map(([k,v])=>`${k} ${v.toFixed(1)} ms`).join(', ')}<br>frames ${r.frame_scores.map(x=>x.toFixed(2)).join(', ')}<br>region ${r.region?JSON.stringify(r.region):'none'}`;
+      sweepStrip(r);
       const key=JSON.stringify(r);if(key!==lastInsp){lastInsp=key;document.getElementById('insp').src='/inspection.jpg?'+Date.now();}}
     const d=c.last_decision;if(d)document.getElementById('decision').innerHTML=`<code>${d.skill||'re-grab'}</code>${d.forced?' (forced)':''}<br><span style="color:var(--mute)">${d.reason}</span>`;
     document.getElementById('counts').textContent=Object.entries(c.counts).map(([k,v])=>`${k}: ${v}`).join(' · ')||'–';
     document.getElementById('lat').innerHTML=Object.entries(c.latency).filter(([k,v])=>v.n).map(([k,v])=>`<tr><td>${k}</td><td>${v.n}</td><td>${v.median}</td><td>${v.p90}</td><td>${v.p99}</td></tr>`).join('');
   }catch(e){const st=document.getElementById('state');st.textContent='server gone';st.className='pill bad';}
 }
+function sweepStrip(r){const card=document.getElementById('sweepcard');const F=r.frames;if(!F||!F.length){card.style.display='none';return;}
+  card.style.display='';const W=340,H=120,pad=18,n=F.length,bw=(W-2*pad)/n;const smax=Math.max(r.threshold*1.6,...F.map(f=>f.score));
+  const y=v=>H-pad-(H-2*pad)*Math.min(v/smax,1);const col={perfect:'#3ecf8e',defective:'#ff7ac8',uncertain:'#ffc857'};
+  const mk={cross:'X',circle:'O',unknown:'?'};const S=r.summary||{};
+  let g=`<svg viewBox="0 0 ${W} ${H}" width="100%" role="img" aria-label="per-angle anomaly scores">`;
+  g+=`<line x1="${pad}" x2="${W-pad}" y1="${y(r.threshold)}" y2="${y(r.threshold)}" stroke="#8a90a0" stroke-dasharray="3 3"/>`;
+  F.forEach((f,i)=>{const x=pad+i*bw+1,top=y(f.score);g+=`<rect x="${x}" y="${top}" width="${bw-2}" height="${H-pad-top}" fill="${col[f.label]||'#888'}" ${i===S.best_index?'stroke="#fff"':''}><title>${f.angle} deg: ${f.score.toFixed(3)} ${f.label}${f.mark?' '+f.mark+' p(cross) '+(f.p_cross??'-'):''}</title></rect>`;
+    if(f.mark)g+=`<text x="${x+bw/2-1}" y="${top-3}" fill="#e6e8ee" font-size="10" text-anchor="middle">${mk[f.mark]||''}</text>`;
+    if(i===0||i===n-1)g+=`<text x="${x+bw/2}" y="${H-4}" fill="#8a90a0" font-size="9" text-anchor="middle">${f.angle==null?'':Math.round(f.angle)+'°'}</text>`;});
+  g+='</svg>';document.getElementById('sweep').innerHTML=g;
+  const mp=S.mark_probs?` · P(circle) ${S.mark_probs.circle} P(cross) ${S.mark_probs.cross}`:'';
+  document.getElementById('sweep_detail').innerHTML=`<b>${r.aggregation}</b>: ${S.reason||''}<br>marked ${S.n_marked}/${S.n} · clean ${S.n_clean} · top-${S.topk} mean ${S.topk_mean}${mp}<br>other strategies: ${Object.entries(S.alternatives||{}).map(([k,v])=>k+'='+v).join(', ')}`;}
 document.getElementById('stop').onclick=()=>fetch('/cmd/stop',{method:'POST'});
 document.getElementById('next').onclick=()=>fetch('/cmd/next',{method:'POST'});
 setInterval(tick,300);tick();

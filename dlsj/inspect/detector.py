@@ -25,12 +25,13 @@ from __future__ import annotations
 import argparse
 import logging
 import time
+from dataclasses import replace
 from pathlib import Path
 
 import numpy as np
 
-from dlsj.contracts import InspectionResult, Label, MarkType, mark_outcome
-from dlsj.inspect import classify, core
+from dlsj.contracts import FrameInspection, InspectionResult, Label, MarkType, mark_outcome
+from dlsj.inspect import aggregate, classify, core
 from dlsj.inspect.core import Manifest
 
 log = logging.getLogger("inspect.detector")
@@ -39,30 +40,28 @@ DEFAULT_FALLBACK = ("NPU", "GPU", "CPU")
 
 
 class OpenVINOBackend:
-    """Compiled OpenVINO model: (B,H,W,3) uint8 RGB → (scores (B,), maps (B,h,w) float32)."""
+    """Compiled OpenVINO model: (B,H,W,3) uint8 RGB → (scores (B,), maps (B,h,w) float32).
+
+    Takes our own IR (u8 NHWC, pre-processing in the graph) or a standard Anomalib export (float NCHW [0, 1]; the
+    conversion is folded in at load time, and `score_space="raw"` cuts it before its normaliser; see `model_io`).
+    `last_labels` holds the export's own `pred_label` output of the last call (None when the model has none).
+    """
 
     def __init__(self, xml: str | Path, input_hw: tuple[int, int], batch: int, device: str,
-                 fallback: tuple[str, ...] = DEFAULT_FALLBACK, cache_dir: str | Path | None = None):
+                 fallback: tuple[str, ...] = DEFAULT_FALLBACK, cache_dir: str | Path | None = None,
+                 score_space: str = "raw", input_format: str | None = None):
         import openvino as ov
+
+        from dlsj.inspect import model_io
 
         core_ = ov.Core()
         if cache_dir:
             core_.set_property({"CACHE_DIR": str(cache_dir)})
-        model = core_.read_model(str(xml))
-        h, w = input_hw
-        try:
-            model.reshape({model.input(0).get_any_name(): [batch, h, w, 3]})  # static: NPU rejects dynamic shapes
-        except Exception as e:  # noqa: BLE001  some graphs (e.g. PatchCore) only work at their exported batch
-            model = core_.read_model(str(xml))
-            exported = model.input(0).get_partial_shape()
-            if not exported.is_static:
-                raise
-            log.warning("cannot reshape %s to batch %d (%s); using its exported shape %s", Path(xml).name, batch,
-                        str(e).strip().splitlines()[0][:120], exported)
-            batch = exported[0].get_length()
-        names = [o.get_any_name() for o in model.outputs]
-        self.score_idx = next(i for i, n in enumerate(names) if "score" in n)
-        self.map_idx = next(i for i, n in enumerate(names) if "map" in n)
+        model, info = model_io.prepare_model(core_, xml, input_hw, batch, score_space, input_format)
+        batch = info["batch"]
+        self.info = info
+        self.score_idx, self.map_idx = info["outputs"]["score"], info["outputs"]["map"]
+        self.label_idx = info["outputs"]["label"]
         order = [device] + [d for d in fallback if d != device]
         available = core_.available_devices
         errors = {}
@@ -84,6 +83,7 @@ class OpenVINOBackend:
             log.warning("requested %s, running on %s (%s)", device, self.device, errors.get(device))
         self.batch = batch
         self.request = self.compiled.create_infer_request()
+        self.last_labels: np.ndarray | None = None
 
     def __call__(self, batch_u8: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
         try:
@@ -93,40 +93,68 @@ class OpenVINOBackend:
                         str(e).strip().splitlines()[-1][:200])
             self.request = self.compiled.create_infer_request()
             self.request.infer({0: batch_u8})
-        score = self.request.get_output_tensor(self.score_idx).data.reshape(len(batch_u8))
+        n = len(batch_u8)
+        score = self.request.get_output_tensor(self.score_idx).data.reshape(n)
         amap = self.request.get_output_tensor(self.map_idx).data
-        return score.astype(np.float32, copy=True), amap.reshape(len(batch_u8), *amap.shape[-2:]).astype(np.float32, copy=True)
+        if self.label_idx is not None:
+            self.last_labels = self.request.get_output_tensor(self.label_idx).data.reshape(n).astype(np.int32)
+        return score.astype(np.float32, copy=True), amap.reshape(n, *amap.shape[-2:]).astype(np.float32, copy=True)
 
 
-class AnomalibInspector:
-    """Implements `dlsj.contracts.Inspector`.
+class AnomalibInspector(aggregate.SweepInspectorMixin):
+    """Implements `dlsj.contracts.Inspector` (3-frame `inspect`) and the sweep API (`inspect_sweep`, `start_sweep`,
+    `inspect_frame`) of `aggregate.SweepInspectorMixin`.
 
     `backend` maps a (B,H,W,3) uint8 batch to (scores, maps); tests inject a fake one.
     `batch` is the static batch the backend was compiled for: frames are run in chunks of that size
     (one call for 3 frames when batch=3; a short last chunk is padded by repeating its last frame).
+    `agg` holds the sweep aggregation strategy and its knobs (`aggregate.AggregateConfig`).
     """
 
     def __init__(self, manifest: Manifest, backend, batch: int = 1, device: str = "", heatmap: bool = True,
-                 classifier: "classify.MarkClassifier | None" = None):
+                 classifier: "classify.MarkClassifier | None" = None, agg: aggregate.AggregateConfig | None = None,
+                 base_dir: Path | None = None):
         self.manifest = manifest
         self.backend = backend
         self.batch = batch
         self.device = device
         self.heatmap = heatmap
         self.classifier = classifier  # stage 2; None = two-plate behaviour (mark stays None)
+        self.agg = agg or aggregate.AggregateConfig()
+        self.base_dir = base_dir or Path(".")
 
     @classmethod
     def from_manifest(cls, path: str | Path, device: str = "NPU", batch: int = 3,
                       fallback: tuple[str, ...] = DEFAULT_FALLBACK, heatmap: bool = True,
                       cache_dir: str | Path | None = None, stage2: str | dict | None = None,
-                      stage2_device: str | None = None) -> "AnomalibInspector":
-        """`stage2`: "shape" | "none" | path to a CNN classifier.json; None = the manifest's `stage2` (default shape)."""
-        path = Path(path).expanduser()
-        m = Manifest.load(path)
-        backend = OpenVINOBackend(path.parent / m.model, m.input_size, batch, device, fallback, cache_dir)
+                      stage2_device: str | None = None, **kw) -> "AnomalibInspector":
+        """`stage2`: "shape" | "none" | path to a CNN classifier.json; None = the manifest's `stage2` (default shape).
+
+        `path` may also be a standard Anomalib export folder or .xml (see `from_model`)."""
+        return cls.from_model(path, device=device, batch=batch, fallback=fallback, heatmap=heatmap,
+                              cache_dir=cache_dir, stage2=stage2, stage2_device=stage2_device, **kw)
+
+    @classmethod
+    def from_model(cls, path: str | Path, device: str = "NPU", batch: int = 1,
+                   fallback: tuple[str, ...] = DEFAULT_FALLBACK, heatmap: bool = True,
+                   cache_dir: str | Path | None = None, stage2: str | dict | None = None,
+                   stage2_device: str | None = None, crop=None, input_size=None, score_space: str | None = None,
+                   band: float | None = None, agg: aggregate.AggregateConfig | None = None) -> "AnomalibInspector":
+        """Any stage-1 model: our manifest.json, an Anomalib export folder, or a .xml (`model_io.resolve`).
+
+        For an export without a manifest the threshold comes from its sidecars (Studio `evaluation.json`), stage 2
+        defaults to the shape rules, and `crop` (inspect-frame ROI) should be given: exports know nothing about it.
+        """
+        from dlsj.inspect import model_io
+
+        m, base = model_io.resolve(path, crop, input_size, score_space,
+                                   band if band is not None else model_io.DEFAULT_BAND)
+        xml = Path(m.model) if Path(m.model).is_absolute() else base / m.model
+        backend = OpenVINOBackend(xml, m.input_size, batch, device, fallback, cache_dir, m.score_space, m.input_format)
         spec = stage2 if stage2 is not None else (m.stage2 or "shape")
-        clf = classify.load_classifier(spec, device=stage2_device or device, base_dir=path.parent, cache_dir=cache_dir)
-        return cls(m, backend, batch=backend.batch, device=backend.device, heatmap=heatmap, classifier=clf)
+        clf = classify.load_classifier(spec, device=stage2_device or device, base_dir=base, cache_dir=cache_dir)
+        return cls(m, backend, batch=backend.batch, device=backend.device, heatmap=heatmap, classifier=clf, agg=agg,
+                   base_dir=base)
 
     def score_crops(self, crops: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
         """(N,H,W,3) uint8 model-size crops → scores (N,), maps (N,h,w)."""
@@ -141,6 +169,11 @@ class AnomalibInspector:
             scores.append(s[:k])
             maps.append(m[:k])
         return np.concatenate(scores), np.concatenate(maps)
+
+    def score_frames(self, frames: list[np.ndarray]) -> np.ndarray:
+        """Stage-1 scores only (calibration)."""
+        m = self.manifest
+        return self.score_crops(np.stack([core.prepare(f, m.crop, m.input_size) for f in frames]))[0]
 
     def inspect(self, frames: list[np.ndarray]) -> InspectionResult:
         if not frames:
@@ -171,6 +204,99 @@ class AnomalibInspector:
             heats = [result.heatmap[y0:y1, x0:x1]] * len(crops)
         pred = clf.classify(crops, heats)
         return {"mark": pred.mark, "mark_confidence": float(pred.confidence), "mark_device": clf.device}
+
+    # ------------------------------------------------------------------ sweep (per-frame) API
+    def sweep_meta(self) -> dict:
+        m = self.manifest
+        return {"threshold": m.threshold, "band_low": m.band_low, "band_high": m.band_high, "device": self.device,
+                "mark_device": self.classifier.device if self.classifier is not None else ""}
+
+    def _roi(self, frame_hw):
+        roi = self.manifest.crop
+        if roi is None:
+            return None, tuple(frame_hw)
+        fh, fw = frame_hw
+        roi = (max(0, roi[0]), max(0, roi[1]), min(fw, roi[2]), min(fh, roi[3]))
+        return roi, (roi[3] - roi[1], roi[2] - roi[0])
+
+    def _frame_stage1(self, index: int, angle, frame_hw, score: float, amap: np.ndarray, ms: float,
+                      pred_label: int | None = None):
+        m = self.manifest
+        label = aggregate.frame_label(float(score), m.band_low, m.band_high)
+        roi, crop_hw = self._roi(frame_hw)
+        region = None
+        if label is not Label.PERFECT:
+            pthr = m.pixel_threshold if m.pixel_threshold is not None else m.threshold
+            region = core.region_from_map(amap, pthr, roi, crop_hw)
+        heat = core.to_heatmap(amap, m.map_min, m.threshold, frame_hw, roi) if self.heatmap else None
+        return FrameInspection(index, None if angle is None else float(angle), float(score), label, region,
+                               latency_ms=ms, pred_label=pred_label), heat
+
+    def _stage2_crops(self, frames, recs, heats):
+        """Stage 2 on every marked frame's own region crop (one classifier call). Returns updated records."""
+        clf = self.classifier
+        todo = [i for i, r in enumerate(recs) if r.label is Label.DEFECTIVE and clf is not None]
+        if not todo:
+            return recs
+        t0 = time.perf_counter()
+        crops, hcrops, ok = [], [], []
+        for i in todo:
+            if recs[i].region is None:
+                continue
+            x0, y0, x1, y1 = classify.crop_box(recs[i].region, frames[i].shape[:2], clf.pad_frac)
+            crops.append(frames[i][y0:y1, x0:x1])
+            hcrops.append(heats[i][y0:y1, x0:x1] if heats[i] is not None else None)
+            ok.append(i)
+        ps = clf.p_cross(crops, hcrops) if crops else []
+        per = (time.perf_counter() - t0) * 1e3 / max(len(todo), 1)
+        out = list(recs)
+        pmap = dict(zip(ok, ps))
+        for i in todo:
+            p = pmap.get(i)
+            if p is None or (isinstance(p, float) and np.isnan(p)):
+                mark, conf, p = MarkType.UNKNOWN, 0.0, None
+            else:
+                mark = MarkType.CROSS if p >= 0.5 else MarkType.CIRCLE
+                conf = max(p, 1 - p)
+                if conf < clf.min_confidence:
+                    mark = MarkType.UNKNOWN
+            out[i] = replace(out[i], mark=mark, mark_confidence=float(conf), p_cross=None if p is None else float(p),
+                             latency_ms=out[i].latency_ms + per)
+        return out
+
+    def inspect_frame(self, frame: np.ndarray, index: int = 0, angle: float | None = None):
+        """One sweep frame: stage 1 (batch 1 call), its region, stage 2 if marked. -> (FrameInspection, heatmap)."""
+        t0 = time.perf_counter()
+        m = self.manifest
+        scores, maps = self.score_crops(core.prepare(frame, m.crop, m.input_size)[None])
+        lab = getattr(self.backend, "last_labels", None)
+        ms = (time.perf_counter() - t0) * 1e3
+        rec, heat = self._frame_stage1(index, angle, frame.shape[:2], scores[0], maps[0], ms,
+                                       None if lab is None else int(lab[0]))
+        rec = self._stage2_crops([frame], [rec], [heat])[0]
+        return rec, heat
+
+    def inspect_frames(self, frames, angles=None):
+        """All frames of a sweep, stage 1 batched by the compiled batch size, stage 2 in one call."""
+        angles = list(angles) if angles is not None else [None] * len(frames)
+        t0 = time.perf_counter()
+        m = self.manifest
+        crops = np.stack([core.prepare(f, m.crop, m.input_size) for f in frames])
+        labels = []
+        scores, maps = [], []
+        for i in range(0, len(crops), self.batch):  # chunked here too, to collect pred_label per chunk
+            s, mp = self.score_crops(crops[i:i + self.batch])
+            scores.append(s)
+            maps.append(mp)
+            lab = getattr(self.backend, "last_labels", None)
+            labels += [None] * len(s) if lab is None else [int(v) for v in lab[:len(s)]]
+        scores, maps = np.concatenate(scores), np.concatenate(maps)
+        per = (time.perf_counter() - t0) * 1e3 / len(frames)
+        out = [self._frame_stage1(i, a, f.shape[:2], s, mp, per, lb)
+               for i, (f, a, s, mp, lb) in enumerate(zip(frames, angles, scores, maps, labels))]
+        recs, heats = [o[0] for o in out], [o[1] for o in out]
+        recs = self._stage2_crops(list(frames), recs, heats)
+        return list(zip(recs, heats))
 
 
 # ----------------------------------------------------------------------------- evaluation CLI
@@ -247,7 +373,11 @@ def evaluate(insp: AnomalibInspector, data: Path, overlays: Path | None = None, 
 
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--manifest", type=Path, required=True)
+    ap.add_argument("--manifest", "--model", dest="manifest", type=Path, required=True,
+                    help="manifest.json, or a standard Anomalib OpenVINO export folder / .xml")
+    ap.add_argument("--crop", default=None, help="x0,y0,x1,y1 ROI (overrides the manifest; needed for exports)")
+    ap.add_argument("--score-space", choices=["raw", "normalized"], default=None,
+                    help="exports only: cut the graph to raw scores, or keep the normalised ones (default)")
     ap.add_argument("--data", type=Path, required=True, help="folder with good/ and bad/ inspect frames")
     ap.add_argument("--device", default="NPU", choices=["NPU", "GPU", "CPU"])
     ap.add_argument("--batch", type=int, default=3, help="static batch compiled into the model (1 = sequential)")
@@ -257,8 +387,9 @@ def main() -> None:
     ap.add_argument("--min-mark-confidence", type=float, default=0.0, help="reasoner's extra stage-2 threshold")
     args = ap.parse_args()
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
-    insp = AnomalibInspector.from_manifest(args.manifest, device=args.device, batch=args.batch, stage2=args.stage2,
-                                           stage2_device=args.stage2_device)
+    insp = AnomalibInspector.from_model(args.manifest, device=args.device, batch=args.batch, stage2=args.stage2,
+                                        stage2_device=args.stage2_device, crop=core.parse_box(args.crop),
+                                        score_space=args.score_space)
     evaluate(insp, args.data.expanduser(), args.overlays, args.min_mark_confidence)
 
 

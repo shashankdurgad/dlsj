@@ -46,6 +46,14 @@ class Manifest:
     # Stage-2 mark classifier: {"backend": "shape"} (default when empty), {"backend": "none"}, or
     # {"backend": "cnn", "manifest": "../mark_cnn/classifier.json", "min_confidence": 0.7} (path relative to here).
     stage2: dict = field(default_factory=dict)
+    # Which IR this is (see `model_io`): "u8_nhwc" = ours (pre-processing folded in by train.py), "f32_nchw" = a
+    # standard Anomalib export (u8 -> f32 /255 folded in at load time). `score_space`: "raw" scores (ours, or an
+    # export cut before its normaliser) or the export's "normalized" [0, 1] scores. `normalisation`: the export's
+    # {"score": [a, b], "map": [a, b]} with normalised = clamp(raw * a + b, 0, 1).
+    input_format: str = "u8_nhwc"
+    score_space: str = "raw"
+    source: str = "dlsj"
+    normalisation: dict = field(default_factory=dict)
 
     @classmethod
     def load(cls, path: str | Path) -> "Manifest":
