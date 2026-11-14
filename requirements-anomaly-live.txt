@@ -1,0 +1,4 @@
+# Standalone exported-model camera tester; no robot or Studio dependencies.
+numpy>=2,<3
+opencv-python-headless>=4.10,<5
+openvino>=2026.4.1

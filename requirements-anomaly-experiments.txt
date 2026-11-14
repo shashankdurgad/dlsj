@@ -1,0 +1,5 @@
+-r requirements-anomaly-live.txt
+albumentations==2.0.8
+httpx==0.28.1
+# Frozen-feature supervised probe also needs torch, torchvision, timm,
+# scikit-learn, joblib and Pillow (see docs/anomaly-augmentation-and-supervision.md).

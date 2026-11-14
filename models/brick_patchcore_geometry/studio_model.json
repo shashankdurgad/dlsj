@@ -1,0 +1,13 @@
+{
+  "id": "c01c0cdc-80b5-44b4-a8ab-bdbc5db6eb52",
+  "name": "patchcore (c01c0cdc)",
+  "architecture": "patchcore",
+  "format": "openvino",
+  "project_id": "a7184403-35e4-4e17-ba9d-76329b1476b4",
+  "threshold": 0.5,
+  "is_ready": true,
+  "dataset_snapshot_id": "43f02f0c-018e-4997-889b-ad30e43c5373",
+  "train_job_id": "f85249ad-3217-43c5-9414-0fc39a903919",
+  "size": 303507175,
+  "backbone": "wide_resnet50_2"
+}

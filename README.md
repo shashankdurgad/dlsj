@@ -2,6 +2,10 @@
 
 End-to-end robotic **defect detection and manipulation**: an SO-101 arm picks a brick and shows it to an inspection camera. **Anomalib** decides whether the brick is plain or marked and finds the mark; a **classifier** tells a **circle** (minor defect) from a **cross** (defective); a decision tree then has the VLA place it on the good, minor-defect or defective plate.
 
+For the trained **PatchCore brick anomaly model and live camera tester**, see
+[download and setup](models/brick_patchcore_geometry/README.md). This standalone
+tester reports marked versus unmarked; it does not run the robot or stage-2 classifier.
+
 The full plan, commands, code snippets and sources are in **[docs/PLAYBOOK.md](docs/PLAYBOOK.md)**.
 
 ## The loop

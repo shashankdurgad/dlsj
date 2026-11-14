@@ -1,0 +1,78 @@
+{
+  "model_id": "c01c0cdc-80b5-44b4-a8ab-bdbc5db6eb52",
+  "job_id": "f85249ad-3217-43c5-9414-0fc39a903919",
+  "profile": "geometry",
+  "aggregation": "mean of three frame scores per capture",
+  "validation_selected_threshold": 0.9991861979166667,
+  "validation": {
+    "good": {
+      "captures": 14,
+      "flagged_defective": 4,
+      "correct": 10,
+      "accuracy": 0.7142857142857143
+    },
+    "bad": {
+      "captures": 59,
+      "flagged_defective": 52,
+      "correct": 52,
+      "accuracy": 0.8813559322033898
+    },
+    "circle": {
+      "captures": 60,
+      "flagged_defective": 50,
+      "correct": 50,
+      "accuracy": 0.8333333333333334
+    }
+  },
+  "validation_balanced_accuracy": 0.785815173527038,
+  "test": {
+    "good": {
+      "captures": 16,
+      "flagged_defective": 1,
+      "correct": 15,
+      "accuracy": 0.9375
+    },
+    "bad": {
+      "captures": 58,
+      "flagged_defective": 54,
+      "correct": 54,
+      "accuracy": 0.9310344827586207
+    },
+    "circle": {
+      "captures": 55,
+      "flagged_defective": 50,
+      "correct": 50,
+      "accuracy": 0.9090909090909091
+    }
+  },
+  "training_images": 1035,
+  "coreset_sampling_ratio": 0.020000000000000004,
+  "training_seed": 2026,
+  "limitations": [
+    "Physical brick identities unknown; split is by capture.",
+    "Studio internal synthetic metrics are not used for selection.",
+    "External threshold does not modify Studio default.",
+    "Memory bank budget is approximately constant across experiments."
+  ],
+  "test_balanced_accuracy": 0.9287813479623824,
+  "validation_score_diagnostics": {
+    "good": {
+      "images": 42,
+      "at_upper_bound": 20,
+      "minimum": 0.83251953125,
+      "maximum": 1.0
+    },
+    "bad": {
+      "images": 177,
+      "at_upper_bound": 162,
+      "minimum": 0.91162109375,
+      "maximum": 1.0
+    },
+    "circle": {
+      "images": 180,
+      "at_upper_bound": 159,
+      "minimum": 0.896484375,
+      "maximum": 1.0
+    }
+  }
+}

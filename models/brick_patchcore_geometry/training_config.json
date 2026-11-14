@@ -1,0 +1,10 @@
+{
+  "project_id": "a7184403-35e4-4e17-ba9d-76329b1476b4",
+  "model_name": "patchcore",
+  "device": {
+    "type": "cpu"
+  },
+  "max_epochs": 1,
+  "training_seed": 2026,
+  "coreset_sampling_ratio": 0.020000000000000004
+}

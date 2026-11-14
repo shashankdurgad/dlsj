@@ -1,0 +1,10 @@
+{
+  "model.xml": {
+    "sha256": "f5acdecf226133da02185af808f066d49e6e7fc7e5ee6dd5542b3643aa067ddf",
+    "bytes": 196724
+  },
+  "model.bin": {
+    "sha256": "8030c421e92b4c69dcf29efe231e218a5b28d848a4643b4c0cfccf67ef07c3cc",
+    "bytes": 151498446
+  }
+}
