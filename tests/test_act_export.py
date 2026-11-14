@@ -89,3 +89,25 @@ def test_benchmark_runs(tiny_act, tmp_path):
     act_export.export(d, tmp_path / "b", precision="fp16")
     res = act_export.benchmark(tmp_path / "b", "CPU", iters=3, warmup=1, cache_dir=None)
     assert res["median_ms"] > 0
+
+
+def test_crop_from_manifest_is_applied_to_full_frames(tiny_act, tmp_path):
+    d, policy, pre, post = tiny_act
+    top = "observation.images.top"
+    _, h, w = CAMS[top]
+    crop = {"box": [0, 0, w, h], "source": [h, w + 16]}
+    xml = act_export.export(d, tmp_path / "crop", precision="fp32", crops={top: crop})
+    assert json.loads((xml.parent / "manifest.json").read_text())["crops"] == {top: crop}
+    runner = act_export.OpenVINOACT(xml.parent, device="CPU", cache_dir=None, inference_precision="f32")
+    state, imgs = _obs(0)
+    full = dict(imgs)
+    full[top] = np.concatenate([imgs[top], np.zeros((h, 16, 3), np.uint8)], axis=1)  # camera is wider
+    assert np.allclose(runner(state, full), runner(state, imgs), atol=1e-5)  # cropped back to what it trained on
+    with pytest.raises(ValueError, match="expects"):
+        runner(state, {**imgs, top: np.zeros((h + 8, w + 16, 3), np.uint8)})  # neither full nor cropped size
+    with pytest.raises(ValueError, match="trained on"):
+        act_export.export(d, tmp_path / "bad", crops={top: {"box": [0, 0, w - 4, h], "source": [h, w + 16]}})
+    assert act_export.parse_crop("observation.images.top=0,0,560,480@640x480") == (
+        top, {"box": [0, 0, 560, 480], "source": [480, 640]})
+    with pytest.raises(ValueError, match="doesn't fit"):
+        act_export.parse_crop("observation.images.top=100,0,560,480@640x480")
