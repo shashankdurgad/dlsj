@@ -98,6 +98,9 @@ def main() -> int:
     p.add_argument("--num-inference-steps", type=int, default=None,
                    help="Diffusion Policy: DDIM denoising steps per chunk (trained with 16; fewer is faster)")
     p.add_argument("--amp", action="store_true", help="mixed precision (autocast) for the policy forward pass")
+    p.add_argument("--async-chunks", action="store_true",
+                   help="Diffusion Policy: predict chunks in a background thread from the latest 30 Hz observations while "
+                        "the loop keeps executing (no freezes; stale actions skipped). Uses the full action window.")
     p.add_argument("--ov-export", default=None,
                    help="OpenVINO ACT export dir (dlsj.deploy.act_export): predict chunks with it instead of PyTorch")
     p.add_argument("--ov-device", default="GPU", help="OpenVINO device for --ov-export (GPU fp16 ~21 ms on the XPS)")
@@ -141,6 +144,10 @@ def main() -> int:
         cfg.n_action_steps = args.n_action_steps
     if args.num_inference_steps:
         cfg.num_inference_steps = args.num_inference_steps
+    if args.async_chunks:
+        if cfg.type != "diffusion":
+            p.error("--async-chunks is for Diffusion Policy")
+        cfg.n_action_steps = cfg.horizon - cfg.n_obs_steps + 1  # longest window, so chunks overlap
     if args.temporal_ensemble is not None:
         cfg.temporal_ensemble_coeff = args.temporal_ensemble
         cfg.n_action_steps = 1
@@ -159,6 +166,11 @@ def main() -> int:
     pre, post = make_pre_post_processors(policy.config, pretrained_path=args.policy_path,
                                          preprocessor_overrides={"device_processor": {"device": args.device}})
     expected = {k: tuple(v.shape) for k, v in policy.config.input_features.items()}
+    chunker = None
+    if args.async_chunks:
+        from dlsj.deploy.async_chunks import AsyncChunker
+
+        chunker = AsyncChunker(policy, pre, post, device).start()
     log.info("%s loaded on %s: chunk %s, executing %d per chunk, temporal ensemble %s; inputs %s", cfg.type, device,
              getattr(cfg, "chunk_size", getattr(cfg, "horizon", None)), cfg.n_action_steps,
              getattr(cfg, "temporal_ensemble_coeff", None), expected)
@@ -240,7 +252,11 @@ def main() -> int:
             if tick == 0:
                 check_shapes(obs, expected)
             t_inf = time.perf_counter()
-            if ov_policy is not None:
+            if chunker is not None:
+                chunker.push(tick, obs)
+                a = chunker.action(tick)
+                target = cmd.copy() if a is None else np.asarray(a, dtype=np.float32)  # hold until the first chunk
+            elif ov_policy is not None:
                 imgs = {f"observation.images.{n}": cv2.cvtColor(s.frame, cv2.COLOR_BGR2RGB) for n, s in streams.items()}
                 if ensembler is not None:  # fresh chunk every tick, blended with earlier chunks (ACT paper)
                     chunk = ov_policy(state, imgs)
@@ -272,6 +288,11 @@ def main() -> int:
         lat_a = np.array(lat)
         log.info("ran %d ticks; per-tick inference median %.1f ms, p90 %.1f ms, max %.1f ms (chunk refills spike)",
                  tick, np.median(lat_a), np.percentile(lat_a, 90), lat_a.max())
+        if chunker is not None:
+            chunker.stop()
+            cl = np.array(chunker.latencies_ms or [0.0])
+            log.info("async chunks: %d predicted, latency median %.0f ms, p90 %.0f ms", len(cl), np.median(cl),
+                     np.percentile(cl, 90))
         if home is not None and not args.dry_run:
             log.info("ramping home")
             ramp_to(np.array([home[j] for j in joints], dtype=np.float32), read_state())
