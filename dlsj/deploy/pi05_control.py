@@ -56,12 +56,14 @@ class Controller:
     def __init__(self, arm, cameras: dict, policy, bowls=("yellow", "purple", "orange"), fps: int = 30,
                  max_step: float = DEFAULT_MAX_STEP, max_step_gripper: float = DEFAULT_MAX_STEP, replan: int = 50,
                  blend: str = "ensemble", ensemble_k: float = 0.01, blend_steps: int = 10, sync: bool = False,
-                 crops: dict | None = None):
+                 crops: dict | None = None, ready: list[float] | None = None):
         if blend not in BLENDS:
             raise ValueError(f"blend must be one of {BLENDS}")
         self.arm, self.cameras, self.policy = arm, cameras, policy
         # training-time crops, {camera: (x, y, w, h)}: the policy must see what it was trained on
         self.crops = dict(crops or {})
+        # demo-like start pose: Space first eases the arm here, then the policy takes over (None = start in place)
+        self.ready = None if ready is None else np.asarray(ready, dtype=float)
         self.bowls, self.fps, self.replan, self.sync = list(bowls), fps, replan, sync
         self.blend, self.ensemble_k, self.blend_steps = blend, ensemble_k, blend_steps
         self.max_step = np.array([max_step] * 5 + [max_step_gripper], dtype=float)
@@ -121,10 +123,14 @@ class Controller:
                 self.bowl = self.bowls[i]
                 if self.phase == "running" and self.stage == "place":
                     self._replan_now()  # replan with the new colour
-        elif c in ("start", "space") and self.phase != "running":
+        elif c in ("start", "space") and self.phase not in ("running", "readying"):
             self._replan_now()
-            self.phase, self.stage, self.message = "running", "pick", ""
+            self.stage = "pick"
             self.cmd = np.asarray(self.arm.read(), dtype=float)
+            if self.ready is not None and np.abs(self.cmd - self.ready).max() > 3.0:
+                self.phase, self.message = "readying", "Moving to the start pose"
+            else:
+                self.phase, self.message = "running", ""
         elif c in ("mark", "m") and self.phase == "running" and self.stage == "pick":
             if self.bowl is None:
                 self.message = "Choose a plate (1–3) before marking"
@@ -219,6 +225,13 @@ class Controller:
                 self._handle(c)
         with self.lock:
             try:
+                if self.phase == "readying":
+                    self.cmd = self.cmd + np.clip(self.ready - self.cmd, -self.max_step, self.max_step)
+                    self.arm.send(self.cmd)
+                    if np.abs(np.asarray(self.arm.read(), dtype=float) - self.ready).max() < 4.0:
+                        self._replan_now()
+                        self.phase, self.message = "running", ""
+                    return
                 if self.phase != "running":
                     return
                 if not self.inflight and self.remaining() <= self.replan:
@@ -438,6 +451,8 @@ def main() -> None:
     p.add_argument("--max-relative-target", type=float, default=10.0, help="LeRobot's per-command safety clamp")
     p.add_argument("--replan", type=int, default=50,
                    help="request a new chunk when this few future actions remain (50 = back to back)")
+    p.add_argument("--ready", default="", help="start pose eased into on Space before the policy runs, 6 values "
+                   "(pan,lift,elbow,wflex,wroll,grip), e.g. the demos' median start -0.6,-58.4,56,56.7,17.6,29.2")
     p.add_argument("--crop", default="", help="training-time crop per camera, x,y,w,h; e.g. top=0,0,560,480 "
                    "(models trained on the cropped dataset need it; ';' separates cameras)")
     p.add_argument("--host", default="0.0.0.0")
@@ -462,7 +477,8 @@ def main() -> None:
     arm = FollowerArm(port, args.follower_id, args.max_relative_target)
     arm.connect()
     ctl = Controller(arm, streams, policy, args.bowls.split(","), args.fps, args.max_step, args.max_step_gripper,
-                     args.replan, args.blend, args.ensemble_k, args.blend_steps, crops=crops)
+                     args.replan, args.blend, args.ensemble_k, args.blend_steps, crops=crops,
+                     ready=[float(v) for v in args.ready.split(",")] if args.ready else None)
     loop = threading.Thread(target=ctl.run, name="control", daemon=True)
     loop.start()
     teleop_web.install_stop_signals()

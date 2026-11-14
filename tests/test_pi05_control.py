@@ -144,7 +144,11 @@ def test_actions_stale_by_inference_time_are_skipped():
         time.sleep(0.01)
     ctl.tick()  # tick 7 -> chunk index 7
     assert ctl.arm.sent[0][0] == 7.0
-    assert ctl.snapshot()["latency_ms"] > 0
+    for _ in range(100):  # inference runs on a thread: give it a moment to record its latency
+        if ctl.lat_ms:
+            break
+        time.sleep(0.01)
+    assert len(ctl.lat_ms) > 0 and ctl.snapshot()["latency_ms"] is not None  # the fake policy can round to 0.0 ms
 
 
 def test_ensemble_aligns_chunks_by_time_and_favours_the_oldest():
@@ -247,3 +251,21 @@ def test_training_crop_is_applied_before_the_policy():
     run_ticks(ctl, 2)
     assert policy.shapes["top"] == (480, 560, 3) and policy.shapes["wrist"] == (480, 640, 3)
     assert (policy.top_right_col == 7).all()
+
+
+def test_space_eases_to_the_ready_pose_before_the_policy_runs():
+    policy = FakePolicy()
+    ready = [10.0, -50.0, 40.0, 60.0, 15.0, 30.0]
+    ctl = make(policy, ready=ready)
+    ctl.command("start")
+    run_ticks(ctl, 1)
+    assert ctl.phase == "readying" and policy.calls == 0
+    for _ in range(60):
+        if ctl.phase == "running":
+            break
+        run_ticks(ctl, 1)
+    assert ctl.phase == "running" and np.abs(ctl.arm.pos - np.array(ready)).max() < 4.0  # handed over at the pose
+    steps = np.diff(np.array(ctl.arm.sent), axis=0)
+    assert np.abs(steps).max() <= ctl.max_step.max() + 1e-9  # rate-limited on the way
+    run_ticks(ctl, 3)
+    assert policy.calls >= 1
