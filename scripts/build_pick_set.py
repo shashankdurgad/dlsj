@@ -75,6 +75,21 @@ def load_table(root: Path) -> pd.DataFrame:
                      for f in fs).sort_values(["episode_index", "frame_index"])
 
 
+def check_frame_counts(root: Path) -> None:
+    """Every camera's videos must hold exactly one frame per data row; raise otherwise."""
+    import av
+
+    info = json.loads((root / "meta" / "info.json").read_text())
+    for key in [k for k, f in info["features"].items() if f["dtype"] == "video"]:
+        n = 0
+        for f in sorted((root / "videos" / key).rglob("*.mp4")):
+            with av.open(str(f)) as c:
+                n += sum(1 for _ in c.demux(c.streams.video[0]) if _.size)
+        if n != info["total_frames"]:
+            raise SystemExit(f"{key}: {n} video frames for {info['total_frames']} data rows (frames dropped)")
+    print(f"frame counts OK: {info['total_frames']} frames in every camera")
+
+
 def main() -> None:
     from lerobot.configs.video import RGBEncoderConfig
     from lerobot.datasets import LeRobotDataset, LeRobotDatasetMetadata
@@ -165,7 +180,10 @@ def main() -> None:
         feats[k] = {"dtype": "video", "shape": (h, w, c), "names": ["height", "width", "channels"]}
     ds = LeRobotDataset.create(args.repo_id or f"local/{args.out.name}", meta0.fps, features=feats, root=args.out,
                                robot_type=meta0.robot_type, use_videos=True, image_writer_threads=4 * len(cams),
-                               rgb_encoder=RGBEncoderConfig(vcodec=args.vcodec, crf=args.crf), streaming_encoding=True)
+                               rgb_encoder=RGBEncoderConfig(vcodec=args.vcodec, crf=args.crf), streaming_encoding=True,
+                               # the default 30-frame queue drops frames when the CPU is busy (it only warns), which
+                               # silently misaligns video and state/action; buffer whole episodes instead
+                               encoder_queue_maxsize=100_000)
     names = [n.removesuffix(".pos") for n in meta0.features["observation.state"]["names"]]
     shift = np.array([offset.get(n, 0.0) for n in names], dtype=np.float32) if offset else None
     prov = []
@@ -199,6 +217,7 @@ def main() -> None:
         if i % 20 == 0:
             print(f"{i + 1}/{len(jobs)} episodes", flush=True)
     ds.finalize()
+    check_frame_counts(args.out)
     d = args.out / "meta" / "dlsj"
     d.mkdir(parents=True, exist_ok=True)
     (d / "provenance.jsonl").write_text("".join(json.dumps(r) + "\n" for r in prov))
