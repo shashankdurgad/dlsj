@@ -268,6 +268,25 @@ def retire_home(follower_id: str) -> Path | None:
     return stale
 
 
+def place_poses_path(follower_id: str) -> Path:
+    return FOLLOWER_CAL_DIR / f"{follower_id}.place_poses.json"
+
+
+def load_place_poses(follower_id: str) -> dict[str, dict[str, float]]:
+    """Taught drop-off poses (e.g. "good", "defect"), each {joint.pos: deg}, in the current calibration."""
+    p = place_poses_path(follower_id)
+    return json.loads(p.read_text()) if p.exists() else {}
+
+
+def save_place_pose(follower_id: str, name: str, pose: dict[str, float]) -> Path:
+    poses = load_place_poses(follower_id)
+    poses[name] = {k: round(float(v), 2) for k, v in pose.items()}
+    p = place_poses_path(follower_id)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(json.dumps(poses, indent=2) + "\n")
+    return p
+
+
 def align_path(leader_id: str) -> Path:
     return LEADER_CAL_DIR / f"{leader_id}.align.json"
 

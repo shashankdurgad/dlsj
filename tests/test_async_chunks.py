@@ -16,6 +16,7 @@ class SlowChunker(AsyncChunker):
         self.lock = threading.Lock()
         self.chunk = None
         self.latencies_ms = []
+        self.generation = 0
         self._stop = threading.Event()
         self._new_obs = threading.Event()
         self._thread = threading.Thread(target=self._run, daemon=True)
@@ -46,3 +47,16 @@ def test_async_chunks_never_freeze_and_skip_stale_actions():
     assert np.mean([got[t] == t for t in ticks]) > 0.9
     # the observation history handed to the policy is consecutive 30 Hz ticks, as in training
     assert all(b - a == 1 for a, b in ch.snapshots)
+
+
+def test_reset_discards_in_flight_chunk():
+    ch = SlowChunker(delay=0.2).start()
+    ch.push(0, {}); ch.push(1, {})
+    time.sleep(0.05)  # a prediction is now in flight
+    ch.reset()
+    time.sleep(0.3)  # it finishes after the reset
+    assert ch.action(5) is None  # and is discarded
+    ch.push(10, {}); ch.push(11, {})
+    time.sleep(0.4)
+    assert ch.action(11) is not None
+    ch.stop()

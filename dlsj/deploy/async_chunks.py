@@ -42,6 +42,7 @@ class AsyncChunker:
         self.lock = threading.Lock()
         self.chunk: tuple[int, np.ndarray] | None = None  # (start tick, actions [n, A])
         self.latencies_ms: list[float] = []
+        self.generation = 0  # bumped by reset(); a prediction started before a reset is discarded
         self._stop = threading.Event()
         self._new_obs = threading.Event()
         self.noise = None
@@ -59,6 +60,13 @@ class AsyncChunker:
         self._new_obs.set()
         if self._thread.is_alive():  # let an in-flight prediction finish; exiting mid-call aborts the process
             self._thread.join(timeout=5)
+
+    def reset(self) -> None:
+        """Forget the observation history and the current chunk (e.g. after a scripted move or a new attempt)."""
+        with self.lock:
+            self.hist.clear()
+            self.chunk = None
+            self.generation += 1
 
     def push(self, tick: int, obs: dict[str, np.ndarray]) -> None:
         with self.lock:
@@ -99,8 +107,10 @@ class AsyncChunker:
                 if len(self.hist) < self.n_obs:
                     continue
                 snapshot = list(self.hist)
+                gen = self.generation
             t = time.perf_counter()
             acts = self.predict(snapshot)
             self.latencies_ms.append((time.perf_counter() - t) * 1e3)
             with self.lock:
-                self.chunk = (snapshot[-1][0], acts)
+                if gen == self.generation:
+                    self.chunk = (snapshot[-1][0], acts)

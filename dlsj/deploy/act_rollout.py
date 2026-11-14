@@ -121,6 +121,16 @@ def main() -> int:
     p.add_argument("--yes", action="store_true", help="don't wait for Enter before moving")
     p.add_argument("--save-dir", help="save one frame per camera per second (plus state/target) here, for review")
     p.add_argument("--start-home", action="store_true", help="ramp to the saved home pose before the policy starts")
+    p.add_argument("--loop", action="store_true",
+                   help="pick-and-present policy in a loop: once the arm holds a brick still at the camera, a scripted "
+                        "move drops it at the taught --place pose, goes home, and the policy starts the next pick")
+    p.add_argument("--place", default="good", help="taught drop-off pose (dlsj.deploy.teach_pose) for --loop")
+    p.add_argument("--present-s", type=float, default=1.0, help="--loop: holding a brick still this long = presented")
+    p.add_argument("--inspect-s", type=float, default=1.0, help="--loop: pause at the camera before placing")
+    p.add_argument("--attempt-timeout", type=float, default=40.0,
+                   help="--loop: stop if no brick is presented within this many seconds of an attempt starting")
+    p.add_argument("--place-speed", type=float, default=60.0, help="--loop: deg/s for the scripted place moves")
+    p.add_argument("--open-gripper", type=float, default=35.0, help="--loop: gripper value to release the brick")
     p.add_argument("--release-at-end", action="store_true",
                    help="release torque when the script exits (default: keep holding the final pose)")
     args = p.parse_args()
@@ -227,8 +237,18 @@ def main() -> int:
         if not args.dry_run:
             robot.send_action({j: float(v) for j, v in zip(joints, cmd)})
 
-    def ramp_to(target: np.ndarray, cmd: np.ndarray) -> np.ndarray:
-        step = args.ramp_speed / args.fps
+    place = None
+    if args.loop:
+        poses = arms.load_place_poses(args.follower_id)
+        if args.place not in poses:
+            p.error(f"--loop: no taught pose '{args.place}' ({list(poses)}); run python -m dlsj.deploy.teach_pose "
+                    f"{args.place}")
+        place = np.array([poses[args.place][j] for j in joints], dtype=np.float32)
+        if home is None:
+            p.error("--loop needs the saved home pose")
+
+    def ramp_to(target: np.ndarray, cmd: np.ndarray, speed: float | None = None) -> np.ndarray:
+        step = (speed or args.ramp_speed) / args.fps
         while np.max(np.abs(target - cmd)) > 0.5:
             cmd = teleop_web.step_toward(cmd, target, step)
             send(cmd)
@@ -264,6 +284,8 @@ def main() -> int:
         step_cap = args.max_speed / args.fps
         lat: list[float] = []
         tick, t_start = 0, time.time()
+        t_attempt, n_placed = time.time(), 0
+        recent: list[np.ndarray] = []  # last --present-s of states, for the "presented" test
         while not stop and time.time() - t_start < args.max_seconds:
             t_tick = time.perf_counter()
             state = read_state()
@@ -294,6 +316,35 @@ def main() -> int:
             lat.append((time.perf_counter() - t_inf) * 1e3)
             cmd = teleop_web.step_toward(cmd if not args.dry_run else state, target, step_cap)
             send(cmd)
+            if args.loop:
+                recent = (recent + [state])[-int(args.present_s * args.fps):]
+                holding = 3.0 < state[5] < 15.0  # a brick in the jaws (~6); empty and closed reads ~1
+                still = (len(recent) == int(args.present_s * args.fps)
+                         and float(np.ptp(np.stack(recent)[:, :5], axis=0).max()) < 3.0)
+                if holding and still and time.time() - t_attempt > 3.0:
+                    log.info("brick presented after %.1fs; inspecting %.1fs, then placing at '%s'",
+                             time.time() - t_attempt, args.inspect_s, args.place)
+                    if chunker is not None:
+                        chunker.reset()
+                    time.sleep(args.inspect_s)  # the inspect camera / defect classifier looks here
+                    carry = place.copy(); carry[5] = state[5]  # keep the grip while carrying
+                    cmd = ramp_to(carry, cmd, args.place_speed)
+                    drop = carry.copy(); drop[5] = args.open_gripper
+                    cmd = ramp_to(drop, cmd, args.place_speed)
+                    time.sleep(0.4)
+                    cmd = ramp_to(np.array([home[j] for j in joints], dtype=np.float32), cmd, args.place_speed)
+                    time.sleep(0.3)
+                    n_placed += 1
+                    log.info("placed brick %d; next attempt", n_placed)
+                    policy.reset()
+                    if chunker is not None:
+                        chunker.reset()
+                    recent, t_attempt = [], time.time()
+                    tick += 1
+                    continue
+                if time.time() - t_attempt > args.attempt_timeout:
+                    log.info("no brick presented within %.0fs; stopping (%d placed)", args.attempt_timeout, n_placed)
+                    break
             if tick % args.fps == 0 and args.save_dir:
                 from pathlib import Path
                 d = Path(args.save_dir); d.mkdir(parents=True, exist_ok=True)
@@ -308,6 +359,8 @@ def main() -> int:
                          np.round(state, 1), np.round(target, 1), lat[-1], max(lat))
             tick += 1
             time.sleep(max(0.0, 1.0 / args.fps - (time.perf_counter() - t_tick)))
+        if args.loop:
+            log.info("loop finished: %d bricks placed in %.0fs", n_placed, time.time() - t_start)
         lat_a = np.array(lat)
         log.info("ran %d ticks; per-tick inference median %.1f ms, p90 %.1f ms, max %.1f ms (chunk refills spike)",
                  tick, np.median(lat_a), np.percentile(lat_a, 90), lat_a.max())
