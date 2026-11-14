@@ -29,6 +29,13 @@ On the XPS (once the pi0.5 export and the Anomalib inspector exist):
         --policy openvino --policy-path exports/pi05_ov --inspector anomalib --inspector-path exports/anomalib \
         [--stage2 shape | --stage2 exports/inspect/mark_cnn/classifier.json --stage2-device NPU]
 
+Dry run with the real models on recorded frames (no serial port, no camera; dlsj.loop.replay):
+
+    python -m dlsj.loop.run --robot fake --cameras replay:~/desmond/dlsj/data/duplo_teleop_rgb:5 \
+        --policy openvino --policy-path ~/inference/exports/pi05_junction_int8 \
+        --inspector anomalib --inspector-path ~/inference/models/downloads/brick-patchcore-geometry-v1 \
+        --score-space raw --inspector-device GPU --sweep-frames 12 --status-port 0
+
 Hardware smoke test without the VLA (scripted motion between poses saved with --save-pose):
 
     uv run python -m dlsj.loop.run --save-pose inspect      # pose the arm by hand, press Enter
@@ -98,7 +105,14 @@ def parse_args(argv=None) -> argparse.Namespace:
     p.add_argument("--follower-port", default="auto")
     p.add_argument("--follower-id", default="follower")
     p.add_argument("--max-relative-target", type=float, default=None, help="LeRobot per-step cap (deg)")
-    p.add_argument("--cameras", default="fake", help='"fake" or name=index,... e.g. wrist=0,top=2,inspect=4')
+    p.add_argument("--cameras", default="fake",
+                   help='"fake", name=index,... e.g. wrist=0,top=2,inspect=4, or replay:<dataset_root>:<episode>[:<stride>] '
+                        '(recorded frames matched to the fake robot\'s state; needs --robot fake, dlsj.loop.replay)')
+    p.add_argument("--realsense", default="",
+                   help="RealSense cameras by serial, name=serial,... e.g. top=346422061366,inspect=243722062690 "
+                        "(as dlsj.teleop_record)")
+    p.add_argument("--realsense-no-depth", action="store_true",
+                   help="don't start the RealSense depth stream (it was on while recording the training data)")
     p.add_argument("--policy-cameras", default=None, help="cameras fed to the policy (default: all)")
     p.add_argument("--inspector", choices=["fake", "anomalib"], default="fake")
     p.add_argument("--inspector-path", default=None, help="manifest.json, Anomalib export folder or model.xml")
@@ -126,6 +140,13 @@ def parse_args(argv=None) -> argparse.Namespace:
     p.add_argument("--policy", choices=["fake", "openvino", "lerobot-server"], default="fake")
     p.add_argument("--policy-path", default=None, help="OpenVINO export dir")
     p.add_argument("--policy-device", default="GPU")
+    p.add_argument("--policy-cache-dir", default=None, help="OpenVINO CACHE_DIR (default ~/inference/ov_cache)")
+    p.add_argument("--policy-seed", type=int, default=None, help="seed the start noise (reproducible chunks)")
+    p.add_argument("--policy-warmup", type=int, default=2, help="dummy pi0.5 calls before the loop starts")
+    p.add_argument("--policy-camera-map", default=None,
+                   help="export camera=observation camera,... when the export names cameras differently")
+    p.add_argument("--policy-rtc", choices=["auto", "on", "off"], default="auto",
+                   help="feed the previous chunk back when the export has RTC inputs")
     p.add_argument("--policy-server", default="127.0.0.1:8080")
     p.add_argument("--fake-latency-ms", type=float, default=170.0, help="simulated chunk latency of --policy fake")
     p.add_argument("--bricks", default="plain,cross,circle,faint,hidden_cross",
@@ -184,7 +205,20 @@ def build(args):
         library.enabled_optional.add(RESHOW)
 
     world = robot = None
-    if args.robot == "fake":
+    replay = None
+    if args.cameras.startswith("replay:"):
+        if args.robot != "fake":
+            raise SystemExit("--cameras replay:... needs --robot fake (never drive the real arm from recorded frames)")
+        from dlsj.loop import replay as R
+
+        root, ep_i, stride = R.parse_replay_spec(args.cameras)
+        replay = R.load_episode(root, ep_i, stride)
+        robot = R.ReplayRobot(replay.states[0], R.holding_grip(replay))
+        poses = R.episode_poses(replay)
+        home = poses["home"]
+        log.info("replay episode %d: %d frames, tasks %s, poses %s, holding grip %.1f", ep_i, len(replay.states),
+                 sorted(set(replay.tasks)), sorted(poses), R.holding_grip(replay))
+    elif args.robot == "fake":
         role_pose = {"good": "yellow", "minor": "orange", "defective": "purple"}  # fake plate positions per role
         wposes = {k: fakes.DEFAULT_POSES[k].copy() for k in SCRIPTED_POSES}
         for pl in plates.all():  # only the configured plates exist in the fake world
@@ -204,14 +238,17 @@ def build(args):
         if home is None:
             log.warning("no home pose saved for %s (teleop_web 'save home'); not homing", args.follower_id)
 
-    if args.cameras == "fake":
+    if replay is not None:
+        cameras = R.ReplayCameras(replay, robot, fps=args.fps)
+    elif args.cameras == "fake":
         if world is None:
             raise SystemExit("--cameras fake needs --robot fake (the fake cameras render the fake world)")
         cameras = fakes.FakeCameras(world, robot)
     else:
         from dlsj.loop.hardware import StreamCameras
 
-        cameras = StreamCameras.open(args.cameras)
+        cameras = StreamCameras.open("" if args.cameras == "none" else args.cameras, realsense=args.realsense,
+                                     realsense_depth=not args.realsense_no_depth)
         cleanup.append(cameras.stop)
         cameras.wait_ready()
 
@@ -239,7 +276,13 @@ def build(args):
     elif args.policy == "openvino":
         from dlsj.loop.hardware import OpenVINOPi05Policy
 
-        policy = OpenVINOPi05Policy(args.policy_path, args.policy_device)
+        cam_map = dict(kv.split("=", 1) for kv in args.policy_camera_map.split(",")) if args.policy_camera_map else None
+        policy = OpenVINOPi05Policy(args.policy_path, args.policy_device, cache_dir=args.policy_cache_dir,
+                                    camera_map=cam_map, seed=args.policy_seed, fps=args.fps,
+                                    rtc={"auto": None, "on": True, "off": False}[args.policy_rtc])
+        if args.policy_warmup:
+            policy.warmup(args.policy_warmup)
+        cleanup.append(policy.close)
     else:
         from dlsj.loop.hardware import LeRobotServerPolicy
 
@@ -253,6 +296,8 @@ def build(args):
     executor = SkillExecutor(robot, cameras, policy, library, ecfg, poses, runlog)
     cleanup.insert(0, executor.close)
     max_bricks = args.max_bricks if args.max_bricks is not None else (len(world.bricks) if world else None)
+    if replay is not None and max_bricks is None:
+        max_bricks = 1  # one recorded episode = one brick
     planner = AnyBrickPlanner(max_tasks=max_bricks)
     sweep = None
     if args.sweep_frames > 0:

@@ -3,7 +3,8 @@
 * `StreamCameras`  : `dlsj.teleop_web.CameraStream` threads (BGR) -> `Cameras` (RGB, fresh-frame waits)
 * `LeRobotArm`     : LeRobot SO-101 follower with the repo calibration (`dlsj.arms`) -> `Robot`
 * `load_inspector` : `dlsj.inspect.detector.AnomalibInspector` (built by another workstream)
-* policy back-ends : `OpenVINOPi05Policy`, `LeRobotServerPolicy` are stubs until deploy/pi05 lands
+* policy back-ends : `OpenVINOPi05Policy` (Studio export via physicalai.InferenceModel, `dlsj.loop.policies`);
+                     `LeRobotServerPolicy` is still a stub
 """
 
 from __future__ import annotations
@@ -27,11 +28,24 @@ class StreamCameras:
         self.names = list(streams)
 
     @classmethod
-    def open(cls, spec: str, width: int = 640, height: int = 480, fps: int = 30, quality: int = 80) -> "StreamCameras":
+    def open(cls, spec: str, width: int = 640, height: int = 480, fps: int = 30, quality: int = 80,
+             realsense: str = "", realsense_depth: bool = True) -> "StreamCameras":
+        """OpenCV cameras (`spec`: name=index_or_/dev/v4l/by-id/...) plus RealSense cameras by serial
+        (`realsense`: name=serial,...), opened exactly like `dlsj.teleop_record` (RealSense depth on by default,
+        as recorded, so the emitter state matches the training images)."""
         from dlsj.teleop_web import CameraStream, parse_cameras
 
-        cams = parse_cameras(spec, 8)
-        return cls({n: CameraStream(n, i, width, height, fps, quality).start() for n, i in cams.items()})
+        cams = parse_cameras(spec, 8) if spec else {}
+        streams = {n: CameraStream(n, i, width, height, fps, quality).start() for n, i in cams.items()}
+        rs_cams = dict(part.split("=", 1) for part in filter(None, (x.strip() for x in realsense.split(","))))
+        if rs_cams:
+            from dlsj.realsense_stream import RealSenseStream
+
+            streams |= {n: RealSenseStream(n, sn, width, height, fps, depth=realsense_depth, quality=quality).start()
+                        for n, sn in rs_cams.items()}
+        if not streams:
+            raise ValueError("no cameras: give --cameras and/or --realsense")
+        return cls(streams)
 
     def wait_ready(self, timeout_s: float = 20.0) -> None:
         t_end = time.monotonic() + timeout_s
@@ -148,22 +162,13 @@ def load_inspector(path: str | Path | None, **kwargs) -> Inspector:
 
 
 # ----------------------------------------------------------------------------- policy back-ends
-class OpenVINOPi05Policy:
-    """pi0.5 exported to OpenVINO INT8 on the Arc GPU. Stub until the export workstream lands."""
+def __getattr__(name: str):
+    """`OpenVINOPi05Policy` lives in `dlsj.loop.policies` (lazy so importing this module stays light)."""
+    if name == "OpenVINOPi05Policy":
+        from dlsj.loop.policies import OpenVINOPi05Policy
 
-    def __init__(self, model_dir: str | Path, device: str = "GPU"):
-        self.model_dir, self.device = Path(model_dir), device
-        # TODO(deploy/pi05): load the OpenVINO export (3 cameras batched into one vision call, PLAYBOOK 4.3/4.5),
-        # tokenizer + state/action normalisation stats; honour the same image size / camera order as training.
-        raise NotImplementedError("OpenVINO pi0.5 back-end: wire deploy/pi05 here (see TODO in dlsj/loop/hardware.py)")
-
-    def reset(self) -> None:  # pragma: no cover
-        pass
-
-    def predict_chunk(self, obs: Observation, instruction: str) -> np.ndarray:  # pragma: no cover
-        # TODO(deploy/pi05): preprocess obs.images (RGB uint8, keys wrist/top/inspect) + obs.state, run the
-        # compiled model, unnormalise, return (n, 6) float32 joint targets in Observation.state units.
-        raise NotImplementedError
+        return OpenVINOPi05Policy
+    raise AttributeError(name)
 
 
 class LeRobotServerPolicy:
