@@ -53,3 +53,6 @@ sim/twin/run.sh sim/twin/visuals/render_compare.py [--calibrate] [--episodes ...
   way. Call `sync(); sim.render(); scene.update(0)` for every rendered frame.
 * `lighting.json` (`render_compare.py --calibrate`): dome + key light scale so the textured table renders like the real top-camera median
   (linear tonemap); `backdrop_gain` for the inspect backdrop.
+
+## Twin calibration profile
+`calib/profile.py`: `twin_profile()` = joe_cal2 joints / gripper / wrist mount + the measured cameras (top: confirmed joe_cal2 pose; inspect: ChArUco pose; wrist: measured focal 342 px), and `randomize(_, rng)` for camera domain randomisation (top 1 cm / 1 deg, inspect 5 cm / 5 deg because its swivel tripod moves, wrist 5 mm / 3 deg; focal 1-3 %).
