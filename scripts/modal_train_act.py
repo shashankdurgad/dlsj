@@ -12,7 +12,8 @@ the proven, simple baseline, and dlsj.deploy.act_export exports it to OpenVINO.
 
        MODAL_PROFILE=desmond-zee modal run --detach scripts/modal_train_act.py --run act_v1 --gpus 8 --steps 13000
 
-   8x L40S runs ~4 steps/s at 16 per GPU (global batch 128), so 13k steps is about an hour.
+   L40S nodes run ~4 steps/s at 16 per GPU (global batch 16 x GPUs), so 13k steps is about an hour.
+   8x L40S nodes can take a long time to schedule; 4x has been immediate.
 
    It uses DDP via torchrun on L40S:<gpus>. The batch size is per GPU.
 
@@ -69,7 +70,7 @@ def train(dataset: str = "duplo_teleop_rgb", run: str = "act_v1", steps: int = 3
           gpus: int = 4, save_freq: int = 5_000, wandb_project: str = "dlsj-act") -> str:
     import wandb
 
-    workers = max(2, 56 // gpus)
+    workers = 6  # per GPU process; the container gets 8 CPUs per GPU
     cmd = [
         "torchrun", "--standalone", f"--nproc_per_node={gpus}", "-m", "lerobot.scripts.lerobot_train",
         f"--dataset.repo_id=local/{dataset}", f"--dataset.root=/data/{dataset}", "--dataset.video_backend=pyav",
@@ -120,5 +121,5 @@ def train(dataset: str = "duplo_teleop_rgb", run: str = "act_v1", steps: int = 3
 @app.local_entrypoint()
 def main(dataset: str = "duplo_teleop_rgb", run: str = "act_v1", steps: int = 30_000, batch_size: int = 16,
          gpus: int = 4, save_freq: int = 5_000):
-    fn = train.with_options(gpu=f"L40S:{gpus}")
+    fn = train.with_options(gpu=f"L40S:{gpus}", cpu=8 * gpus, memory=32768 * gpus)
     print(fn.remote(dataset=dataset, run=run, steps=steps, batch_size=batch_size, gpus=gpus, save_freq=save_freq))
