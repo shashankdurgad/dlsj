@@ -65,6 +65,11 @@ class FakeBase:
         if self.phase == "homing":
             self.phase = "idle"
 
+    def _step(self, target):
+        self.cmd = np.asarray(target, float).copy()
+        self.measured = self.cmd.copy()
+        return self.measured
+
     def snapshot(self):
         return {"phase": self.phase}
 
@@ -156,8 +161,16 @@ def test_full_cycle_then_done(build):
     run(c, clock, 1.5, grip=30.0, cmd_grip=30.0)
     run(c, clock, 1.0, grip=30.0, cmd_grip=30.0)
     assert c.L["tallies"] == {"purple": 1} and c.L["cycles"][-1]["result"] == "sorted"
+    # no trip home: it holds above the plate and looks from there
+    assert c.L["step"] == "survey" and c.L["survey_from"] == "plate" and c.phase == "holding"
+    run(c, clock, 1.1)
+    see_bricks(c, clock, 0)
+    clock.now += 3.0
+    run(c, clock, 0.1)
+    # nothing seen from up there: back home (the fake arm arrives at once), and only the view from home may end it
+    assert c.L["step"] in ("home", "survey") and c.L["survey_from"] == "home" and c.L["mode"] == "running"
     run(c, clock, 0.2)
-    assert c.L["step"] == "survey"
+    assert c.L["step"] == "survey" and c.L["survey_from"] == "home"
     run(c, clock, 1.1)
     see_bricks(c, clock, 0)
     clock.now += 3.0
@@ -224,3 +237,60 @@ def test_snapshot_has_loop_and_perception(build):
     c, clock, _ = build()
     snap = c.snapshot()
     assert {"mode", "step", "grasp", "cycles"} <= set(snap["loop"]) and "table" in snap["perception"]
+
+
+def _to_survey_from_plate(c, clock, insp):
+    c.loop_command("start")
+    run(c, clock, 1.2)
+    see_bricks(c, clock, 2)
+    clock.now += 3.0
+    run(c, clock, 0.1)
+    run(c, clock, 1.0, grip=5.6, cmd_grip=0.0)
+    with c.lock:
+        c.perc["inspect_seen"] = {"t": clock.now + 10, "conf": 0.7, "close": True}
+    run(c, clock, 3.0, grip=5.6, cmd_grip=0.0, pose=np.ones(5))
+    assert insp.done.wait(2.0)
+    for _ in range(100):
+        if c.phase != "inspecting":
+            break
+        threading.Event().wait(0.01)
+    run(c, clock, 0.1, grip=5.6, cmd_grip=0.0)
+    run(c, clock, 2.5, grip=30.0, cmd_grip=30.0)
+    assert c.L["step"] == "survey" and c.L["survey_from"] == "plate"
+
+
+def test_next_pick_straight_from_the_plate(build):
+    c, clock, insp = build()
+    _to_survey_from_plate(c, clock, insp)
+    homes = []
+    orig = c._handle
+    c._handle = lambda k: (homes.append(k), orig(k))[1]
+    run(c, clock, 1.1)
+    see_bricks(c, clock, 1, "yellow")
+    clock.now += 3.0
+    run(c, clock, 0.1)
+    assert c.L["step"] == "pick" and c.stage == "pick" and c.phase == "running" and c.brick == "yellow"
+    assert "home" not in homes and "start" not in homes and c.bowl is None and c.L["cycle"] == 2
+
+
+def test_approach_when_the_vla_stops_short(build):
+    c, clock, insp = build()
+    c.loop_command("start")
+    run(c, clock, 1.2)
+    see_bricks(c, clock, 1)
+    clock.now += 3.0
+    run(c, clock, 0.1)
+    run(c, clock, 1.0, grip=5.6, cmd_grip=0.0)
+    assert c.L["step"] == "bring"
+    with c.lock:  # held brick seen, but far / off-centre
+        c.perc["inspect_seen"] = {"t": clock.now + 30, "conf": 0.7, "close": False}
+    run(c, clock, 7.0, grip=5.6, cmd_grip=0.0, pose=np.ones(5))
+    assert c.L["step"] == "approach" and c.phase == "approach"
+    for _ in range(int(20 * 30)):  # the fake arm follows the command exactly
+        clock.now += 1 / 30
+        c.measured[5] = 5.6
+        c.tick()
+        if c.L["step"] != "approach":
+            break
+    assert np.allclose(c.cmd[:5], LC.LCFG.inspect_pose, atol=3.0)
+    assert insp.done.wait(2.0) and c.L["cycles"][-1].get("approach")

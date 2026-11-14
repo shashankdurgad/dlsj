@@ -84,7 +84,7 @@ th{color:var(--mute);font-weight:500;text-align:left;padding:4px 6px;border-bott
 </main>
 <script>
 const $=id=>document.getElementById(id),COL={yellow:'#f2c230',orange:'#f08a24',purple:'#9b7fe0',blue:'#3d8bff',red:'#e5484d',white:'#f4f4f4',brown:'#8b5a2b'};
-const STEPS=[['survey','Survey','bricks left?'],['pick','Pick','VLA'],['bring','Bring','grasp confirmed'],['inspect','Spin + YOLO','NPU'],['place','Place','VLA'],['home','Home','repeat']];
+const STEPS=[['survey','Survey','bricks left?'],['pick','Pick','VLA'],['bring','Bring','grasp confirmed'],['approach','Approach','if VLA stops short'],['inspect','Spin + YOLO','NPU'],['place','Place','VLA'],['home','Home','only to re-check']];
 const LBL={none:'plain',circle:'circle',cross:'cross',unknown:'uncertain'};
 function L(c){fetch('/loop/'+c,{method:'POST'})}
 addEventListener('keydown',e=>{if(e.repeat||e.target.tagName==='INPUT')return;const k=e.key.toLowerCase();
