@@ -35,3 +35,21 @@ Screen boards for a phone / laptop instead of the printed PDF: `calib/make_scree
 1. measured camera extrinsics (ChArUco) + render-vs-real overlay check on recorded episodes;
 2. appearance: table texture from the top camera, plate / Duplo meshes, phone scan (USDZ) of the surroundings;
 3. a Studio `Gym` wrapper around the env so Studio policies roll out in the twin.
+
+## Visual realism (`visuals/`)
+Makes the twin's camera images look like the recorded cal2 frames (pi0.5 rollouts / RL in the twin). Physics is not changed.
+```
+python sim/twin/visuals/table_texture.py     # top/inspect medians -> textures/table_top.jpg, textures/backdrop_inspect.jpg (plain python, docker image venv)
+python sim/twin/visuals/measure_real.py      # plate diameters, brick / plate / jaw colours from real frames -> out/visuals/real_appearance.json
+python sim/twin/visuals/measure_real.py --ccm   # per-camera colour transforms (top -> wrist / inspect) -> visuals/camera_color.json
+sim/twin/run.sh sim/twin/visuals/render_compare.py [--calibrate] [--episodes ...] [--frame N]   # real | sim | blend -> out/visuals/compare_*.jpg
+```
+* `twin_scene.py`: `twin_scene_cfg` (residual env cfg + lights + inspect camera) and `apply_twin_visuals` (after `InteractiveScene`, before
+  `sim.reset()`); `color_correct(img, "wrist"|"inspect")` for the per-camera colour response.
+* **GB10 render path: the cameras do not see physics motion by themselves.** With the Fabric scene delegate off (KIT_ARGS) the renderer reads
+  USD, and PhysX never writes poses back to USD (also not with `use_fabric=False`), so every camera keeps rendering the spawn pose. Writing the
+  physics prims' xforms invalidates the PhysX tensor views. The twin therefore renders physics-free visual proxies (`RobotVisual`,
+  `TwinVis/*`) that `usd_sync.VisualSync` moves from the physics state before each render; the wrist camera's local xform is corrected the same
+  way. Call `sync(); sim.render(); scene.update(0)` for every rendered frame.
+* `lighting.json` (`render_compare.py --calibrate`): dome + key light scale so the textured table renders like the real top-camera median
+  (linear tonemap); `backdrop_gain` for the inspect backdrop.

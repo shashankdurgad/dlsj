@@ -1,0 +1,25 @@
+{
+ "origin": [
+  2.0628654937384088,
+  -1.1500922310908592,
+  -0.0020000000000000018
+ ],
+ "u_axis": [
+  -0.9580368769572379,
+  0.2866449762162633,
+  0.0
+ ],
+ "v_axis": [
+  0.0,
+  0.0,
+  1.0
+ ],
+ "width": 4.0,
+ "height": 0.45,
+ "edge_row": 250.0,
+ "note": "texture row 0 = top (v = height), col 0 = origin side",
+ "camera": {
+  "profile": "joe_cal2",
+  "cam": "inspect"
+ }
+}

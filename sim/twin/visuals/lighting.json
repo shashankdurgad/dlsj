@@ -1,0 +1,8 @@
+{
+ "exposure_scale": 0.715342794534056,
+ "backdrop_gain": 1.8263030346821265,
+ "dome_intensity": 1000.0,
+ "key_intensity": 350.0,
+ "table_ratio_last": 1.0230961993319267,
+ "note": "linear tonemap; scale so the textured table renders like the real top-camera median (render_compare.py --calibrate)"
+}
