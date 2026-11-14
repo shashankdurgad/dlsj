@@ -49,18 +49,40 @@ def embed(frames: torch.Tensor, proc, model, device: str, batch: int = 128) -> n
 
 
 def episode_frames(meta, ep: int, key: str) -> torch.Tensor:
-    """All frames of episode `ep` for video `key`, one per dataset frame, uint8 [T, C, H, W]."""
-    from torchcodec.decoders import VideoDecoder
+    """All frames of episode `ep` for video `key`, one per dataset frame, uint8 [T, C, H, W].
+
+    Decodes with PyAV (bundles its own FFmpeg; torchcodec needs system FFmpeg libraries). Seeks to the
+    episode start inside the concatenated v3 video file, then takes, for each dataset timestamp, the first
+    decoded frame at or after it (within half a frame).
+    """
+    import av
 
     row = meta.episodes[ep]
     n = int(row["length"])
     t0 = float(row[f"videos/{key}/from_timestamp"])
-    dec = VideoDecoder(str(meta.root / meta.get_video_file_path(ep, key)))
-    ts = (t0 + np.arange(n) / meta.fps).tolist()
-    end = dec.metadata.duration_seconds or ts[-1]
-    ts = [min(t, end - 1e-3) for t in ts]
-    chunks = [dec.get_frames_played_at(seconds=ts[i: i + 256]).data for i in range(0, n, 256)]
-    return torch.cat(chunks)
+    want = t0 + np.arange(n) / meta.fps
+    half = 0.5 / meta.fps
+    out: list[np.ndarray] = []
+    with av.open(str(meta.root / meta.get_video_file_path(ep, key))) as c:
+        s = c.streams.video[0]
+        s.thread_type = "AUTO"
+        c.seek(int(max(0.0, t0 - 1.0) / s.time_base), stream=s, backward=True)
+        last = None
+        for fr in c.decode(s):
+            t = float(fr.pts * s.time_base)
+            if t < want[len(out)] - half:
+                continue
+            img = fr.to_ndarray(format="rgb24")
+            while len(out) < n and t >= want[len(out)] - half:
+                out.append(img)
+            last = img
+            if len(out) >= n:
+                break
+        while len(out) < n and last is not None:  # video ends a frame early: repeat the last frame
+            out.append(last)
+    if len(out) < n:
+        raise RuntimeError(f"episode {ep} {key}: decoded {len(out)} of {n} frames")
+    return torch.from_numpy(np.stack(out)).permute(0, 3, 1, 2)
 
 
 def main() -> None:
