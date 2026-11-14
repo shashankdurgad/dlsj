@@ -100,9 +100,14 @@ class AutoInspector:
             done = [f.result(timeout=5.0) for f in futures]
             return agg.early_stop(done, self.insp.agg) is not None
 
+        import inspect as _inspect
+
+        # older dlsj checkouts (e.g. ~/inference/dlsj-smolvla) have no early stop: full sweep, same decision rule
+        can_stop = (self.early_stop and hasattr(agg, "early_stop")
+                    and "should_stop" in _inspect.signature(Sweeper.run).parameters)
+        kw = {"should_stop": should_stop} if can_stop else {}
         try:
-            sres = Sweeper(robot, self.cameras, cfg, self.abort).run(
-                start_cmd.copy(), on_frame=on_frame, should_stop=should_stop if self.early_stop else None)
+            sres = Sweeper(robot, self.cameras, cfg, self.abort).run(start_cmd.copy(), on_frame=on_frame, **kw)
             recs = [f.result(timeout=10.0) for f in futures]
         finally:
             pool.shutdown(wait=True, cancel_futures=True)
