@@ -98,6 +98,7 @@ def make_loop_controller_class(base):
             self._insp_frames: list[dict] = []
             self._insp_crops: list = []
             self._marks: dict[str, float] = {}
+            self._last_top = None
             self._logf = None
             try:
                 d = Path(LCFG.log_dir).expanduser()
@@ -339,17 +340,31 @@ def make_loop_controller_class(base):
 
         # ------------------------------------------------------------------ perception
         def _perception_loop(self) -> None:
-            period = 1.0 / LCFG.perception_hz
+            # The detector (ultralytics, Python-heavy) holds the GIL long enough to starve the 30 Hz servo reads
+            # (timeouts / checksum / parsing errors on the Feetech bus), so it only runs when its answer is needed:
+            # the top camera while surveying (arm home, nothing moving), the inspection camera while bringing.
             while not self._perc_stop.is_set():
                 t0 = time.monotonic()
+                step = self.L["step"]
                 try:
-                    self._perceive_once()
+                    self._perceive_once(detect_top=step in ("survey", "idle", "done", "paused"),
+                                        detect_inspect=step in ("bring", "idle", "paused"))
                 except Exception:  # noqa: BLE001
                     log.exception("perception failed")
-                time.sleep(max(0.0, period - (time.monotonic() - t0)))
+                hz = LCFG.perception_hz if step in ("survey", "bring") else 1.5
+                time.sleep(max(0.05, 1.0 / hz - (time.monotonic() - t0)))
 
-        def _perceive_once(self) -> None:
+        def _perceive_once(self, detect_top: bool = True, detect_inspect: bool = True) -> None:
             top = getattr(self.real_cameras.get("top"), "frame", None)
+            if top is not None and not detect_top:  # arm moving: last overlay on the live image, no detector
+                top = top.copy()
+                last = self._last_top
+                if last is not None:
+                    table, srt, plates, target = last
+                    self.perc_streams["perc_top"].publish(P.annotate_top(
+                        top, table, srt, plates, target, LCFG.workspace,
+                        f"{self.L['step'].upper()}   (detector paused while the arm moves)"))
+                top = None
             if top is not None:
                 top = top.copy()
                 for p in P.find_plates(top):
@@ -358,6 +373,7 @@ def make_loop_controller_class(base):
                 dets = self.detector.detect(top) if self.detector is not None else []
                 table, srt = P.split_bricks(dets, plates, top, LCFG.workspace)
                 target = P.choose_target(table)
+                self._last_top = (table, srt, plates, target)
                 now = time.monotonic()
                 with self.lock:
                     arm_busy = self.L["step"] not in ("survey", "idle", "done", "paused")
@@ -370,7 +386,7 @@ def make_loop_controller_class(base):
                 banner = f"{step.upper()}   bricks on table: {len(table)}   sorted: {len(srt)}"
                 self.perc_streams["perc_top"].publish(P.annotate_top(top, table, srt, plates, target, LCFG.workspace,
                                                                      banner))
-            if self.phase != "inspecting":
+            if self.phase != "inspecting" and detect_inspect:
                 insp = getattr(self.real_cameras.get("inspect"), "frame", None)
                 if insp is not None:
                     self._perceive_inspect(insp.copy())
