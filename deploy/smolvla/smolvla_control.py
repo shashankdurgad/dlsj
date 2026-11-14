@@ -45,6 +45,34 @@ BRING = "bring the brick to the inspection camera"
 PLACE = "place the brick in the {colour} bowl"
 BRICK = ""
 TRAINING_TASKS: set[str] | None = None  # set by --training-tasks: prompts outside it are refused
+HOME_SPEED = 30.0  # deg/s for the Home button
+
+
+def add_home_button(pc) -> None:
+    """Home button + H key on the console page, and 'home' accepted by its HTTP handler."""
+    btn = """<button class="k" onclick="cmd('mark')">Mark inspection <kbd>M</kbd></button>"""
+    key = "else if(k==='m')cmd('mark');"
+    page = getattr(pc, "PAGE", "")
+    if btn in page and key in page:
+        pc.PAGE = page.replace(btn, btn + """<button class="k" onclick="cmd('home')">Home <kbd>H</kbd></button>""") \
+                      .replace(key, key + "else if(k==='h')cmd('home');")
+    else:
+        log.warning("console page layout not recognised: no Home button (POST /ctl/home still works)")
+    make_handler = pc.make_handler
+
+    def handler_with_home(streams, ctl):
+        base = make_handler(streams, ctl)
+
+        class Handler(base):
+            def do_POST(self):
+                if self.path in ("/ctl/home", "/ctl/h"):
+                    ctl.command("home")
+                    return self._send(200, b"{}", "application/json")
+                return super().do_POST()
+
+        return Handler
+
+    pc.make_handler = handler_with_home
 
 
 def fill(template: str, brick: str = "", colour: str = "") -> str:
@@ -125,7 +153,18 @@ def make_controller_class(base):
                 super().set_prompts(pick, place)
 
         def _handle(self, c: str) -> None:
-            # The console only sends space / m / 1-3 / +- / q, so M advances the stage:
+            if c in ("home", "h"):  # Home button / H: stop the policy and ease back to the saved home pose
+                home = self.arm.arms.load_home(self.arm.id) if hasattr(self.arm, "arms") else None
+                if not home:
+                    self.message = "No saved home pose for this follower"
+                    return
+                self._home = np.array([float(home[j]) for j in self.arm.joints], dtype=float)
+                self._replan_now()
+                self.stage = "pick"
+                self.cmd = np.asarray(self.arm.read(), dtype=float)
+                self.phase, self.message = "homing", "Going home"
+                return
+            # The console only sends space / m / 1-3 / +- / q / home, so M advances the stage:
             # pick --M--> bring (brick grasped) --M--> place (needs a bowl chosen with 1/2/3).
             if c in ("g", "grasp", "bring", "mark", "m") and self.phase == "running" and self.stage == "pick" and BRING:
                 self.stage = "bring"
@@ -140,6 +179,17 @@ def make_controller_class(base):
                 self._replan_now()
                 return
             super()._handle(c)
+
+        def tick(self) -> None:
+            super().tick()  # handles the keys (Q stops homing too) and the readying/running phases
+            with self.lock:
+                if self.phase == "homing":
+                    base = self.cmd if self.cmd is not None else np.asarray(self.arm.read(), dtype=float)
+                    step = HOME_SPEED / max(1, self.fps)
+                    measured = self._step(base + np.clip(self._home - base, -step, step))
+                    if np.abs(measured - self._home).max() < 3.0:
+                        self._replan_now()
+                        self.phase, self.message = "idle", "Home. Press Space to start"
 
         def _obs(self):
             state, imgs = super()._obs()
@@ -249,6 +299,7 @@ def main() -> None:
 
     pc.make_policy = make_policy
     pc.Controller = controller
+    add_home_button(pc)
     sys.argv = [sys.argv[0], *rest]
     logging.basicConfig(level=logging.INFO)
     log.info("prompts: %r / %r / %r", PICK, BRING, PLACE)
