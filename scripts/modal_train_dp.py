@@ -74,12 +74,20 @@ def train(dataset: str = "duplo_pickset_300", run: str = "dp_pick_v1", steps: in
           gpus: int = 8, workers: int = 7, save_freq: int = 2_000, wandb_project: str = "dlsj-dp",
           crop: str = "324,432", wandb_entity: str = "james-j-carver-university-of-cambridge") -> str:
     import os
+    import shutil
 
     import wandb
 
+    # Train from the container's local disk: random video seeks over the Modal Volume (a network filesystem) cost
+    # ~235 ms per sample vs ~6 ms locally, which starved the GPUs.
+    t_copy = time.time()
+    local_root = f"/tmp/{dataset}"
+    shutil.copytree(f"/data/{dataset}", local_root, dirs_exist_ok=True)
+    print(f"copied dataset to local disk in {time.time() - t_copy:.0f}s", flush=True)
+
     cmd = [
         "torchrun", "--standalone", f"--nproc_per_node={gpus}", "-m", "lerobot.scripts.lerobot_train",
-        f"--dataset.repo_id=local/{dataset}", f"--dataset.root=/data/{dataset}", "--dataset.video_backend=pyav",
+        f"--dataset.repo_id=local/{dataset}", f"--dataset.root={local_root}", "--dataset.video_backend=pyav",
         *[a for a in DP_ARGS if not a.startswith("--policy.crop_shape=")], f"--policy.crop_shape=[{crop}]",
         "--policy.device=cuda", "--policy.push_to_hub=false",
         f"--output_dir=/runs/{run}", f"--job_name={run}", f"--batch_size={batch_size}", f"--steps={steps}",
