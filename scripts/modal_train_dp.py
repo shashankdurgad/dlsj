@@ -87,7 +87,7 @@ def train(dataset: str = "duplo_pickset_300", run: str = "dp_pick_v1", steps: in
 
     cmd = [
         "torchrun", "--standalone", f"--nproc_per_node={gpus}", "-m", "lerobot.scripts.lerobot_train",
-        f"--dataset.repo_id=local/{dataset}", f"--dataset.root={local_root}", "--dataset.video_backend=pyav",
+        f"--dataset.repo_id=local/{dataset}", f"--dataset.root={local_root}", "--dataset.video_backend=torchcodec",  # 3.6x faster than pyav here, 1 ffmpeg thread per decoder
         *[a for a in DP_ARGS if not a.startswith("--policy.crop_shape=")], f"--policy.crop_shape=[{crop}]",
         "--policy.device=cuda", "--policy.push_to_hub=false",
         f"--output_dir=/runs/{run}", f"--job_name={run}", f"--batch_size={batch_size}", f"--steps={steps}",
@@ -135,6 +135,34 @@ def train(dataset: str = "duplo_pickset_300", run: str = "dp_pick_v1", steps: in
     if code != 0:
         raise RuntimeError(f"lerobot-train exited with {code}")
     return f"{run}: {steps} steps on {gpus}x H100 in {(time.time() - t0) / 60:.1f} min -> dlsj-act-runs:/{run}"
+
+
+@app.function(image=image, cpu=8, timeout=600, volumes={"/data": data})
+def check_decode(dataset: str = "duplo_pickset_300_288") -> str:
+    """Time LeRobot sample loading with each video backend inside the training image."""
+    import time as _t
+
+    import numpy as np
+    from lerobot.datasets import LeRobotDataset
+
+    fps = 30
+    dt = {k: [-1 / fps, 0.0] for k in ("observation.state", "observation.images.wrist", "observation.images.top",
+                                         "observation.images.inspect")}
+    dt["action"] = [i / fps for i in range(-1, 15)]
+    out = []
+    for backend in ("pyav", "torchcodec"):
+        try:
+            ds = LeRobotDataset(f"local/{dataset}", root=f"/data/{dataset}", delta_timestamps=dt, video_backend=backend)
+            idx = np.random.default_rng(0).integers(0, ds.num_frames, 40)
+            ds[int(idx[0])]
+            t = _t.perf_counter()
+            for i in idx[1:]:
+                ds[int(i)]
+            out.append(f"{backend}: {(_t.perf_counter() - t) / (len(idx) - 1) * 1000:.1f} ms/sample")
+        except Exception as e:  # noqa: BLE001
+            out.append(f"{backend}: FAILED {str(e).splitlines()[0][:160]}")
+    print("DECODE BENCH:", " | ".join(out), flush=True)
+    return " | ".join(out)
 
 
 @app.function(image=image, cpu=2, timeout=600)
