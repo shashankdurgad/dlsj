@@ -1,5 +1,6 @@
 """Pick the frames used to fit/validate the cameras: 65 episodes spread over the dataset; 6 frames across each
 episode (top / wrist) and the operator's inspection mark +-8 frames (inspect camera)."""
+
 import json
 import sys
 from pathlib import Path

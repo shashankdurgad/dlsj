@@ -8,6 +8,7 @@
     python calibrate.py <capture dir> --phone-square-mm 15 [--laptop-square-mm 30]
 Writes <capture dir>/cameras_measured.json (same camera format as calib/cameras_fit.json).
 """
+
 import argparse
 import json
 import sys
@@ -32,7 +33,8 @@ log = json.loads((cap / "detections.json").read_text())
 boards = {"phone": board("phone", args.phone_square_mm / 1000)}
 if args.laptop_square_mm:
     boards["laptop"] = board("laptop", args.laptop_square_mm / 1000)
-img = lambda cam, f: cv2.cvtColor(cv2.imread(str(cap / cam / f)), cv2.COLOR_BGR2RGB)
+def img(cam, f):
+    return cv2.cvtColor(cv2.imread(str(cap / cam / f)), cv2.COLOR_BGR2RGB)
 res = {}
 
 # 1. wrist intrinsics
@@ -43,19 +45,33 @@ obj, imgp = [], []
 for r in views:
     d = detect(img("wrist", r["file"]), boards[wb], 8)
     if d:
-        obj.append(d[0].astype(np.float32)); imgp.append(d[1].astype(np.float32))
+        obj.append(d[0].astype(np.float32))
+        imgp.append(d[1].astype(np.float32))
 if len(obj) >= 10:
     rms, K, dist, _, _ = cv2.calibrateCamera(obj, imgp, (640, 480), None, None)
-    res["wrist"] = {"fx": K[0, 0], "fy": K[1, 1], "cx": K[0, 2], "cy": K[1, 2], "dist": dist.ravel().tolist(),
-                    "rms_px": rms, "views": len(obj), "hfov_deg": float(np.degrees(2 * np.arctan(320 / K[0, 0])))}
-    print(f"wrist ({wb} board): {len(obj)} views, RMS {rms:.2f} px, fx {K[0, 0]:.1f} fy {K[1, 1]:.1f} c ({K[0, 2]:.1f}, {K[1, 2]:.1f}), "
-          f"dist {np.round(dist.ravel(), 3).tolist()}", flush=True)
+    res["wrist"] = {
+        "fx": K[0, 0],
+        "fy": K[1, 1],
+        "cx": K[0, 2],
+        "cy": K[1, 2],
+        "dist": dist.ravel().tolist(),
+        "rms_px": rms,
+        "views": len(obj),
+        "hfov_deg": float(np.degrees(2 * np.arctan(320 / K[0, 0]))),
+    }
+    print(
+        f"wrist ({wb} board): {len(obj)} views, RMS {rms:.2f} px, fx {K[0, 0]:.1f} fy {K[1, 1]:.1f} "
+        f"c ({K[0, 2]:.1f}, {K[1, 2]:.1f}), "
+        f"dist {np.round(dist.ravel(), 3).tolist()}",
+        flush=True,
+    )
 else:
     print(f"wrist: only {len(obj)} usable views (need >= 10)", flush=True)
 
 # 2. inspect pose via the top camera, 3. top table check
 intr = json.loads(args.intrinsics.read_text())
-Kof = lambda c: np.array([[intr[c]["fx"], 0, intr[c]["cx"]], [0, intr[c]["fy"], intr[c]["cy"]], [0, 0, 1]])
+def Kof(c):  # noqa: N802  (camera matrix K)
+    return np.array([[intr[c]["fx"], 0, intr[c]["cx"]], [0, intr[c]["fy"], intr[c]["cy"]], [0, 0, 1]])
 ref = json.loads(args.top_pose.read_text())["camera"]
 R_top, c_top = np.array(ref["world_to_cv"]), np.array(ref["position"])  # x_cv = R (X - c)
 
@@ -72,30 +88,56 @@ def pose(cam, f, b):
 
 
 pairs = []
-for rt, ri in zip(log.get("top", []), log.get("inspect", [])):
+for rt, ri in zip(log.get("top", []), log.get("inspect", []), strict=False):
     for b in boards:
         if rt[b] >= 6 and ri[b] >= 6 and rt["file"] == ri["file"]:
             pt, pi = pose("top", rt["file"], b), pose("inspect", ri["file"], b)
             if pt and pi:
                 # board -> world via top: X_w = R_top^T (R_tb X_b + t_tb) + c_top
-                R_wb = R_top.T @ pt[0]; t_wb = R_top.T @ pt[1] + c_top
-                # inspect: x_cv = R_ib X_b + t_ib = R_ib R_wb^T (X_w - t_wb) + t_ib -> R = R_ib R_wb^T, c = t_wb - R^T t_ib
-                R_i = pi[0] @ R_wb.T; c_i = t_wb - R_i.T @ pi[1]
-                pairs.append({"file": rt["file"], "board": b, "board_z": float(t_wb[2]),
-                              "board_normal_z": float(R_wb[:, 2][2]), "R": R_i, "c": c_i, "err_top": pt[2], "err_inspect": pi[2]})
+                R_wb = R_top.T @ pt[0]
+                t_wb = R_top.T @ pt[1] + c_top
+                # inspect: x_cv = R_ib X_b + t_ib = R_ib R_wb^T (X_w - t_wb) + t_ib
+                #   -> R = R_ib R_wb^T, c = t_wb - R^T t_ib
+                R_i = pi[0] @ R_wb.T
+                c_i = t_wb - R_i.T @ pi[1]
+                pairs.append(
+                    {
+                        "file": rt["file"],
+                        "board": b,
+                        "board_z": float(t_wb[2]),
+                        "board_normal_z": float(R_wb[:, 2][2]),
+                        "R": R_i,
+                        "c": c_i,
+                        "err_top": pt[2],
+                        "err_inspect": pi[2],
+                    }
+                )
 if pairs:
     C = np.array([p["c"] for p in pairs])
     from scipy.spatial.transform import Rotation
+
     Rm = Rotation.from_matrix(np.array([p["R"] for p in pairs])).mean().as_matrix()
-    res["inspect"] = {"world_to_cv": Rm.tolist(), "position": np.median(C, 0).tolist(),
-                      "position_spread_mm": (np.std(C, 0) * 1000).tolist(), "n_pairs": len(pairs),
-                      **{k: intr["inspect"][k] for k in ("fx", "fy", "cx", "cy")}}
-    res["top_check"] = {"board_z_mm_median": float(np.median([p["board_z"] for p in pairs]) * 1000),
-                        "board_normal_z_median": float(np.median([abs(p["board_normal_z"]) for p in pairs]))}
-    print(f"inspect: {len(pairs)} top+inspect pairs, position {np.round(np.median(C, 0), 3).tolist()} m, "
-          f"spread {np.round(np.std(C, 0) * 1000, 1).tolist()} mm", flush=True)
-    print(f"top check: board z {res['top_check']['board_z_mm_median']:.1f} mm (table = 0, minus screen thickness), "
-          f"|normal z| {res['top_check']['board_normal_z_median']:.3f} (1 = flat)", flush=True)
+    res["inspect"] = {
+        "world_to_cv": Rm.tolist(),
+        "position": np.median(C, 0).tolist(),
+        "position_spread_mm": (np.std(C, 0) * 1000).tolist(),
+        "n_pairs": len(pairs),
+        **{k: intr["inspect"][k] for k in ("fx", "fy", "cx", "cy")},
+    }
+    res["top_check"] = {
+        "board_z_mm_median": float(np.median([p["board_z"] for p in pairs]) * 1000),
+        "board_normal_z_median": float(np.median([abs(p["board_normal_z"]) for p in pairs])),
+    }
+    print(
+        f"inspect: {len(pairs)} top+inspect pairs, position {np.round(np.median(C, 0), 3).tolist()} m, "
+        f"spread {np.round(np.std(C, 0) * 1000, 1).tolist()} mm",
+        flush=True,
+    )
+    print(
+        f"top check: board z {res['top_check']['board_z_mm_median']:.1f} mm (table = 0, minus screen thickness), "
+        f"|normal z| {res['top_check']['board_normal_z_median']:.3f} (1 = flat)",
+        flush=True,
+    )
 else:
     print("inspect: no frames where top and inspect both see the board", flush=True)
 (cap / "cameras_measured.json").write_text(json.dumps(res, indent=1, default=float))

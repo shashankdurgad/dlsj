@@ -12,6 +12,7 @@ points (top cx 304, wrist cx 339) are not modelled yet.
     prof = twin_profile()                         # nominal
     prof = randomize(twin_profile(), rng)         # one DR draw
 """
+
 from __future__ import annotations
 
 import dataclasses
@@ -36,27 +37,43 @@ def _cams() -> dict:
     ref = json.loads((REPO / "sim/residual_env/assets/joe_cal2/reference-cal2.json").read_text())
     intr = json.loads((HERE / "realsense_intrinsics.json").read_text())
     mea = json.loads((HERE / "cameras_measured.json").read_text())
-    return {"top": (np.array(ref["camera"]["world_to_cv"]), np.array(ref["camera"]["position"]),
-                    (intr["top"]["fx"] + intr["top"]["fy"]) / 2),
-            "inspect": (np.array(mea["inspect"]["world_to_cv"]), np.array(mea["inspect"]["position"]),
-                        (mea["inspect"]["fx"] + mea["inspect"]["fy"]) / 2),
-            "wrist": (np.array(ref["wrist_camera"]["local_to_cv"]), np.array(ref["wrist_camera"]["position_local"]),
-                      (mea["wrist"]["fx"] + mea["wrist"]["fy"]) / 2)}
+    return {
+        "top": (
+            np.array(ref["camera"]["world_to_cv"]),
+            np.array(ref["camera"]["position"]),
+            (intr["top"]["fx"] + intr["top"]["fy"]) / 2,
+        ),
+        "inspect": (
+            np.array(mea["inspect"]["world_to_cv"]),
+            np.array(mea["inspect"]["position"]),
+            (mea["inspect"]["fx"] + mea["inspect"]["fy"]) / 2,
+        ),
+        "wrist": (
+            np.array(ref["wrist_camera"]["local_to_cv"]),
+            np.array(ref["wrist_camera"]["position_local"]),
+            (mea["wrist"]["fx"] + mea["wrist"]["fy"]) / 2,
+        ),
+    }
 
 
 def twin_profile(cams: dict | None = None):
     base = load_profile("joe_cal2")
     c = cams or _cams()
-    return dataclasses.replace(base, name="twin_measured", robot_usd=USD,
-                               **{k: cv_to_usd_rows(*c[k]) for k in ("top", "inspect", "wrist")})
+    return dataclasses.replace(
+        base, name="twin_measured", robot_usd=USD, **{k: cv_to_usd_rows(*c[k]) for k in ("top", "inspect", "wrist")}
+    )
 
 
 def randomize(_prof_unused, rng: np.random.Generator):
-    """A twin profile with every camera perturbed uniformly within DR (position, rotation about a random axis, focal)."""
+    """A twin profile with every camera perturbed uniformly within DR.
+
+    Position, rotation about a random axis and focal are each drawn uniformly within the half-ranges in DR.
+    """
     c = {}
     for k, (R, p, f) in _cams().items():
         dp, dr, df = DR[k]
-        axis = rng.normal(size=3); axis /= np.linalg.norm(axis)
+        axis = rng.normal(size=3)
+        axis /= np.linalg.norm(axis)
         Rd = Rotation.from_rotvec(axis * np.radians(rng.uniform(-dr, dr))).as_matrix()
         c[k] = (R @ Rd.T, p + rng.uniform(-dp, dp, 3), f * (1 + rng.uniform(-df, df)))
     return twin_profile(c)

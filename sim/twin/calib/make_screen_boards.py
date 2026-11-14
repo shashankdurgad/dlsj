@@ -5,14 +5,17 @@ laptop: 7 x 5 squares, DICT_5X5_100 (same layout as the A4 PDF) - lying flat on 
 The square size in metres depends on the screen: measure one square with a ruler and record it per device.
     uv run --no-project --with opencv-contrib-python-headless python sim/twin/calib/make_screen_boards.py
 """
+
 import json
 from pathlib import Path
 
 import cv2
 
 HERE = Path(__file__).resolve().parent
-SPECS = {"phone": {"squares": [4, 6], "marker_ratio": 0.75, "dictionary": "DICT_4X4_50"},
-         "laptop": {"squares": [7, 5], "marker_ratio": 26 / 35, "dictionary": "DICT_5X5_100"}}
+SPECS = {
+    "phone": {"squares": [4, 6], "marker_ratio": 0.75, "dictionary": "DICT_4X4_50"},
+    "laptop": {"squares": [7, 5], "marker_ratio": 26 / 35, "dictionary": "DICT_5X5_100"},
+}
 PX = 120  # pixels per square in the PNG (the page scales it up crisply)
 for name, s in SPECS.items():
     d = cv2.aruco.getPredefinedDictionary(getattr(cv2.aruco, s["dictionary"]))

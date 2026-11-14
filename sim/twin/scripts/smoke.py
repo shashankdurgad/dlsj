@@ -37,26 +37,34 @@ for pkg in ("isaacsim", "isaaclab", "physicalai-train", "torch", "numpy", "gymna
         print(f"{pkg:18s} (not installed)", flush=True)
 from physicalai.gyms import Gym  # noqa: E402,F401  (Studio's gym interface imports next to Isaac Lab)
 
-print("cuda:", torch.cuda.is_available(), torch.cuda.get_device_name(0) if torch.cuda.is_available() else "", flush=True)
+print(
+    "cuda:", torch.cuda.is_available(), torch.cuda.get_device_name(0) if torch.cuda.is_available() else "", flush=True
+)
 
 # 1. SO-101 URDF -> USD (same description as Joe's so101_new_calib USD)
 from isaaclab.sim.converters import UrdfConverter, UrdfConverterCfg  # noqa: E402
 
 drive = UrdfConverterCfg.JointDriveCfg(gains=UrdfConverterCfg.JointDriveCfg.PDGainsCfg(stiffness=60.0, damping=2.0))
-conv = UrdfConverter(UrdfConverterCfg(
-    asset_path=str(TWIN / "assets/so101/urdf/so101_new_calib.urdf"), usd_dir=str(TWIN / "assets/so101/usd"),
-    usd_file_name="so101_new_calib.usda", fix_base=True, merge_fixed_joints=False, joint_drive=drive,
-    force_usd_conversion=args.reconvert))
+conv = UrdfConverter(
+    UrdfConverterCfg(
+        asset_path=str(TWIN / "assets/so101/urdf/so101_new_calib.urdf"),
+        usd_dir=str(TWIN / "assets/so101/usd"),
+        usd_file_name="so101_new_calib.usda",
+        fix_base=True,
+        merge_fixed_joints=False,
+        joint_drive=drive,
+        force_usd_conversion=args.reconvert,
+    )
+)
 usd = conv.usd_path
 print("robot usd:", usd, flush=True)
 
 # 2. the residual env's scene with our robot USD and the joe_cal2 calibration
 import isaaclab.sim as sim_utils  # noqa: E402
-from isaaclab.scene import InteractiveScene  # noqa: E402
-
 import scene as rscene  # noqa: E402
 from app import paint_robot  # noqa: E402
 from calib import load_profile  # noqa: E402
+from isaaclab.scene import InteractiveScene  # noqa: E402
 
 rscene.ROBOT_USD = usd
 profile = load_profile("joe_cal2")
@@ -82,9 +90,15 @@ import omni.usd  # noqa: E402
 
 stage = omni.usd.get_context().get_stage()
 paths = [str(p.GetPath()) for p in stage.Traverse() if str(p.GetPath()).startswith("/World/envs/env_0/Robot")]
-print("robot prims:", len(paths), "| gripper link found:",
-      any(p.endswith(rscene.GRIPPER_LINK.split("Robot/", 1)[1]) for p in paths),
-      "| jaw link found:", any(p.endswith(rscene.JAW_LINK.split("Robot/", 1)[1]) for p in paths), flush=True)
+print(
+    "robot prims:",
+    len(paths),
+    "| gripper link found:",
+    any(p.endswith(rscene.GRIPPER_LINK.split("Robot/", 1)[1]) for p in paths),
+    "| jaw link found:",
+    any(p.endswith(rscene.JAW_LINK.split("Robot/", 1)[1]) for p in paths),
+    flush=True,
+)
 
 import imageio.v3 as iio  # noqa: E402
 

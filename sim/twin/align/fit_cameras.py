@@ -13,6 +13,7 @@ and the fitted pose, by held-out IoU and loss.
     docker run ... python sim/twin/align/fit_cameras.py [--cams top inspect]
 Writes sim/twin/calib/cameras_fit.json and sim/twin/out/align/overlay_<cam>.jpg.
 """
+
 from __future__ import annotations
 
 import argparse
@@ -41,8 +42,14 @@ def load_joe(cam: str) -> dict:
     c = ref["camera" if cam == "top" else "inspect_camera"]
     W, H = c.get("resolution", [640, 480])
     pp = c.get("principal_point", [W / 2, H / 2])
-    return {"R": np.array(c["world_to_cv"], float), "t": np.array(c["position"], float),
-            "fx": c["focal_px"], "fy": c["focal_px"], "cx": pp[0], "cy": pp[1]}
+    return {
+        "R": np.array(c["world_to_cv"], float),
+        "t": np.array(c["position"], float),
+        "fx": c["focal_px"],
+        "fy": c["focal_px"],
+        "cx": pp[0],
+        "cy": pp[1],
+    }
 
 
 def factory(cam: str) -> dict:
@@ -89,7 +96,7 @@ class Problem:
         self.h, self.w = int(480 * SCALE), int(640 * SCALE)
 
     def loss(self, cam, return_iou=False):
-        L, I = [], []
+        losses, ious = [], []
         for f, rm, dt_real in self.items:
             uv, ok = project(self.pts[f], cam)
             sm = sim_mask(uv, ok, self.link, (self.h, self.w))
@@ -106,14 +113,14 @@ class Problem:
                 b = np.minimum(dt_sim[rb], CAP).mean()
             else:
                 b = CAP
-            L.append(a + b)
+            losses.append(a + b)
             if return_iou:
                 inter = ((sm > 0) & (rm > 0) & band).sum()
                 union = ((sm > 0) | ((rm > 0) & band)).sum()
-                I.append(inter / max(union, 1))
+                ious.append(inter / max(union, 1))
         if return_iou:
-            return float(np.mean(L)), float(np.mean(I)), len(L)
-        return float(np.mean(L)) if L else 1e3
+            return float(np.mean(losses)), float(np.mean(ious)), len(losses)
+        return float(np.mean(losses)) if losses else 1e3
 
 
 def with_delta(base, x):
@@ -161,29 +168,57 @@ def main():
         optP = Problem(cam_name, fit_items[:: max(1, len(fit_items) // 80)], pts, link)
         joe = load_joe(cam_name)
         joe_fac = {**joe, **factory(cam_name)}
-        print(f"[{cam_name}] fit frames {len(fit_items)} | held-out frames {len(val_items)} (episodes {len(held)})", flush=True)
+        print(
+            f"[{cam_name}] fit frames {len(fit_items)} | held-out frames {len(val_items)} (episodes {len(held)})",
+            flush=True,
+        )
         x0 = np.zeros(6)
         best = None
         for start in (x0, np.r_[0.02, -0.02, 0.0, 0.01, 0.01, 0.01]):
-            r = minimize(lambda x: optP.loss(with_delta(joe_fac, x)), start, method="Powell",
-                         options={"xtol": 1e-4, "ftol": 1e-4, "maxfev": 1500})
+            r = minimize(
+                lambda x, prob=optP, cam=joe_fac: prob.loss(with_delta(cam, x)),
+                start,
+                method="Powell",
+                options={"xtol": 1e-4, "ftol": 1e-4, "maxfev": 1500},
+            )
             if best is None or r.fun < best.fun:
                 best = r
-            print(f"[{cam_name}]   start {np.round(start, 3).tolist()} -> loss {r.fun:.2f} ({r.nfev} evals)", flush=True)
+            print(
+                f"[{cam_name}]   start {np.round(start, 3).tolist()} -> loss {r.fun:.2f} ({r.nfev} evals)", flush=True
+            )
         fitted = with_delta(joe_fac, best.x)
         rows = {}
-        for label, cam in (("joe_cal2 as-is", joe), ("joe_cal2 pose + factory intrinsics", joe_fac), ("fitted", fitted)):
+        for label, cam in (
+            ("joe_cal2 as-is", joe),
+            ("joe_cal2 pose + factory intrinsics", joe_fac),
+            ("fitted", fitted),
+        ):
             rows[label] = {"fit": fitP.loss(cam, True)[:2], "held_out": valP.loss(cam, True)[:2]}
-            print(f"[{cam_name}] {label:38s} fit loss {rows[label]['fit'][0]:6.2f} IoU {rows[label]['fit'][1]:.3f} | "
-                  f"held-out loss {rows[label]['held_out'][0]:6.2f} IoU {rows[label]['held_out'][1]:.3f}", flush=True)
+            print(
+                f"[{cam_name}] {label:38s} fit loss {rows[label]['fit'][0]:6.2f} IoU {rows[label]['fit'][1]:.3f} | "
+                f"held-out loss {rows[label]['held_out'][0]:6.2f} IoU {rows[label]['held_out'][1]:.3f}",
+                flush=True,
+            )
         dR = Rotation.from_matrix(fitted["R"] @ joe["R"].T).as_euler("xyz", degrees=True)
-        print(f"[{cam_name}] fitted vs joe_cal2: rotation {np.round(dR, 2).tolist()} deg, "
-              f"translation {np.round((fitted['t'] - joe['t']) * 1000, 1).tolist()} mm", flush=True)
-        result[cam_name] = {"world_to_cv": fitted["R"].tolist(), "position": fitted["t"].tolist(),
-                            "fx": fitted["fx"], "fy": fitted["fy"], "cx": fitted["cx"], "cy": fitted["cy"],
-                            "resolution": [640, 480], "frame": "robot base (sim world, env origin)",
-                            "method": "silhouette fit to recorded cal2 episodes, factory intrinsics, start joe_cal2",
-                            "metrics": rows, "n_fit_frames": len(fit_items), "n_held_out_frames": len(val_items)}
+        print(
+            f"[{cam_name}] fitted vs joe_cal2: rotation {np.round(dR, 2).tolist()} deg, "
+            f"translation {np.round((fitted['t'] - joe['t']) * 1000, 1).tolist()} mm",
+            flush=True,
+        )
+        result[cam_name] = {
+            "world_to_cv": fitted["R"].tolist(),
+            "position": fitted["t"].tolist(),
+            "fx": fitted["fx"],
+            "fy": fitted["fy"],
+            "cx": fitted["cx"],
+            "cy": fitted["cy"],
+            "resolution": [640, 480],
+            "frame": "robot base (sim world, env origin)",
+            "method": "silhouette fit to recorded cal2 episodes, factory intrinsics, start joe_cal2",
+            "metrics": rows,
+            "n_fit_frames": len(fit_items),
+            "n_held_out_frames": len(val_items),
+        }
         # overlay: held-out frames, outline of joe_cal2 (red) and fitted (green), real mask tinted blue
         tiles = []
         for f, rm, _ in val_items[:: max(1, len(val_items) // 8)][:8]:
@@ -196,11 +231,19 @@ def main():
                 sm = cv2.resize(sim_mask(uv, ok, link, (fitP.h, fitP.w)), (640, 480), interpolation=cv2.INTER_NEAREST)
                 cs, _ = cv2.findContours(sm, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)
                 cv2.drawContours(img, cs, -1, col, 2)
-            cv2.putText(img, f"ep {samples[f][0]} fr {samples[f][1]}", (8, 22), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
+            cv2.putText(
+                img,
+                f"ep {samples[f][0]} fr {samples[f][1]}",
+                (8, 22),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.6,
+                (255, 255, 255),
+                2,
+            )
             tiles.append(cv2.resize(img, (320, 240)))
         while len(tiles) % 4:
             tiles.append(np.zeros_like(tiles[0]))
-        grid = np.concatenate([np.concatenate(tiles[i:i + 4], 1) for i in range(0, len(tiles), 4)], 0)
+        grid = np.concatenate([np.concatenate(tiles[i : i + 4], 1) for i in range(0, len(tiles), 4)], 0)
         (TWIN / "out/align").mkdir(parents=True, exist_ok=True)
         cv2.imwrite(str(TWIN / f"out/align/overlay_{cam_name}.jpg"), cv2.cvtColor(grid, cv2.COLOR_RGB2BGR))
     out_json.write_text(json.dumps(result, indent=1))

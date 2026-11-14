@@ -1,4 +1,5 @@
 """Dump real top / inspect / wrist frames at start, grasp mark and inspect mark for a few episodes."""
+
 import sys
 from pathlib import Path
 
@@ -6,7 +7,7 @@ import cv2
 import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from frames import DEFAULT_ROOT, labels, states, video_frames  # noqa: E402
+from frames import labels, states, video_frames  # noqa: E402
 
 OUT = Path(__file__).resolve().parents[1] / "out/align"
 OUT.mkdir(parents=True, exist_ok=True)
@@ -15,7 +16,11 @@ print("label keys:", sorted(next(iter(L.values())).keys()))
 rows = []
 for ep in (440, 445, 450):
     lab, st = L[ep], states(ep)
-    marks = [0, lab.get("grasp_frame") or len(st) // 3, lab.get("mark_frame") or lab.get("inspect_frame") or len(st) // 2]
+    marks = [
+        0,
+        lab.get("grasp_frame") or len(st) // 3,
+        lab.get("mark_frame") or lab.get("inspect_frame") or len(st) // 2,
+    ]
     marks = [int(min(m, len(st) - 1)) for m in marks]
     print(ep, "frames", len(st), "marks", marks, "state@marks", np.round(st[marks], 1).tolist())
     row = []

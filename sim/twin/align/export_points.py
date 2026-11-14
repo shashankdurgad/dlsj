@@ -7,6 +7,7 @@ world pose is read back and the link's mesh points (sampled once in the link fra
     sim/twin/run.sh sim/twin/align/export_points.py --samples sim/twin/out/align/samples.json
 Writes sim/twin/out/align/points.npz: pts (F, P, 3) float32, link (P,) int, link_names, samples, q (F, 6).
 """
+
 import argparse
 import json
 import sys
@@ -27,12 +28,12 @@ from isaaclab.app import AppLauncher  # noqa: E402
 
 simapp = AppLauncher(headless=True, enable_cameras=False, kit_args=KIT_ARGS).app
 
-import numpy as np  # noqa: E402
-import torch  # noqa: E402
 import isaaclab.sim as sim_utils  # noqa: E402
+import numpy as np  # noqa: E402
 import omni.usd  # noqa: E402
-from isaaclab.assets import Articulation, ArticulationCfg  # noqa: E402
+import torch  # noqa: E402
 from isaaclab.actuators import ImplicitActuatorCfg  # noqa: E402
+from isaaclab.assets import Articulation, ArticulationCfg  # noqa: E402
 from pxr import Usd, UsdGeom, UsdPhysics  # noqa: E402
 
 sys.path.insert(0, str(REPO / "sim/twin/align"))
@@ -44,9 +45,13 @@ prof = load_profile(args.profile)
 off = np.array(prof.joint_offsets[:5])
 
 sim = sim_utils.SimulationContext(sim_utils.SimulationCfg(dt=1 / 120, device="cuda:0", gravity=(0.0, 0.0, 0.0)))
-robot = Articulation(ArticulationCfg(
-    prim_path="/World/Robot", spawn=sim_utils.UsdFileCfg(usd_path=USD),
-    actuators={"all": ImplicitActuatorCfg(joint_names_expr=[".*"], stiffness=1e4, damping=1e2)}))
+robot = Articulation(
+    ArticulationCfg(
+        prim_path="/World/Robot",
+        spawn=sim_utils.UsdFileCfg(usd_path=USD),
+        actuators={"all": ImplicitActuatorCfg(joint_names_expr=[".*"], stiffness=1e4, damping=1e2)},
+    )
+)
 sim.reset()
 names = robot.data.body_names
 print("joints:", robot.data.joint_names, "| bodies:", names, flush=True)
@@ -109,11 +114,14 @@ for ep, fr in samples:
     robot.write_data_to_sim()
     sim.step(render=False)
     robot.update(sim.get_physics_dt())
-    pose = robot.data.body_link_pose_w[0].cpu().numpy() if hasattr(robot.data, "body_link_pose_w") \
+    pose = (
+        robot.data.body_link_pose_w[0].cpu().numpy()
+        if hasattr(robot.data, "body_link_pose_w")
         else robot.data.body_state_w[0, :, :7].cpu().numpy()
+    )
     root = pose[0]  # base: pose 0 = base_link; express everything in the robot-base frame
     W = []
-    for i, b in enumerate(body_ids):
+    for b in body_ids:
         p, qw = pose[b, :3], pose[b, 3:7]  # Isaac Lab quaternion convention checked below
         W.append((p, qw))
     Q.append(q6)
@@ -123,13 +131,19 @@ for ep, fr in samples:
 
 
 def R_of(qv, xyzw):
-    x, y, z, w = (qv if xyzw else np.r_[qv[1:], qv[0]])
-    return np.array([[1 - 2 * (y * y + z * z), 2 * (x * y - z * w), 2 * (x * z + y * w)],
-                     [2 * (x * y + z * w), 1 - 2 * (x * x + z * z), 2 * (y * z - x * w)],
-                     [2 * (x * z - y * w), 2 * (y * z + x * w), 1 - 2 * (x * x + y * y)]])
+    x, y, z, w = qv if xyzw else np.r_[qv[1:], qv[0]]
+    return np.array(
+        [
+            [1 - 2 * (y * y + z * z), 2 * (x * y - z * w), 2 * (x * z + y * w)],
+            [2 * (x * y + z * w), 1 - 2 * (x * x + z * z), 2 * (y * z - x * w)],
+            [2 * (x * z - y * w), 2 * (y * z + x * w), 1 - 2 * (x * x + y * y)],
+        ]
+    )
 
 
-rest_B = np.array(xc.GetLocalToWorldTransform(stage.GetPrimAtPath([k for k, v in body_paths.items() if v == link_names[0]][0]))).T
+rest_B = np.array(
+    xc.GetLocalToWorldTransform(stage.GetPrimAtPath([k for k, v in body_paths.items() if v == link_names[0]][0]))
+).T
 q0 = out[0][0][1]
 xyzw = np.abs(R_of(q0, True) - rest_B[:3, :3]).max() < np.abs(R_of(q0, False) - rest_B[:3, :3]).max()
 print("quaternion convention:", "xyzw" if xyzw else "wxyz", flush=True)
@@ -139,7 +153,14 @@ for f, W in enumerate(out):
         m = idx == i
         F[f, m] = L[m] @ R_of(qv, xyzw).T + p
 Path(args.out).parent.mkdir(parents=True, exist_ok=True)
-np.savez_compressed(args.out, pts=F, link=idx, link_names=np.array(link_names), samples=np.array(samples),
-                    q=np.array(Q), profile=args.profile)
+np.savez_compressed(
+    args.out,
+    pts=F,
+    link=idx,
+    link_names=np.array(link_names),
+    samples=np.array(samples),
+    q=np.array(Q),
+    profile=args.profile,
+)
 print(f"EXPORT_OK {F.shape} -> {args.out}", flush=True)
 simapp.close()

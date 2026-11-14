@@ -1,4 +1,5 @@
 """The screen / printed ChArUco boards (specs in screen_boards.json; A4 PDF = 'laptop' layout at 35 mm)."""
+
 import json
 from pathlib import Path
 
@@ -10,8 +11,12 @@ SPECS = json.loads((Path(__file__).resolve().parent / "screen_boards.json").read
 
 def board(name: str, square_m: float) -> cv2.aruco.CharucoBoard:
     s = SPECS[name]
-    b = cv2.aruco.CharucoBoard(tuple(s["squares"]), square_m, square_m * s["marker_ratio"],
-                               cv2.aruco.getPredefinedDictionary(getattr(cv2.aruco, s["dictionary"])))
+    b = cv2.aruco.CharucoBoard(
+        tuple(s["squares"]),
+        square_m,
+        square_m * s["marker_ratio"],
+        cv2.aruco.getPredefinedDictionary(getattr(cv2.aruco, s["dictionary"])),
+    )
     b.setLegacyPattern(False)  # boards were generated with OpenCV >= 4.6 layout
     return b
 

@@ -1,4 +1,5 @@
 """Recorded frames + joint states from a LeRobot v3 dataset (PyAV, no LeRobot import)."""
+
 from __future__ import annotations
 
 import json
@@ -17,15 +18,26 @@ CAMS = ("top", "wrist", "inspect")
 @lru_cache(maxsize=4)
 def episodes(root: str = str(DEFAULT_ROOT)):
     files = sorted(Path(root, "meta/episodes").glob("*/*.parquet"))
-    return pq.read_table(files[0]).to_pandas() if len(files) == 1 else \
-        __import__("pandas").concat([pq.read_table(f).to_pandas() for f in files], ignore_index=True)
+    return (
+        pq.read_table(files[0]).to_pandas()
+        if len(files) == 1
+        else __import__("pandas").concat([pq.read_table(f).to_pandas() for f in files], ignore_index=True)
+    )
 
 
 @lru_cache(maxsize=4)
 def frames_table(root: str = str(DEFAULT_ROOT)):
     import pandas as pd
-    t = pd.concat([pq.read_table(f, columns=["episode_index", "frame_index", "timestamp", "observation.state", "action"])
-                   .to_pandas() for f in sorted(Path(root, "data").glob("*/*.parquet"))], ignore_index=True)
+
+    t = pd.concat(
+        [
+            pq.read_table(
+                f, columns=["episode_index", "frame_index", "timestamp", "observation.state", "action"]
+            ).to_pandas()
+            for f in sorted(Path(root, "data").glob("*/*.parquet"))
+        ],
+        ignore_index=True,
+    )
     return t
 
 
@@ -48,8 +60,13 @@ def video_frames(ep: int, cam: str, idx: list[int], root: str = str(DEFAULT_ROOT
     """RGB uint8 frames (H, W, 3) of episode `ep`, camera `cam`, at frame indices `idx`."""
     e = episodes(root).set_index("episode_index").loc[ep]
     k = f"videos/observation.images.{cam}"
-    path = Path(root, "videos", f"observation.images.{cam}",
-                f"chunk-{int(e[k + '/chunk_index']):03d}", f"file-{int(e[k + '/file_index']):03d}.mp4")
+    path = Path(
+        root,
+        "videos",
+        f"observation.images.{cam}",
+        f"chunk-{int(e[k + '/chunk_index']):03d}",
+        f"file-{int(e[k + '/file_index']):03d}.mp4",
+    )
     t0, f = float(e[k + "/from_timestamp"]), fps(root)
     want = {round((t0 + i / f) * f): i for i in idx}
     out = {}

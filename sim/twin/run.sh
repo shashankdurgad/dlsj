@@ -8,7 +8,7 @@ set -euo pipefail
 REPO=$(cd "$(dirname "$0")/../.." && pwd)
 NAME="${NAME:-dlsj-twin}-$(date +%s)"
 ARGS=(--rm --init --name "$NAME" --device nvidia.com/gpu=all --network host --ipc host --memory "${MEMORY:-64g}"
-      -e ACCEPT_EULA=Y -e PRIVACY_CONSENT=Y -e OMNI_KIT_ACCEPT_EULA=YES -e PYTHONPATH=/repo
+      -e ACCEPT_EULA=Y -e PRIVACY_CONSENT=N -e OMNI_KIT_ACCEPT_EULA=YES -e PYTHONPATH=/repo
       -v "$REPO:/repo" -w /repo
       -v dlsj-twin-kitcache:/isaac-sim/kit/cache -v dlsj-twin-ovcache:/root/.cache/ov
       -v dlsj-twin-glcache:/root/.cache/nvidia/GLCache -v dlsj-twin-computecache:/root/.nv/ComputeCache
