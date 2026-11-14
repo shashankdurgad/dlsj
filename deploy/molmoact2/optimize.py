@@ -172,6 +172,8 @@ def main() -> None:
     ap.add_argument("--data", default="~/inference/data/duplo_teleop_cal2_3phase")
     ap.add_argument("--prompts", default="zeroshot", help="zeroshot | three_phase | path to a json {grasp,present,place}")
     ap.add_argument("--cams", default="wrist,top")
+    ap.add_argument("--crop", default="", help="cam=x,y,w,h[;...] as the training set (MolmoAct2 fine-tune: top=0,0,560,480)")
+    ap.add_argument("--brick", default="red", help="{brick} for episodes whose label doesn't name the brick colour")
     ap.add_argument("--frames", type=int, default=60)
     ap.add_argument("--variants", default="fp16_ref,int8_sym,int8_keep_ae,steps5_int8")
     ap.add_argument("--workdir", default="~/inference/exports/molmo_opt")
@@ -182,8 +184,11 @@ def main() -> None:
     prompts = {"zeroshot": H.ZEROSHOT, "three_phase": H.THREE_PHASE}.get(a.prompts) or json.loads(Path(a.prompts).read_text())
     b = Builder(a, lambda m: print(f"[{time.strftime('%H:%M:%S')}] {m}", flush=True))
     log = b.log
-    frames = H.load_frames(a.data, a.frames, prompts, cams=tuple(a.cams.split(",")),
-                           cache=b.work / f"frames_{a.prompts if a.prompts in ('zeroshot', 'three_phase') else 'custom'}_{a.frames}.npz")
+    crops = {k: tuple(int(v) for v in xywh.split(",")) for k, xywh in
+             (part.split("=", 1) for part in filter(None, a.crop.split(";")))}
+    tag = a.prompts if a.prompts in ('zeroshot', 'three_phase') else Path(a.prompts).stem
+    frames = H.load_frames(a.data, a.frames, prompts, cams=tuple(a.cams.split(",")), crops=crops, brick=a.brick,
+                           cache=b.work / f"frames_{tag}{'_crop' if crops else ''}_{a.frames}.npz")
     log(f"{len(frames)} frames")
     variants = [v.strip() for v in a.variants.split(",") if v.strip()]
     if "fp16_ref" not in variants:

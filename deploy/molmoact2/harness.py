@@ -8,13 +8,16 @@
 * `compare(pred, ref, frames)`: per phase + overall mean |pred - ref| (joints, gripper; first 10 actions) and the
   error vs the recorded demo, plus the "no quality loss" verdict.
 
-Prompts: a dict {"grasp": str, "present": str, "place": str with {bowl}}. Two presets: ZEROSHOT (what the arm used
+Prompts: a dict {"grasp": str (may contain {brick}), "present": str, "place": str with {bowl}}. {brick} comes from
+the episode's label (pick_task "pick up the <colour> brick") or the `brick` default. `crops` ({cam: (x, y, w, h)})
+crops cameras the way the training set did (MolmoAct2 fine-tune: top 0,0,560,480). Two presets: ZEROSHOT (what the arm used
 with the released checkpoint) and THREE_PHASE (the relabelled-dataset strings the LoRA fine-tune will use).
 """
 
 from __future__ import annotations
 
 import json
+import re
 import time
 from pathlib import Path
 
@@ -31,13 +34,15 @@ JOINT_TOL, GRIP_TOL, DEMO_TOL = 0.5, 0.3, 0.2
 
 
 def load_frames(root: str | Path, n: int = 60, prompts: dict | None = None, cams=("wrist", "top"), seed: int = 0,
-                cache: str | Path | None = None) -> list[dict]:
+                cache: str | Path | None = None, crops: dict | None = None, brick: str = "red") -> list[dict]:
     prompts = prompts or ZEROSHOT
+    crops = {k: tuple(v) for k, v in (crops or {}).items()}
     cache = Path(cache).expanduser() if cache else None
     if cache and cache.exists():
         z = np.load(cache, allow_pickle=True)
         frames = list(z["frames"])
-        if len(frames) == n and all(f["task"] == _task(prompts, f["phase"], f["bowl"]) for f in frames):
+        if len(frames) == n and all(f["task"] == _task(prompts, f["phase"], f["bowl"], f.get("brick", brick))
+                                    and f.get("crops", {}) == crops for f in frames):
             return frames
     from lerobot.datasets.lerobot_dataset import LeRobotDataset
 
@@ -61,8 +66,17 @@ def load_frames(root: str | Path, n: int = 60, prompts: dict | None = None, cams
         rec = np.stack([np.asarray(ds.hf_dataset[min(base + fr + j, base + n_fr - 1)]["action"], np.float32)
                         for j in range(10)])
         bowl = lab.get("bowl_final") or lab.get("bowl") or "yellow"
-        imgs = {c: (np.asarray(item[f"observation.images.{c}"]) * 255).clip(0, 255).astype(np.uint8) for c in cams}
-        frames.append({"ep": e, "frame": int(fr), "phase": phase, "bowl": bowl, "task": _task(prompts, phase, bowl),
+        m = re.fullmatch(r"pick up the ([a-z]+) brick", str(lab.get("pick_task", "")))
+        ep_brick = m.group(1) if m else brick
+        imgs = {}
+        for c in cams:
+            img = np.asarray(item[f"observation.images.{c}"])  # (3, H, W) float in [0, 1]
+            if c in crops:
+                x, y, w, h = crops[c]
+                img = img[:, y:y + h, x:x + w]
+            imgs[c] = (img * 255).clip(0, 255).astype(np.uint8)
+        frames.append({"ep": e, "frame": int(fr), "phase": phase, "bowl": bowl, "brick": ep_brick, "crops": crops,
+                       "task": _task(prompts, phase, bowl, ep_brick),
                        "imgs": imgs, "state": np.asarray(item["observation.state"], np.float32), "rec": rec})
     if cache:
         cache.parent.mkdir(parents=True, exist_ok=True)
@@ -70,8 +84,8 @@ def load_frames(root: str | Path, n: int = 60, prompts: dict | None = None, cams
     return frames
 
 
-def _task(prompts: dict, phase: str, bowl: str) -> str:
-    return prompts[phase].format(bowl=bowl)
+def _task(prompts: dict, phase: str, bowl: str, brick: str = "red") -> str:
+    return prompts[phase].replace("{bowl}", bowl).replace("{brick}", brick)
 
 
 def predict(export_dir: str | Path, frames: list[dict], device: str = "GPU", cache_dir: str | None = None,

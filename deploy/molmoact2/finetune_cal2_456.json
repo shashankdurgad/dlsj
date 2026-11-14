@@ -1,0 +1,35 @@
+{
+  "_doc": "What the MolmoAct2 LoRA fine-tune on molmoact2-cal2-456-3stage-20261114 was trained on. run_finetuned.sh and smolvla_control.py --training-tasks use it: every prompt sent to the model must be one of `tasks`. Read from the dataset on Joe's Spark (meta/tasks.parquet, MANIFEST.json) on 2026-11-14.",
+  "dataset": "molmoact2-cal2-456-3stage-20261114",
+  "dataset_path_spark": "/home/joe-spark-2/desmond/datasets/molmoact2-cal2-456-3stage-20261114",
+  "episodes": {"used": 453, "train": 409, "validation": 44, "frames": 105382},
+  "tasks": [
+    "pick up the blue brick",
+    "pick up the brown brick",
+    "pick up the red brick",
+    "pick up the white brick",
+    "pick up the yellow brick",
+    "bring the brick to the inspection camera",
+    "place the brick in the orange bowl",
+    "place the brick in the purple bowl",
+    "place the brick in the yellow bowl"
+  ],
+  "stages": {
+    "pick": "pick up the {brick} brick",
+    "bring": "bring the brick to the inspection camera",
+    "place": "place the brick in the {colour} bowl"
+  },
+  "brick_colours": {"blue": 95, "brown": 124, "red": 60, "white": 81, "yellow": 93},
+  "bowl_colours": {"orange": 136, "purple": 168, "yellow": 149},
+  "stage_boundaries": "pick < grasp_frame (gripper closes on the brick) <= bring < inspection_frame (operator mark) <= place",
+  "cameras": ["wrist", "top"],
+  "removed_cameras": ["inspect", "top_depth", "inspect_depth"],
+  "top_crop": "0,0,560,480",
+  "frame_size": "640x480",
+  "calibration_sha256": "8a3e5e04c5977ff72f56b848da7c763882396b789e7161c40c83e8510c6c209a",
+  "calibration_note": "the current (post 2026-11-14 01:00) follower calibration: ~/inference/dlsj-smolvla and ~/desmond/build/dlsj-main on the XPS; no --joint-offset",
+  "ready_pose": [26.3, -51.8, 30.1, 73.1, 15.9, 37.7],
+  "ready_pose_note": "median first-frame state of the 409 training episodes (IQR 24/47/43/32/20/20 deg): demos start from varied poses above the table, gripper open",
+  "chunk": 30,
+  "control": "absolute joint pose, LeRobot degrees, gripper 0-100, 30 Hz"
+}
