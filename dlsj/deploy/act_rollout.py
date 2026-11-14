@@ -24,8 +24,10 @@ Stop Desmond's recorder first (it owns the arm and cameras), and keep a hand nea
 from __future__ import annotations
 
 import argparse
+import json
 import logging
 import signal
+import sys
 import time
 
 import cv2
@@ -87,6 +89,10 @@ def main() -> int:
     p.add_argument("--follower-id", default="follower")
     p.add_argument("--dry-run", action="store_true", help="never send commands; print predicted targets")
     p.add_argument("--yes", action="store_true", help="don't wait for Enter before moving")
+    p.add_argument("--save-dir", help="save one frame per camera per second (plus state/target) here, for review")
+    p.add_argument("--start-home", action="store_true", help="ramp to the saved home pose before the policy starts")
+    p.add_argument("--release-at-end", action="store_true",
+                   help="release torque when the script exits (default: keep holding the final pose)")
     args = p.parse_args()
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 
@@ -127,10 +133,11 @@ def main() -> int:
         log.info("follower by supply voltage: %s (%s)", port, volts)
         if not port:
             p.error("follower not found; check USB and the 12 V supply")
-    # Dry runs never move the arm, so never drop it either: keep torque on (holding its pose) after disconnect.
+    # Never drop the arm: torque stays on (holding the last pose) after disconnect unless --release-at-end.
     robot = make_robot_from_config(SO101FollowerConfig(port=port, id=args.follower_id,
                                                        calibration_dir=arms.FOLLOWER_CAL_DIR,
-                                                       disable_torque_on_disconnect=not args.dry_run))
+                                                       disable_torque_on_disconnect=args.release_at_end
+                                                       and not args.dry_run))
     robot.connect(calibrate=False)
     joints = list(robot.action_features)  # recorder order: shoulder_pan.pos ... gripper.pos
     home = arms.load_home(args.follower_id)
@@ -168,6 +175,12 @@ def main() -> int:
             time.sleep(0.05)
 
         cmd = read_state()
+        if args.start_home and not args.dry_run:
+            if home is None:
+                raise RuntimeError("--start-home: no saved home pose for this follower (calibration/)")
+            log.info("ramping to home at %.0f deg/s before starting", args.ramp_speed)
+            cmd = ramp_to(np.array([home[j] for j in joints], dtype=np.float32), cmd)
+            time.sleep(0.5)
         if not args.dry_run and not args.yes:
             input("Arm and cameras ready. Press Enter to start the policy (Ctrl+C to stop and go home)... ")
         policy.reset()
@@ -188,6 +201,15 @@ def main() -> int:
             target = action.squeeze(0).detach().cpu().numpy().astype(np.float32)
             cmd = teleop_web.step_toward(cmd if not args.dry_run else state, target, step_cap)
             send(cmd)
+            if tick % args.fps == 0 and args.save_dir:
+                from pathlib import Path
+                d = Path(args.save_dir); d.mkdir(parents=True, exist_ok=True)
+                sec = tick // args.fps
+                for name, s in streams.items():
+                    cv2.imwrite(str(d / f"t{sec:03d}_{name}.jpg"), s.frame)
+                with open(d / "trace.jsonl", "a") as fh:
+                    fh.write(json.dumps({"t": sec, "state": state.round(2).tolist(), "target": target.round(2).tolist(),
+                                         "cmd": cmd.round(2).tolist()}) + "\n")
             if tick % args.fps == 0:
                 log.info("t=%.1fs state=%s target=%s infer %.1f ms (max so far %.0f)", time.time() - t_start,
                          np.round(state, 1), np.round(target, 1), lat[-1], max(lat))
@@ -202,9 +224,10 @@ def main() -> int:
     finally:
         for s in streams.values():
             s.stop()
-        if not args.dry_run:
-            input("Holding position. Press Enter to release torque and disconnect (support the arm first)... ")
+        if args.release_at_end and not args.dry_run and sys.stdin.isatty():
+            input("Press Enter to release torque and disconnect (support the arm first)... ")
         robot.disconnect()
+        log.info("disconnected; torque %s", "released" if args.release_at_end and not args.dry_run else "still on (holding)")
     return 0
 
 
