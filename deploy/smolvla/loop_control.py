@@ -313,7 +313,7 @@ def make_loop_controller_class(base):
             settled = len(self._pose_hist) >= 15 and float(np.ptp(np.stack(self._pose_hist)[:, :5], axis=0).max()) < 1.5
             arrived = (self._elapsed() > 3.0 and self._held_for("settled", settled, 1.5)) or self._elapsed() > LCFG.bring_timeout
             if arrived:
-                self._cycle(t_inspect=round(time.time() - self.L["cycles"][-1]["t0"], 1), camera_saw=bool(sees))
+                self._cycle(t_inspect=round(time.time() - self.L["cycles"][-1]["t0"], 1))
                 self._insp_frames, self._insp_crops = [], []
                 self._start_inspection()  # AutoController: policy paused, wrist spin + YOLO in a thread
                 self._goto("inspect", "At the camera: spinning the brick, YOLO on the NPU")
