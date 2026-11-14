@@ -10,7 +10,9 @@ the proven, simple baseline, and dlsj.deploy.act_export exports it to OpenVINO.
 
 2. Train detached, so the run keeps going if this laptop sleeps (smoke test: --steps 200 --run act_smoke):
 
-       MODAL_PROFILE=desmond-zee modal run --detach scripts/modal_train_act.py --run act_v1 --gpus 4
+       MODAL_PROFILE=desmond-zee modal run --detach scripts/modal_train_act.py --run act_v1 --gpus 8 --steps 13000
+
+   8x L40S runs ~4 steps/s at 16 per GPU (global batch 128), so 13k steps is about an hour.
 
    It uses DDP via torchrun on L40S:<gpus>. The batch size is per GPU.
 
@@ -61,13 +63,13 @@ def parse_log_line(line: str) -> dict[str, float] | None:
     return out if "step" in out and "loss" in out else None
 
 
-@app.function(image=image, gpu="L40S:4", cpu=32, memory=131072, timeout=12 * 3600,
+@app.function(image=image, gpu="L40S:8", cpu=64, memory=262144, timeout=12 * 3600,
               volumes={"/data": data, "/runs": runs}, secrets=[modal.Secret.from_name("wandb")])
 def train(dataset: str = "duplo_teleop_rgb", run: str = "act_v1", steps: int = 30_000, batch_size: int = 16,
           gpus: int = 4, save_freq: int = 5_000, wandb_project: str = "dlsj-act") -> str:
     import wandb
 
-    workers = max(2, 28 // gpus)
+    workers = max(2, 56 // gpus)
     cmd = [
         "torchrun", "--standalone", f"--nproc_per_node={gpus}", "-m", "lerobot.scripts.lerobot_train",
         f"--dataset.repo_id=local/{dataset}", f"--dataset.root=/data/{dataset}", "--dataset.video_backend=pyav",
