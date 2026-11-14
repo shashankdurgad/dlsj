@@ -21,25 +21,33 @@ PAGE = r'''<!doctype html><html lang="en"><meta charset="utf-8">
 <style>
 *{box-sizing:border-box}body{margin:0;background:#101827;color:#f8fafc;font:16px system-ui}main{max-width:1120px;margin:auto;padding:24px}h1{margin:0 0 8px}p{color:#cbd5e1;line-height:1.5}button,select,input{font:inherit}button,select{padding:12px;border-radius:9px;border:1px solid #64748b;background:#25344b;color:white}button{cursor:pointer}button:disabled{opacity:.5}label{display:block;margin:14px 0 8px}.row{display:flex;gap:12px;align-items:center;flex-wrap:wrap}select{flex:1;min-width:180px}.layout{display:grid;grid-template-columns:2fr 1fr;gap:20px;margin-top:20px}.stage{position:relative;align-self:start;background:#030712;border-radius:12px;overflow:hidden}video,#remote{display:block;width:100%;min-height:160px}[hidden]{display:none!important}.stage canvas{position:absolute;inset:0;width:100%;height:100%;touch-action:none;cursor:crosshair}aside{background:#1e293b;border-radius:12px;padding:18px}#result{font-size:28px;font-weight:750;margin:10px 0}.normal{color:#86efac}.marked{color:#fda4af}.muted{color:#cbd5e1}#view{width:100%;background:#030712;border-radius:8px}#status{min-height:24px;margin-top:12px}small{color:#94a3b8;line-height:1.5}input[type=range]{width:180px}#score{font-variant-numeric:tabular-nums}@media(max-width:750px){.layout{grid-template-columns:1fr}}
 </style><main><h1>Live brick inspection</h1>
-<p>Choose a camera and place one brick inside the square, with its marked face visible. Click the preview to move the square; adjust its size to fit the whole brick face.</p>
+<p id="instructions">Choose a camera and place one brick inside the square, with its marked face visible. Click the preview to move the square; adjust its size to fit the whole brick face.</p>
 <div class="row"><select id="camera" aria-label="Camera"><option value="">Default laptop camera</option></select><button id="connect">Enable camera</button><button id="toggle" disabled>Start detection</button></div>
+<label id="autoLabel" hidden><input id="auto" type="checkbox"> <span id="autoText">Auto-detect brick (crop preview)</span></label>
 <div class="layout"><div><div class="stage"><video id="video" autoplay playsinline muted></video><img id="remote" alt="Intel XPS inspection camera" hidden><canvas id="overlay" aria-label="Click to position the inspection square"></canvas></div>
-<label for="size">Inspection square size</label><input id="size" type="range" min="15" max="95" value="60"><span id="sizeValue">60%</span></div>
+<div id="manualCropControls"><label for="size">Inspection square size</label><input id="size" type="range" min="15" max="95" value="60"><span id="sizeValue">60%</span></div></div>
 <aside><small id="model">Loading model…</small><div id="result" class="muted" role="status">Waiting for camera</div><div id="score">Score —</div>
 <p><small id="classification">YOLO: not loaded</small></p>
 <p><small id="detail">Plain = normal · Cross or circle = marked</small></p><canvas id="view" width="320" height="320" aria-label="Last inspected crop with heatmap"></canvas>
 <label><input id="heatmap" type="checkbox" checked> Show anomaly heatmap</label>
 <label for="threshold">Decision threshold <span id="thresholdValue"></span></label><input id="threshold" type="range" min="0" max="1" step="any"><button id="reset">Reset threshold</button>
 <p><small>Scores above the threshold are marked. The score is averaged over three frames; it is not a probability. Keep the brick steady while testing. With YOLO loaded, weak or conflicting predictions request reinspection.</small></p></aside></div>
-<div id="status" role="status">Connecting…</div><small>Inspect the whole face. Hidden marks and empty inspection squares are not reliable tests.</small>
+<p id="evaluationNotice" hidden><small>Experimental crop ensemble: validation target not met. Check predictions against the actual brick.</small></p><div id="status" role="status">Connecting…</div><small>Inspect the whole face. Hidden marks and empty inspection squares are not reliable tests.</small>
 <script>
-const $=id=>document.getElementById(id);let stream=null,ready=false,running=false,inflight=false,switching=false,revision=0,center={x:.5,y:.5},scores=[],defaultThreshold=.683024,last=null,modelReady=false,classFrames=[],classifierSettings=null,remoteConfigured=false,remoteActive=false,remoteGeneration=0,remoteUpdated=0;
-function reset(message='Collecting frames…'){revision++;scores=[];classFrames=[];last=null;$('classification').textContent=classifierSettings?'YOLO: waiting for three frames':'YOLO: not loaded';$('view').getContext('2d').clearRect(0,0,320,320);$('result').className='muted';$('result').textContent=message;$('score').textContent='Score —';$('detail').textContent='Plain = normal · Cross or circle = marked';}
+const $=id=>document.getElementById(id);let stream=null,ready=false,running=false,inflight=false,switching=false,revision=0,center={x:.5,y:.5},scores=[],defaultThreshold=.683024,last=null,modelReady=false,classFrames=[],classifierSettings=null,remoteConfigured=false,remoteActive=false,remoteGeneration=0,remoteUpdated=0,detectorReady=false,detectedBox=null,previousBox=null,detectedBoxes=[];
+function reset(message='Collecting frames…'){revision++;detectedBox=null;previousBox=null;detectedBoxes=[];scores=[];classFrames=[];last=null;$('classification').textContent=classifierSettings?'YOLO: waiting for three frames':'YOLO: not loaded';$('view').getContext('2d').clearRect(0,0,320,320);$('result').className='muted';$('result').textContent=message;$('score').textContent='Score —';$('detail').textContent='Plain = normal · Cross or circle = marked';}
 function controls(){$('toggle').disabled=!ready||!modelReady||switching;$('connect').disabled=switching;$('camera').disabled=switching;$('toggle').textContent=running?'Pause detection':'Start detection';}
 function frame(){return remoteActive?$('remote'):$('video');}
 function dimensions(){const v=frame();return {width:remoteActive?v.naturalWidth:v.videoWidth,height:remoteActive?v.naturalHeight:v.videoHeight};}
 function roi(){const {width,height}=dimensions(),side=Math.min(width,height)*Number($('size').value)/100;return {x:Math.max(0,Math.min(width-side,center.x*width-side/2)),y:Math.max(0,Math.min(height-side,center.y*height-side/2)),side};}
-function drawBox(){if(!ready)return;const c=$('overlay'),d=dimensions();c.width=d.width;c.height=d.height;const ctx=c.getContext('2d'),r=roi();ctx.fillStyle='rgba(0,0,0,.3)';ctx.fillRect(0,0,c.width,c.height);ctx.clearRect(r.x,r.y,r.side,r.side);ctx.strokeStyle='#38bdf8';ctx.lineWidth=Math.max(3,c.width/300);ctx.strokeRect(r.x,r.y,r.side,r.side);}
+function drawBox(){
+ if(!ready)return;const c=$('overlay'),d=dimensions();c.width=d.width;c.height=d.height;const ctx=c.getContext('2d');ctx.lineWidth=Math.max(3,c.width/300);
+ if(!$('auto').checked){const r=roi();ctx.fillStyle='rgba(0,0,0,.3)';ctx.fillRect(0,0,c.width,c.height);ctx.clearRect(r.x,r.y,r.side,r.side);ctx.strokeStyle='#38bdf8';ctx.strokeRect(r.x,r.y,r.side,r.side);}
+ for(const box of detectedBoxes){const [x0,y0,x1,y1]=box;ctx.strokeStyle='#94a3b8';ctx.strokeRect(x0,y0,x1-x0,y1-y0);}
+ if(detectedBox){const [x0,y0,x1,y1]=detectedBox;ctx.strokeStyle='#86efac';ctx.strokeRect(x0,y0,x1-x0,y1-y0);}
+}
+function mode(){const auto=$('auto').checked;$('manualCropControls').hidden=auto;$('instructions').textContent=auto?'Brick boxes are detected automatically. If several bricks are visible, click the box of the brick you want to inspect. Present its marked face to the camera.':'Choose a camera and place one brick inside the square, with its marked face visible. Click the preview to move the square; adjust its size to fit the whole brick face.';}
+
 async function enumerate(){const selected=remoteActive?'remote':stream?.getVideoTracks()[0]?.getSettings().deviceId;const devices=await navigator.mediaDevices.enumerateDevices();$('camera').replaceChildren();if(remoteConfigured)$('camera').add(new Option('Intel XPS inspection camera','remote'));$('camera').add(new Option('Default laptop camera',''));for(const [i,d]of devices.filter(d=>d.kind==='videoinput').entries())$('camera').add(new Option(d.label||'Camera '+(i+1),d.deviceId));if(selected)$('camera').value=selected;}
 async function pollRemote(generation){
  if(!remoteActive||generation!==remoteGeneration)return;
@@ -47,7 +55,7 @@ async function pollRemote(generation){
   const response=await fetch('/camera/frame.jpg',{cache:'no-store',signal:AbortSignal.timeout(5000)});
   if(!response.ok)throw Error('Intel camera unavailable ('+response.status+')');
   const blob=await response.blob(),url=URL.createObjectURL(blob),image=new Image();
-  try{image.src=url;await image.decode();if(!remoteActive||generation!==remoteGeneration)return;$('remote').src=url;await $('remote').decode();remoteUpdated=performance.now();const first=!ready;ready=true;drawBox();if(first){$('result').textContent='Ready';$('status').textContent='Camera: Intel XPS inspection camera';}controls();}finally{URL.revokeObjectURL(url);}
+  try{image.src=url;await image.decode();if(!remoteActive||generation!==remoteGeneration)return;$('remote').src=url;await $('remote').decode();if(!remoteActive||generation!==remoteGeneration)return;remoteUpdated=performance.now();const first=!ready;ready=true;drawBox();if(first){$('result').textContent='Ready';$('status').textContent='Camera: Intel XPS inspection camera';}controls();}finally{URL.revokeObjectURL(url);}
  }catch(e){if(generation!==remoteGeneration)return;running=false;ready=false;reset('Camera disconnected');$('status').textContent=e.message+' · retrying';controls();}
  if(remoteActive&&generation===remoteGeneration)setTimeout(()=>pollRemote(generation),200);
 }
@@ -72,10 +80,45 @@ function classify(){
  }else{$('result').className=marked?'marked':'normal';$('result').textContent=marked?'MARKED / DEFECTIVE':'PLAIN / NORMAL';}
 }
 function render(){if(!last)return;const ctx=$('view').getContext('2d');ctx.clearRect(0,0,320,320);ctx.drawImage(last.crop,0,0,320,320);if($('heatmap').checked&&last.map)ctx.drawImage(last.map,0,0,320,320);}
-async function tick(){try{if(!running||!ready||inflight)return;inflight=true;const generation=revision,v=frame();if(remoteActive){if(performance.now()-remoteUpdated>2000)throw Error('Intel camera frame is stale');}else if(v.readyState<2)return;const r=roi(),crop=document.createElement('canvas');crop.width=crop.height=320;crop.getContext('2d').drawImage(v,r.x,r.y,r.side,r.side,0,0,320,320);const response=await fetch('/predict',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({frame:crop.toDataURL('image/jpeg',.95).split(',')[1]})});const result=await response.json();if(!response.ok)throw Error(result.error||'Prediction failed');if(generation!==revision||!running)return;if(classifierSettings){if(!result.class_probabilities)throw Error('YOLO prediction missing');classFrames.push(result.class_probabilities);if(classFrames.length>3)classFrames.shift();}scores.push(result.score);if(scores.length>3)scores.shift();last={crop,map:null};classify();$('detail').textContent='Last prediction: '+result.latency_ms+' ms · model input 320 × 320';$('status').textContent='Live detection running';render();const map=new Image();map.onload=()=>{if(generation===revision&&last?.crop===crop){last.map=map;render();}};map.src='data:image/png;base64,'+result.anomaly_map;}catch(e){reset('Prediction unavailable');running=false;$('status').textContent=e.message;controls();}finally{inflight=false;setTimeout(tick,350);}}
-$('connect').onclick=camera;$('camera').onchange=camera;$('toggle').onclick=()=>{running=!running;reset(running?'Collecting frames…':'Paused');controls();};$('overlay').onpointerdown=e=>{const r=$('overlay').getBoundingClientRect();center={x:(e.clientX-r.left)/r.width,y:(e.clientY-r.top)/r.height};reset(running?'Collecting frames…':'Ready');drawBox();};$('size').oninput=()=>{$('sizeValue').textContent=$('size').value+'%';reset(running?'Collecting frames…':'Ready');drawBox();};$('heatmap').onchange=render;$('threshold').oninput=()=>{$('thresholdValue').textContent=Number($('threshold').value).toFixed(6);classify();};$('reset').onclick=()=>{$('threshold').value=defaultThreshold;$('threshold').oninput();};
+async function tick(){
+ let generation=revision;
+ try{
+  if(!running||!ready||inflight)return;
+  inflight=true;generation=revision;const v=frame();
+  if(remoteActive){if(performance.now()-remoteUpdated>2000)throw Error('Intel camera frame is stale');}else if(v.readyState<2)return;
+  const r=roi(),crop=document.createElement('canvas');crop.width=crop.height=320;
+  let result;
+  if($('auto').checked){
+   const full=document.createElement('canvas'),d=dimensions();full.width=d.width;full.height=d.height;full.getContext('2d').drawImage(v,0,0);
+   const response=await fetch('/detect',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({frame:full.toDataURL('image/jpeg',.95).split(',')[1],zone:[0,0,d.width,d.height],previous_box:previousBox})});
+   result=await response.json();if(!response.ok)throw Error(result.error||'Brick detection failed');if(generation!==revision||!running)return;
+   if(!result.selected){reset(result.detections.length?'SELECT A BRICK':'NO BRICK DETECTED');detectedBoxes=result.detections.map(d=>d.box);drawBox();$('status').textContent=result.detections.length?'Click one detected brick to select it':'Present a brick to the camera';return;}
+   const next=result.selected.box;
+   if(previousBox&&!sameTarget(previousBox,next)){reset('Target changed');generation=revision;}
+   previousBox=next;detectedBox=next;detectedBoxes=result.detections.map(d=>d.box);drawBox();
+   const image=new Image();image.src='data:image/jpeg;base64,'+result.crop;await image.decode();if(generation!==revision||!running)return;
+   crop.getContext('2d').drawImage(image,0,0);
+   last={crop,map:null};render();
+   if(!result.inspection_ready){$('result').textContent='BRICK CROP PREVIEW';$('status').textContent=result.inspection_reason||'Automatic crop calibration pending · anomaly decisions disabled';$('detail').textContent='Detector: '+result.latency_ms+' ms · exact model crop 320 × 320';return;}
+  }else{
+   crop.getContext('2d').drawImage(v,r.x,r.y,r.side,r.side,0,0,320,320);
+   const response=await fetch('/predict',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({frame:crop.toDataURL('image/jpeg',.95).split(',')[1]})});
+   result=await response.json();if(!response.ok)throw Error(result.error||'Prediction failed');
+  }
+  if(generation!==revision||!running)return;
+  if(classifierSettings){if(!result.class_probabilities)throw Error('YOLO prediction missing');classFrames.push(result.class_probabilities);if(classFrames.length>3)classFrames.shift();}
+  scores.push(result.score);if(scores.length>3)scores.shift();last={crop,map:null};classify();
+  $('detail').textContent='Last prediction: '+result.latency_ms+' ms · model input 320 × 320';$('status').textContent='Live detection running';render();
+  const map=new Image();map.onload=()=>{if(generation===revision&&last?.crop===crop){last.map=map;render();}};map.src='data:image/png;base64,'+result.anomaly_map;
+ }catch(e){if(generation===revision){reset('Prediction unavailable');running=false;$('status').textContent=e.message;controls();}}
+ finally{inflight=false;setTimeout(tick,350);}
+}
+function sameTarget(a,b){const area=r=>(r[2]-r[0])*(r[3]-r[1]);const intersection=Math.max(0,Math.min(a[2],b[2])-Math.max(a[0],b[0]))*Math.max(0,Math.min(a[3],b[3])-Math.max(a[1],b[1]));return intersection/(area(a)+area(b)-intersection)>=.3;}
+$('auto').onchange=()=>{mode();reset(running?'Collecting frames…':'Ready');drawBox();};
+
+$('connect').onclick=camera;$('camera').onchange=camera;$('toggle').onclick=()=>{running=!running;reset(running?'Collecting frames…':'Paused');controls();};$('overlay').onpointerdown=e=>{const r=$('overlay').getBoundingClientRect(),x=(e.clientX-r.left)/r.width,y=(e.clientY-r.top)/r.height;if($('auto').checked){const d=dimensions(),boxes=detectedBoxes.slice(),matches=boxes.filter(b=>x*d.width>=b[0]&&x*d.width<=b[2]&&y*d.height>=b[1]&&y*d.height<=b[3]);reset(matches.length===1?'Tracking selected brick':'Select one brick');detectedBoxes=boxes;if(matches.length===1){previousBox=matches[0];detectedBox=matches[0];}}else{center={x,y};reset(running?'Collecting frames…':'Ready');}drawBox();};$('size').oninput=()=>{$('sizeValue').textContent=$('size').value+'%';reset(running?'Collecting frames…':'Ready');drawBox();};$('heatmap').onchange=render;$('threshold').oninput=()=>{$('thresholdValue').textContent=Number($('threshold').value).toFixed(6);classify();};$('reset').onclick=()=>{$('threshold').value=defaultThreshold;$('threshold').oninput();};
 window.addEventListener('beforeunload',()=>stream?.getTracks().forEach(t=>t.stop()));
-(async()=>{try{const r=await fetch('/health'),s=await r.json();if(!r.ok)throw Error(s.error);remoteConfigured=Boolean(s.camera_source);if(remoteConfigured){$('camera').add(new Option('Intel XPS inspection camera','remote'));$('camera').value='remote';}classifierSettings=s.classifier||null;defaultThreshold=s.threshold;$('threshold').value=defaultThreshold;$('threshold').oninput();$('model').textContent=s.model+(classifierSettings?' + '+classifierSettings.model:'');modelReady=true;controls();}catch(e){$('model').textContent='Model unavailable';$('status').textContent=e.message;}if(remoteConfigured||navigator.mediaDevices?.getUserMedia)await camera();else $('status').textContent='Open this page at http://localhost:8006 to enable your camera.';tick();})();
+(async()=>{try{const r=await fetch('/health'),s=await r.json();if(!r.ok)throw Error(s.error);detectorReady=Boolean(s.detector);$('autoLabel').hidden=!detectorReady;$('auto').checked=detectorReady;$('autoText').textContent=s.auto_inspection_ready?'Automatically detect and inspect the brick':'Auto-detect brick (crop preview)';mode();remoteConfigured=Boolean(s.camera_source);if(remoteConfigured){$('camera').add(new Option('Intel XPS inspection camera','remote'));$('camera').value='remote';}classifierSettings=s.classifier||null;$('evaluationNotice').hidden=!(s.auto_inspection_ready&&classifierSettings?.calibration_target_met===false);defaultThreshold=s.threshold;$('threshold').value=defaultThreshold;$('threshold').oninput();$('model').textContent=s.model+(classifierSettings?' + '+classifierSettings.model:'');modelReady=true;controls();}catch(e){$('model').textContent='Model unavailable';$('status').textContent=e.message;}if(remoteConfigured||navigator.mediaDevices?.getUserMedia)await camera();else $('status').textContent='Open this page at http://localhost:8006 to enable your camera.';tick();})();
 </script></main></html>'''
 
 
@@ -181,7 +224,51 @@ def fetch_camera_frame(source):
     return frame
 
 
-def make_handler(model, camera_source=None):
+class AutoCropService:
+    """Stateless per-frame target selection; client supplies its own previous box."""
+    def __init__(self, detector, model, inspection_ready=False, min_inspection_side=64):
+        self.detector, self.model, self.inspection_ready = detector, model, inspection_ready
+        self.min_inspection_side = min_inspection_side
+
+    def predict(self, payload):
+        import time
+        from dataclasses import asdict
+        from dlsj.inspect.brick_detector import inspection_crop, select_target
+        start = time.perf_counter()
+        if not isinstance(payload, dict) or not isinstance(payload.get('frame'), str):
+            raise ValueError('Send a JPEG camera frame')
+        data = base64.b64decode(payload['frame'], validate=True)
+        frame = cv2.imdecode(np.frombuffer(data, np.uint8), cv2.IMREAD_COLOR) if data else None
+        if not data.startswith(b'\xff\xd8') or frame is None or max(frame.shape[:2]) > 4096:
+            raise ValueError('Send a JPEG camera frame up to 4096 pixels per side')
+        h, w = frame.shape[:2]
+        zone = payload.get('zone', [0, 0, w, h])
+        previous = payload.get('previous_box')
+        for box in [zone] + ([previous] if previous is not None else []):
+            if (not isinstance(box, list) or len(box) != 4 or not all(isinstance(v, (int, float)) and np.isfinite(v) for v in box)
+                    or not (0 <= box[0] < box[2] <= w and 0 <= box[1] < box[3] <= h)):
+                raise ValueError('Inspection area and previous box must be within the frame')
+        detections = self.detector.detect(frame)
+        selected = select_target(detections, zone, previous)
+        result = {'detections': [asdict(d) for d in detections], 'selected': asdict(selected) if selected else None,
+                  'inspection_ready': self.inspection_ready}
+        if selected:
+            x0, y0, x1, y1 = selected.box
+            if min(x1-x0, y1-y0) < self.min_inspection_side:
+                result['inspection_ready'] = False
+                result['inspection_reason'] = 'Move the brick closer for a readable inspection crop'
+            crop, bounds = inspection_crop(frame, selected.box)
+            ok, encoded = cv2.imencode('.jpg', crop, [cv2.IMWRITE_JPEG_QUALITY, 95])
+            if not ok:
+                raise ValueError('Could not encode inspection crop')
+            result.update(crop=base64.b64encode(encoded).decode(), crop_box=bounds)
+            if result['inspection_ready']:
+                result.update(self.model.predict({'frame': result['crop']}))
+        result['latency_ms'] = round((time.perf_counter()-start)*1000)
+        return result
+
+
+def make_handler(model, camera_source=None, auto_crop=None):
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, *_):
             pass
@@ -192,7 +279,10 @@ def make_handler(model, camera_source=None):
             self.send_header('Content-Length', str(len(data)))
             self.send_header('Cache-Control', 'no-store')
             self.end_headers()
-            self.wfile.write(data)
+            try:
+                self.wfile.write(data)
+            except (BrokenPipeError, ConnectionResetError):
+                pass
 
         def error(self, exc):
             self.send(503, json.dumps({'error': f'Prediction service unavailable: {exc}. Check Anomalib Studio at localhost:8005.'}).encode())
@@ -207,20 +297,21 @@ def make_handler(model, camera_source=None):
                     self.send(503, json.dumps({'error': f'Camera unavailable: {exc}'}).encode())
             elif self.path == '/health':
                 try:
-                    self.send(200, json.dumps({**model.health(), 'camera_source': bool(camera_source)}).encode())
+                    self.send(200, json.dumps({**model.health(), 'camera_source': bool(camera_source), 'detector': bool(auto_crop), 'auto_inspection_ready': bool(auto_crop and auto_crop.inspection_ready)}).encode())
                 except (OSError, ValueError) as exc:
                     self.error(exc)
             else:
                 self.send(404, b'{"error":"Not found"}')
 
         def do_POST(self):
-            if self.path != '/predict':
+            if self.path not in ('/predict', '/detect') or (self.path == '/detect' and auto_crop is None):
                 return self.send(404, b'{"error":"Not found"}')
             try:
                 length = int(self.headers.get('Content-Length', 0))
                 if not 0 < length <= 3 * 1024 * 1024:
-                    raise ValueError('Send one inspection crop (maximum 3 MB)')
-                result = model.predict(json.loads(self.rfile.read(length)))
+                    raise ValueError('Send one JPEG frame or crop (maximum 3 MB)')
+                predictor = auto_crop if self.path == '/detect' else model
+                result = predictor.predict(json.loads(self.rfile.read(length)))
                 self.send(200, json.dumps(result).encode())
             except ValueError as exc:
                 self.send(400, json.dumps({'error': str(exc)}).encode())
@@ -237,6 +328,11 @@ def main():
     parser.add_argument('--device', default='CPU', help='OpenVINO device for --model-dir (default CPU)')
     parser.add_argument('--classifier-dir', help='Optional exported YOLO directory containing classifier.json')
     parser.add_argument('--studio-url', default='http://127.0.0.1:8005')
+    parser.add_argument('--detector-weights', help='Custom one-class YOLO brick detection weights or OpenVINO directory')
+    parser.add_argument('--detector-device', default='cpu')
+    parser.add_argument('--min-inspection-side', type=int, default=64, help='Minimum short box side in source pixels for anomaly decisions')
+    parser.add_argument('--auto-inspection-calibrated', action='store_true', help='Enable automatic-crop decisions only after validating models/thresholds on matching crops')
+    parser.add_argument('--auto-inspection', action='store_true', help='Enable the existing PatchCore/YOLO ensemble on detected crops for live testing; does not assert calibration quality')
     parser.add_argument('--camera-source', help='Remote HTTP JPEG snapshot URL (proxied locally)')
     parser.add_argument('--port', type=int, default=8006)
     args = parser.parse_args()
@@ -244,7 +340,11 @@ def main():
     if args.classifier_dir:
         from dlsj.inspect.yolo_classifier import CombinedModel, YoloClassifier
         model = CombinedModel(model, YoloClassifier(args.classifier_dir, args.device))
-    server = ThreadingHTTPServer(('127.0.0.1', args.port), make_handler(model, args.camera_source))
+    auto_crop = None
+    if args.detector_weights:
+        from dlsj.inspect.brick_detector import BrickDetector
+        auto_crop = AutoCropService(BrickDetector(args.detector_weights, args.detector_device), model, args.auto_inspection or args.auto_inspection_calibrated, args.min_inspection_side)
+    server = ThreadingHTTPServer(('127.0.0.1', args.port), make_handler(model, args.camera_source, auto_crop))
     print(f'Live inspection: http://localhost:{args.port} · {model.name}', flush=True)
     try:
         server.serve_forever()

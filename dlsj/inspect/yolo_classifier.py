@@ -88,7 +88,8 @@ class YoloClassifier:
     def health(self):
         return {'model': self.config.get('name', 'YOLO26n brick classifier'), 'device': self.device,
                 'classes': self.classes, 'min_confidence': self.config['min_confidence'],
-                'min_margin': self.config['min_margin']}
+                'min_margin': self.config['min_margin'],
+                'calibration_target_met': self.config.get('target_met')}
 
     def predict(self, bgr):
         if bgr.shape != (320, 320, 3):

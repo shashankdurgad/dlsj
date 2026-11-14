@@ -54,6 +54,8 @@ def main():
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--run-dir',type=Path,required=True)
     parser.add_argument('--studio-url',default='http://127.0.0.1:8005')
+    parser.add_argument('--profiles',nargs='+',choices=('baseline','geometry','photometric','combined'),
+                        default=('baseline','geometry','photometric','combined'))
     args=parser.parse_args();root=args.run_dir.resolve()
     client=httpx.Client(base_url=args.studio_url,timeout=120)
     for _ in range(120):
@@ -77,7 +79,7 @@ def main():
                 progress(stage='evaluating',profile=directory.name,split=split,images_done=len(done),images_total=len(selected))
                 print(directory.name,split,len(done),'/',len(selected),flush=True)
         return done
-    for profile in ('baseline','geometry','photometric','combined'):
+    for profile in args.profiles:
         directory=root/profile;dataset_path=directory/'studio_dataset.json';source=json.loads(dataset_path.read_text())
         progress(stage='importing',profile=profile)
         project_path=directory/'project.json'
@@ -119,7 +121,7 @@ def main():
     best=max(results,key=lambda k:(results[k]['validation_balanced_accuracy'],results[k]['validation']['good']['accuracy']))
     print('Selected on validation:',best,flush=True)
     # Only the selected model and seed-controlled baseline see the real test set.
-    for profile in dict.fromkeys(('baseline',best)):
+    for profile in dict.fromkeys(p for p in ('baseline',best) if p in results):
         directory=root/profile;source=json.loads((directory/'studio_dataset.json').read_text());model=json.loads((directory/'studio_model.json').read_text())
         predictions=predict(directory,model,source,'test')
         report=results[profile];report['test']=metrics(capture_scores(predictions),report['validation_selected_threshold']);report['test_balanced_accuracy']=balanced(report['test'])
