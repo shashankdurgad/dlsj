@@ -105,3 +105,11 @@ class SAC:
     def save(self, path):
         torch.save({"actor": self.actor.state_dict(), "q1": self.q1.state_dict(), "q2": self.q2.state_dict(),
                     "log_alpha": self.log_alpha.detach()}, path)
+
+    def load(self, path):
+        sd = torch.load(path, map_location=self.d)
+        self.actor.load_state_dict(sd["actor"])
+        self.q1.load_state_dict(sd["q1"])
+        self.q2.load_state_dict(sd["q2"])
+        with torch.no_grad():
+            self.log_alpha.copy_(sd["log_alpha"])

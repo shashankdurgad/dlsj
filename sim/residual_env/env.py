@@ -58,6 +58,7 @@ class EnvCfg:
     control_hz: int = 30
     episode_s: float = 30.0
     cameras: bool = False  # only the VLA base needs images
+    overview: bool = False  # 1280x720 overview camera for demo videos (needs the app launched with cameras)
     scene_params: str = ""  # sim/realism/scene_params.json (A2)
     camera_source: str = "joe"  # "joe" (camera-fit.json, default) | "a2_refined" (rejected by A2; opt-in only)
     joint_offsets: str = "fit_old"  # data-fitted (sim/realism/joint_offset_fit.md); "joe" = original camera-fit; "fit_cal2" for cal2 states
@@ -171,6 +172,7 @@ class ResidualEnv:
         self.was_grasped = torch.zeros(self.n, dtype=torch.bool, device=d)
         self.present_count = torch.zeros(self.n, dtype=torch.long, device=d)
         self.stats = {"clamp_hits": torch.zeros(self.n, device=d)}
+        self.reset_brick = torch.zeros(self.n, 3, device=d)
         self.gen = torch.Generator(device=d)
         self.gen.manual_seed(0)
 
@@ -255,6 +257,7 @@ class ResidualEnv:
             xy, yaw = brick_pose[:, :2].to(self.device), brick_pose[:, 2].to(self.device)
         z = torch.full((m,), self.table_z + lay.target.size[2] / 2 + 0.0005, device=self.device)
         pose = torch.cat([origins + torch.stack([xy[:, 0], xy[:, 1], z], -1), _yaw_quat_xyzw(yaw)], -1)
+        self.reset_brick[ids] = torch.stack([xy[:, 0], xy[:, 1], z], -1)  # env-frame target centre (for scripted bases)
         self.brick.write_root_pose_to_sim(pose, env_ids=ids)
         self.brick.write_root_velocity_to_sim(torch.zeros(m, 6, device=self.device), env_ids=ids)
         n_dis = torch.randint(lay.distractor_count[0], lay.distractor_count[1] + 1, (m,), device=self.device,
@@ -336,6 +339,12 @@ class ResidualEnv:
             else:
                 out.append(ins["place"].format(bowl=self.bowl_names[int(self.bowl[i])]))
         return out
+
+    def overview_frames(self, ids) -> torch.Tensor:
+        """(m, 720, 1280, 3) uint8 RGB from the overview camera (cfg.overview)."""
+        self.sim.render()
+        self.scene.update(0.0)
+        return self.scene["overview_cam"].data.output["rgb"][ids, ..., :3]
 
     def images(self, ids):
         if not self.cfg.cameras:
@@ -529,6 +538,7 @@ def _yaw_quat_xyzw(yaw: torch.Tensor) -> torch.Tensor:
 
 def _quat_conj_xyzw(q):
     return torch.cat([-q[..., :3], q[..., 3:]], -1)
+
 
 
 def _quat_apply_xyzw(q, v):

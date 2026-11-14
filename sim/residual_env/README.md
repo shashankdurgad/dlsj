@@ -83,8 +83,32 @@ phase one-hot, time. Rewards: reach shaping, grasp, carried-lift, present (inspe
 place in the sampled bowl; penalties for time, residual size, jerk, clamp hits, drops.
 
 ## GB10 / Isaac Lab gotchas (fixed here)
-1. Fabric scene delegate -> cameras render from the world origin (black RGB, 8 mm depth): launch with
-   `--/app/useFabricSceneDelegate=false` (see `app.KIT_ARGS`).
+1. Keep the Fabric scene delegate ON (`app.KIT_ARGS`). An older workaround turned it off; under Isaac Lab 3.0 that
+   makes Hydra read USD, which GPU PhysX never updates, so wrist / top / overview cameras all showed the initial scene
+   (frozen arm) whatever the simulation did. Checked 14 Nov 2026: with the delegate on, all three cameras follow the
+   arm. Any camera-based run made before this fix (e.g. SmolVLA in the loop) was fed frozen images.
 2. The SO-101 USD's fixed `root_joint` + `replicate_physics=True` pins every clone to env_0 (blow-up on the first
    tick): `replicate_physics=False`.
 3. `fix_root_link` fails on the referenced USD (Newton attributes); not needed (the USD root joint fixes the base).
+
+## Residual-RL demo (frozen base + SAC residual; video)
+Task: grasp the target brick, lift >= 5 cm, hold 1 s (`demo_lib.py`). The residual adds bounded corrections (gripper
++-25, joints +-4..8 deg) to the frozen base's action targets. Fixed-seed evaluation: base alone, then base + residual.
+```bash
+# fallback: scripted VLA-failure stand-in base (no images), 64 envs
+python demo_train.py --base scripted --num_envs 64 --minutes 75 --updates_per_step 16 --out ~/residual_env/out/demo_scripted
+python demo_video.py --run ~/residual_env/out/demo_scripted --base scripted
+# real MolmoAct2 base (LoRA or zero-shot) in one command: worker + trainer + video
+./run_real_demo.sh --ckpt /path/to/lora.ckpt --prompts "pick up the yellow brick|...|..." --envs 8 --hours 2
+./run_real_demo.sh --pretrained --minutes 5          # smoke test
+./run_throughput.sh "4 8 16" 4                       # env ticks/s with MolmoAct2 + cameras
+```
+On Modal (RTX PRO 6000; Isaac renders there, checked 15 Nov): `modal_demo.py` (`smoke`, `fetch_base`, `throughput`,
+`train --ckpt /<path in rl-demo-ckpt>`), same scripts inside. `--ckpt` takes a full Lightning checkpoint or a slim one
+(`*_slim.pt`: only the tensors that differ from the base; `molmo_policy.load_ckpt`).
+`smoke_render.py` checks that the cameras render and follow the arm on a new machine.
+
+`molmo_policy.py` (MolmoAct2 on the GB10 GPU, bf16, top crop to 560 px) and `molmo_batch_worker.py` (IPC server for
+`bases.IPCVLABase`) run in `~/molmo-cuda-venv` with `HF_HUB_OFFLINE=1 HF_HUB_CACHE=~/molmobench/hf`. The trainer writes
+`curve.json`, `eval_*.json`, checkpoints; the video writes MJPEG `.avi` on the Spark (no FFmpeg there): transcode with
+`ffmpeg -i x.avi -c:v libx264 -pix_fmt yuv420p x.mp4`.

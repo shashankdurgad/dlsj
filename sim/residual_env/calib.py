@@ -18,6 +18,7 @@ pads it would read ~1.7 instead of ~5.8), see GRIP_STALL_RAD_CAL2 below (measure
 """
 from __future__ import annotations
 
+import os
 import json
 import math
 from dataclasses import dataclass
@@ -26,7 +27,7 @@ from pathlib import Path
 import numpy as np
 
 HERE = Path(__file__).resolve().parent
-JOE = Path("/home/joe-spark-2/pi05-isaac-so101")
+JOE = Path(os.environ.get("DLSJ_JOE_ROOT", "/home/joe-spark-2/pi05-isaac-so101"))
 GRIPPER_UPPER = math.radians(100.000046)
 GRIP_OFFSET_UNITS = 2.4  # pads stall on a 31.8 mm brick at 8.2 deg sim = real hold 5.8 units (old mapping)
 GRIP_HOLD_REAL = 5.8  # units, A1/A2 (median 5.75-5.9)

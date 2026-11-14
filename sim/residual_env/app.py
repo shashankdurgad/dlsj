@@ -1,16 +1,21 @@
 """Launch Isaac Lab (with the GB10 rendering fix), build the scene and the ResidualEnv.
 
-GB10 note: with Isaac Lab's default Fabric scene delegate the RTX render delegate reads camera transforms from Fabric
-and every camera renders from the world origin (constant ~8 mm depth, black RGB). Disabling the delegate fixes it.
+GB10 note: an earlier setup rendered cameras from the world origin with the Fabric scene delegate on, so it was turned
+off. Under Isaac Lab 3.0 that workaround freezes every camera at the initial scene (see KIT_ARGS); the delegate is on
+again, and wrist / top / overview images were checked to follow the simulated arm (14 Nov 2026).
 """
 from __future__ import annotations
 
 import math
+import os
 import sys
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
-KIT_ARGS = "--/app/useFabricSceneDelegate=false --/rtx/hydra/readTransformsFromFabricInRenderDelegate=false"
+# Isaac Lab 3.0 (isaaclab-venv): the Fabric scene delegate is REQUIRED. Isaac Lab's RTX renderer copies the simulated
+# poses into Fabric before each render; with the delegate off, Hydra reads USD, which GPU PhysX never updates, so every
+# camera shows the initial scene (verified 14 Nov: frozen arm in all frames). Old workaround kept via DLSJ_KIT_ARGS.
+KIT_ARGS = os.environ.get("DLSJ_KIT_ARGS", "--/app/useFabricSceneDelegate=true")
 DEFAULT_SCENE_PARAMS = str(HERE / "scene_params.json")
 DEFAULT_SERVO_PARAMS = str(HERE / "servo_params.json")
 
@@ -153,8 +158,9 @@ def make(cfg, base=None, device: str = "cuda:0"):
     profile = load_profile(getattr(cfg, "calib", "") or cfg.joint_offsets)
     print("calibration profile:", profile.name, "| offsets", [round(v, 4) for v in profile.joint_offsets],
           "| gripper q = units *", round(profile.grip_scale, 5), "+", round(profile.grip_bias, 4), flush=True)
-    scene = InteractiveScene(build_scene_cfg(cfg.num_envs, layout, cfg.cameras, profile=profile))
-    if cfg.cameras:
+    overview = bool(getattr(cfg, "overview", False))
+    scene = InteractiveScene(build_scene_cfg(cfg.num_envs, layout, cfg.cameras, profile=profile, overview=overview))
+    if cfg.cameras or overview:
         paint_robot(cfg.num_envs)
     import os
 

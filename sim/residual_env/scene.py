@@ -8,6 +8,7 @@ sim/realism/scene_params.json (stage A2) via `load_layout`.
 
 from __future__ import annotations
 
+import os
 import json
 import math
 from dataclasses import dataclass, field
@@ -15,7 +16,7 @@ from pathlib import Path
 
 import numpy as np
 
-JOE = Path("/home/joe-spark-2/pi05-isaac-so101")
+JOE = Path(os.environ.get("DLSJ_JOE_ROOT", "/home/joe-spark-2/pi05-isaac-so101"))
 ROBOT_USD = str(JOE / "assets/converted/so101_new_calib_2/so101_new_calib.usda")
 JOINTS = ["shoulder_pan", "shoulder_lift", "elbow_flex", "wrist_flex", "wrist_roll", "gripper"]
 GRIPPER_LINK = "Robot/Geometry/base_link/shoulder_link/upper_arm_link/lower_arm_link/wrist_link/gripper_link"
@@ -27,6 +28,12 @@ TOP_CAM_M = np.array([[-0.12946073859057658, 0.9913676740636833, 0.0207376947886
                       [0.3373480797274333, 0.024368176435258765, 0.9410645382126742, 0],
                       [0.465762347632199, 0.026429952710681763, 0.6473618296007448, 1]])
 TOP_CAM_INTR = dict(focal_length=20.0, horizontal_aperture=20.92898, vertical_aperture=15.696734)
+# Joe's OverviewCamera (scene-final.usda), USD row-vector transform, robot base at the origin; rendered 16:9 for videos.
+OVERVIEW_CAM_M = np.array([[0.752576694706878, 0.6585046078685182, 0.0, 0],
+                           [-0.28935841100753085, 0.3306953268657496, 0.8982829792266755, 0],
+                           [0.591523480990626, -0.6760268354178585, 0.43941744302160796, 0],
+                           [0.70, -0.80, 0.65, 1]])
+OVERVIEW_INTR = {"focal_length": 18.0, "horizontal_aperture": 24.0, "vertical_aperture": 13.5}
 WRIST_CAM_M = np.array([[-0.9609081717487479, 0.017280304596569828, 0.2763274806086624, 0],
                         [-0.13272283184622244, -0.9046498261338383, -0.4049609141420139, 0],
                         [0.24298175934254865, -0.42580521738121774, 0.8715789014643105, 0],
@@ -189,7 +196,7 @@ def _robot_usd(profile) -> str:
 
 def build_scene_cfg(num_envs: int, layout: Layout, cameras: bool, env_spacing: float = 2.5,
                     drive_stiffness: float = 60.0, drive_damping: float = 2.0, effort_limit: float = 2.9,
-                    profile=None):
+                    profile=None, overview: bool = False):
     """InteractiveSceneCfg with robot, table, bricks, bowls (+ optional wrist/top cameras)."""
     import isaaclab.sim as sim_utils
     from isaaclab.actuators import ImplicitActuatorCfg
@@ -285,4 +292,16 @@ def build_scene_cfg(num_envs: int, layout: Layout, cameras: bool, env_spacing: f
         else:
             wr_m, wr_i = WRIST_CAM_M, WRIST_CAM_INTR
         cfg.wrist_cam = cam("{ENV_REGEX_NS}/" + GRIPPER_LINK + "/WristCam", wr_m, wr_i)
+    if overview:  # video rendering only (1280x720 RGB)
+        from isaaclab.sensors import CameraCfg as _CamCfg
+
+        m = OVERVIEW_CAM_M
+        cfg.overview_cam = _CamCfg(
+            prim_path="{ENV_REGEX_NS}/OverviewCam", update_period=0.0, height=720, width=1280, data_types=["rgb"],
+            spawn=sim_utils.PinholeCameraCfg(focal_length=OVERVIEW_INTR["focal_length"],
+                                             horizontal_aperture=OVERVIEW_INTR["horizontal_aperture"],
+                                             vertical_aperture=OVERVIEW_INTR["vertical_aperture"],
+                                             clipping_range=(0.01, 20.0)),
+            offset=_CamCfg.OffsetCfg(pos=tuple(float(v) for v in m[3, :3]), rot=mat_to_quat_xyzw(m),
+                                     convention="opengl"))
     return cfg

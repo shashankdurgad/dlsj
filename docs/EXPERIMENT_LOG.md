@@ -99,7 +99,34 @@ Other research done in conversation (not separate reports):
 - **Isaac Lab env** (`sim/residual_env/`): parallel cloned arms, 120 Hz physics / 30 Hz control, fitted servo model, clamp, noise, box finger pads, wrist+top tiled cameras, residual action on gripper/wrist, phase rewards, SAC. Fixes: Fabric scene delegate off (black cameras on GB10), physics replication off, box finger pads, gripper offset.
 - **Joint-offset fit** (`sim/realism/joint_offset_fit.md`): replay grasp 15% → 30%; recovers the 2026-11-14 recalibration from images alone.
 - **Merge of Joe's cal2 calibration** (`joe_cal2`, default; `sim/realism/joe_cal2_merge.md`): replay of 20 cal2 demos **80% grasp/lift** (vs 20% with our fit), 75% brick in the inspect view; remaining gaps: sim gripper holds at 4.3 vs 5.8 real; Joe's own sim lifts more of his episodes.
-- RL was put out of scope for deployment; an **RL demo** (real fine-tuned MolmoAct2 as frozen base + SAC residual; scripted fallback) is being prepared **(open)**: MolmoAct2 bf16 on the GB10 loads in 27 s, 16.9 GB; batched chunk 0.51 s (bs1) → 2.08 s (bs8, 259 ms/env).
+- RL was put out of scope for deployment; an **RL demo** (frozen base + SAC residual, video) was built instead
+  (`sim/residual_env/demo_*.py`, README "Residual-RL demo"). Task: grasp, lift >= 5 cm, hold 1 s; residual on the
+  gripper (+-25) and joints (+-4..8 deg).
+  - **Camera bug found and fixed (14 Nov):** the old GB10 workaround (Fabric scene delegate off) made every sim camera
+    show the initial scene, because GPU PhysX never writes poses to USD. Wrist, top and overview images were frozen
+    (any earlier camera-based sim run was fed frozen images). Under Isaac Lab 3.0 the delegate is back on; all three
+    cameras checked to follow the arm.
+  - **Scripted fallback (Spark, 64 envs, 75 min, ~1.1M transitions, SAC 16 updates/step):** base = a scripted
+    VLA-failure stand-in (IK reach with a 2.5-5 cm biased grasp error and mistimed close; NOT a learned VLA). Held-out
+    evaluation on 256 unseen episodes: **base alone 7.4% -> base + residual 14.8%** (19 -> 38 successes; mean max
+    lift 0.9 -> 2.0 cm). The trainer's 64-episode evals were noisy (6-20%); a first run with 4 updates/step did not learn.
+    Per-episode effect in one 64-episode batch: 6 fixed, 4 broken. Video: before/after, first 2 episodes unselected +
+    2 labelled SELECTED (fixed) episodes, held-out numbers on the cards. Modest, honestly reported gain.
+  - **MolmoAct2 as the base (bf16, GB10, zero-shot weights, rendered cameras, shared GPU):** load 27 s, 16.9 GB;
+    env throughput N=4 / 8 / 16: **18.0 / 23.0 / 26.4 env ticks/s** (~260 / 280 / 320 episodes/h); worker latency
+    1.38 / 2.47 / 4.76 s per batch (~0.3 s per env): the policy, not the sim, is the bottleneck. Zero-shot MolmoAct2
+    in the sim: 0% success, ~0 cm lift (as expected before the LoRA).
+  - **Modal (RTX PRO 6000):** `sim/residual_env/modal_demo.py`. Rendering works in a Modal container (Vulkan and the
+    NVIDIA graphics libraries are present): smoke verdict OK, 8 envs: launch 111 s, physics 247 env ticks/s, wrist +
+    top + overview render 0.13 s. Isaac Sim 6.2.0 + Isaac Lab 3.0.0 pinned to the Spark's working set
+    (`modal_isaac_overrides.txt`; isaacsim and isaaclab conflict on urllib3, resolved by overrides). Base MolmoAct2
+    @152569fe is in our `rl-demo-hf` volume; the robot USDs are in `rl-demo-assets`. MolmoAct2 throughput on Modal was
+    not measured (the run was stopped when the plan changed).
+  - **Real-policy RL run: NOT done.** The fine-tuned checkpoint (step 5500, LoRA r64; slim version 3.1 GB) exists only
+    on the XPS, and it could not be moved in time: XPS uplink ~2.5 MB/s, no XPS→Spark route, XPS↔Mac 140 KB/s. The
+    user called it off (15 Nov). Everything for it is ready: `molmo_policy.load_ckpt` loads full or slim checkpoints
+    (strict=False, checks that no trained tensor is missing), and `modal_demo.py::train` / `run_real_demo.sh` run
+    worker + trainer + video in one command. The only demo video is the scripted fallback.
 
 ## 7. Infrastructure findings
 - **XPS freezes**: three times under heavy GPU+RAM load (PyTorch XPU MolmoAct2, 20 GB FP16 loads, concurrent jobs). Rules: one model on the GPU, memory watchdog, nothing heavy while the arm runs; deploy INT8 (5.9 GB vs 20 GB).
@@ -114,10 +141,10 @@ Other research done in conversation (not separate reports):
 - **Run-time loop = `auto_control.py`** (automatic spin-and-inspect + place); `smolvla_control.py` = manual VLA testing only (also in CLAUDE.md).
 - Main policy track: MolmoAct2 LoRA SFT; prompts: 3-phase canonical, bowl as the only parameter; text length 128 trained in.
 - Deployment: OpenVINO on the Arc GPU, INT8 preferred on data (FP16 if accuracy concerns after fine-tune), RTC on.
-- RL: out of scope for deployment; demo video only, real policy as base, scripted fallback.
+- RL: out of scope for deployment; demo video only, real policy as base, scripted fallback (done). Real-policy run cancelled (checkpoint transfer too slow).
 
 ## 9. Open items
 - Supervised arm test of `auto_control.py` (spin, decision, automatic place).
 - Post-LoRA optimisation run (`optimize.py`) and new baseline rows.
-- RL demo: fallback video, real-policy run after the LoRA.
+- RL demo with the real policy: not done (checkpoint stuck on the XPS); code ready (`modal_demo.py::train`).
 - Pick-prompt mismatch between the two prepared datasets.
