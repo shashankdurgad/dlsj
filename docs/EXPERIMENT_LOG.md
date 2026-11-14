@@ -138,7 +138,7 @@ Other research done in conversation (not separate reports):
 ## 8. Decisions log
 - Policy cameras: wrist + top only (inspect camera dropped as noisy); top cropped 560x480 in training and deployment.
 - Inspection: YOLO v2 + detector on the NPU; PatchCore off.
-- **Run-time loop = `auto_control.py`** (automatic spin-and-inspect + place); `smolvla_control.py` = manual VLA testing only (also in CLAUDE.md).
+- **Run-time loop = `loop_control.py`** (closed loop + perception dashboard, 15 Nov; wraps `auto_control.py`). Earlier: run-time loop = `auto_control.py` (automatic spin-and-inspect + place); `smolvla_control.py` = manual VLA testing only (also in CLAUDE.md).
 - Main policy track: MolmoAct2 LoRA SFT; prompts: 3-phase canonical, bowl as the only parameter; text length 128 trained in.
 - Deployment: OpenVINO on the Arc GPU, INT8 preferred on data (FP16 if accuracy concerns after fine-tune), RTC on.
 - RL: out of scope for deployment; demo video only, real policy as base, scripted fallback (done). Real-policy run cancelled (checkpoint transfer too slow).
