@@ -84,7 +84,7 @@ th{color:var(--mute);font-weight:500;text-align:left;padding:4px 6px;border-bott
 </main>
 <script>
 const $=id=>document.getElementById(id),COL={yellow:'#f2c230',orange:'#f08a24',purple:'#9b7fe0',blue:'#3d8bff',red:'#e5484d',white:'#f4f4f4',brown:'#8b5a2b'};
-const STEPS=[['survey','Survey','bricks left?'],['pick','Pick','VLA'],['bring','Bring','grasp confirmed'],['approach','Approach','if VLA stops short'],['inspect','Spin + YOLO','NPU'],['place','Place','VLA'],['home','Home','only to re-check']];
+const STEPS=[['survey','Survey','bricks left?'],['pick','Pick','VLA'],['bring','Bring','grasp confirmed'],['inspect','Spin + YOLO','NPU'],['place','Place','VLA'],['home','Home','only to re-check']];
 const LBL={none:'plain',circle:'circle',cross:'cross',unknown:'uncertain'};
 function L(c){fetch('/loop/'+c,{method:'POST'})}
 addEventListener('keydown',e=>{if(e.repeat||e.target.tagName==='INPUT')return;const k=e.key.toLowerCase();
@@ -109,7 +109,7 @@ async function tick(){let r;try{r=await fetch('/ctl/state').then(x=>x.json());wi
  $('remain').textContent=`${tb.length} on the table · ${so.length} in plates`;$('ptop').textContent=pc.age_s!=null?`${pc.age_s}s ago`:'';
  const tally=lp.tallies||{};$('plates').innerHTML=['yellow','orange','purple'].map(c=>`<div class="plate"><i style="background:${COL[c]}"></i><b>${tally[c]||0}</b><span class="mute">${c} · this run</span></div>`).join('');
  $('bricks').innerHTML=tb.map(b=>`<span class="bk${tgt&&b.box+''==tgt.box+''?' t':''}" style="color:${COL[b.colour]||'#ccc'}">${b.colour} ${b.conf.toFixed(2)}</span>`).join('')||'<span class="mute">no bricks on the table</span>';
- const ins0=pc.inspect;$('pinsp').textContent=r.phase==='inspecting'?'spinning':(ins0&&ins0.held?(ins0.close?'held brick close':'held brick far'):'');
+ const ins0=pc.inspect;$('pinsp').textContent=r.phase==='inspecting'?'spinning':(ins0&&ins0.held?'held brick':'');
  const fr=lp.inspect_frames||[];$('ifr').textContent=fr.length?`${fr.length} frames`:'';
  if(fr.length!==stripSeq){stripSeq=fr.length;$('strip').src='/loop/strip.jpg?'+Date.now()}
  const ins=r.inspection||{};
@@ -138,7 +138,7 @@ function drawInsp(r){const pc=r.perception||{},c=$('ovinsp').getContext('2d');c.
  const ins=pc.inspect;if(!ins||ins.age_s>1.5)return;
  c.strokeStyle='rgba(255,255,255,.25)';c.lineWidth=1;[ins.band[0]*640,ins.band[1]*640].forEach(x=>{c.beginPath();c.moveTo(x,0);c.lineTo(x,480);c.stroke()});
  (ins.others||[]).forEach(b=>box(c,b,'rgba(170,170,170,.8)',1));
- if(ins.held)box(c,ins.held,ins.close?'#3eff8e':'#ffc93c',4,ins.close?'held brick: close, ready to spin':'held brick: bringing closer')}
+ if(ins.held)box(c,ins.held,'#3eff8e',4,'held brick')}
 const _tick=tick;tick=async function(){await _tick();try{const r=window._last;if(r){drawTop(r.perception||{},(r.loop||{}).step);drawInsp(r)}}catch(e){}};
 setInterval(tick,150);tick();
 </script></body></html>"""

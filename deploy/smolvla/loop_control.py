@@ -43,11 +43,8 @@ LCFG = SimpleNamespace(hold_min=4.0, hold_max=9.0, lost_below=3.0, open_above=12
                        bring_timeout=25.0, place_timeout=40.0, max_cycles=12, max_attempts=3,
                        workspace=(0, 60, 560, 480), empty_seconds=2.0, perception_hz=4.0, held_min_px=150,
                        held_band=(0.25, 0.75), fg_frac=0.35,
-                       # median arm pose where the 456 demos switched bring -> place (operator: "at the camera"),
-                       # current calibration (cal2); the finishing approach when the VLA stops short
-                       inspect_pose=(-9.0, 10.1, -1.5, 54.3, 4.4), approach_after=10.0, approach_speed=25.0,
                        log_dir="~/inference/logs/loop")
-STEPS = ["survey", "pick", "bring", "approach", "inspect", "place", "home"]
+STEPS = ["survey", "pick", "bring", "inspect", "place", "home"]
 
 
 class FrameStream:
@@ -311,48 +308,14 @@ def make_loop_controller_class(base):
                 return self._go_home("Brick dropped: going home, it will be picked again")
             if self._elapsed() < 2.5:
                 return
-            settled = len(self._pose_hist) >= 15 and float(np.ptp(np.stack(self._pose_hist)[:, :5], axis=0).max()) < 2.0
-            seen = self.perc.get("inspect_seen")
-            # close and centred like the hand-posed sweeps (brick ~230 px wide, mid-frame); the VLA keeps bringing it
-            # closer until then (an early "arm paused" cut it off at the image edge on 15 Nov)
-            sees = seen is not None and time.monotonic() - seen["t"] < 0.8 and seen.get("close", False)
-            arrived = self._held_for("settled_seen", settled and sees, 0.4)
-            stopped_short = (self._elapsed() > LCFG.approach_after
-                             or (self._elapsed() > 4.0 and self._held_for("settled_far", settled and not sees, 2.0)))
-            if not arrived and stopped_short and LCFG.inspect_pose is not None:
-                self._hold_here()
-                self.phase = "approach"
-                self._cycle(approach=True)
-                return self._goto("approach", "VLA stopped short of the camera: finishing the approach")
-            arrived = arrived or self._elapsed() > LCFG.bring_timeout
+            # the VLA brings the brick to the camera by itself (the same bring prompt as the manual console): spin
+            # once it has finished, i.e. the arm has been still for a while
+            settled = len(self._pose_hist) >= 15 and float(np.ptp(np.stack(self._pose_hist)[:, :5], axis=0).max()) < 1.5
+            arrived = (self._elapsed() > 3.0 and self._held_for("settled", settled, 1.5)) or self._elapsed() > LCFG.bring_timeout
             if arrived:
                 self._cycle(t_inspect=round(time.time() - self.L["cycles"][-1]["t0"], 1), camera_saw=bool(sees))
                 self._insp_frames, self._insp_crops = [], []
                 self._start_inspection()  # AutoController: policy paused, wrist spin + YOLO in a thread
-                self._goto("inspect", "At the camera: spinning the brick, YOLO on the NPU")
-
-        def _step_approach(self) -> None:
-            """Ease (approach_speed deg/s, gripper unchanged) to the demos' median at-the-camera pose, then spin."""
-            if self.phase == "stopped":
-                return self._pause("Stopped during the approach")
-            g = self.L["grasp"].get("pos", 99.0)
-            if self._held_for("lost", g < LCFG.lost_below, 0.5):
-                self.L["attempts"] += 1
-                self._cycle(result="dropped while bringing")
-                return self._go_home("Brick dropped: going home, it will be picked again")
-            target = np.asarray(self.cmd, float).copy()
-            target[:5] = LCFG.inspect_pose
-            base = np.asarray(self.cmd, float)
-            step = LCFG.approach_speed / max(1, self.fps)
-            measured = self._step(base + np.clip(target - base, -step, step))
-            seen = self.perc.get("inspect_seen")
-            sees = seen is not None and time.monotonic() - seen["t"] < 0.8 and seen.get("close", False)
-            there = float(np.abs(measured[:5] - target[:5]).max()) < 3.0
-            if self._held_for("approach_done", there or sees, 0.6) or self._elapsed() > 15.0:
-                self._cycle(t_inspect=round(time.time() - self.L["cycles"][-1]["t0"], 1), camera_saw=bool(sees))
-                self._insp_frames, self._insp_crops = [], []
-                self.phase = "running"
-                self._start_inspection()
                 self._goto("inspect", "At the camera: spinning the brick, YOLO on the NPU")
 
         def _step_inspect(self) -> None:
@@ -414,10 +377,10 @@ def make_loop_controller_class(base):
                 step = self.L["step"]
                 try:
                     self._perceive_once(detect_top=step in ("survey", "idle", "done", "paused"),
-                                        detect_inspect=step in ("bring", "approach", "idle", "paused"))
+                                        detect_inspect=step in ("bring", "idle", "paused"))
                 except Exception:  # noqa: BLE001
                     log.exception("perception failed")
-                hz = LCFG.perception_hz if step in ("survey", "bring", "approach") else 1.5
+                hz = LCFG.perception_hz if step in ("survey", "bring") else 1.5
                 time.sleep(max(0.05, 1.0 / hz - (time.monotonic() - t0)))
 
         def _perceive_once(self, detect_top: bool = True, detect_inspect: bool = True) -> None:

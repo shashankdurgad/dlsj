@@ -150,7 +150,7 @@ def test_full_cycle_then_done(build):
     assert c.L["step"] == "bring" and c.stage == "bring"
     with c.lock:
         c.perc["inspect_seen"] = {"t": clock.now + 10, "conf": 0.7, "close": True}
-    run(c, clock, 3.0, grip=5.6, cmd_grip=0.0, pose=np.ones(5))
+    run(c, clock, 5.0, grip=5.6, cmd_grip=0.0, pose=np.ones(5))
     assert insp.done.wait(2.0)
     for _ in range(100):
         if c.phase != "inspecting":
@@ -248,7 +248,7 @@ def _to_survey_from_plate(c, clock, insp):
     run(c, clock, 1.0, grip=5.6, cmd_grip=0.0)
     with c.lock:
         c.perc["inspect_seen"] = {"t": clock.now + 10, "conf": 0.7, "close": True}
-    run(c, clock, 3.0, grip=5.6, cmd_grip=0.0, pose=np.ones(5))
+    run(c, clock, 5.0, grip=5.6, cmd_grip=0.0, pose=np.ones(5))
     assert insp.done.wait(2.0)
     for _ in range(100):
         if c.phase != "inspecting":
@@ -271,26 +271,3 @@ def test_next_pick_straight_from_the_plate(build):
     run(c, clock, 0.1)
     assert c.L["step"] == "pick" and c.stage == "pick" and c.phase == "running" and c.brick == "yellow"
     assert "home" not in homes and "start" not in homes and c.bowl is None and c.L["cycle"] == 2
-
-
-def test_approach_when_the_vla_stops_short(build):
-    c, clock, insp = build()
-    c.loop_command("start")
-    run(c, clock, 1.2)
-    see_bricks(c, clock, 1)
-    clock.now += 3.0
-    run(c, clock, 0.1)
-    run(c, clock, 1.0, grip=5.6, cmd_grip=0.0)
-    assert c.L["step"] == "bring"
-    with c.lock:  # held brick seen, but far / off-centre
-        c.perc["inspect_seen"] = {"t": clock.now + 30, "conf": 0.7, "close": False}
-    run(c, clock, 7.0, grip=5.6, cmd_grip=0.0, pose=np.ones(5))
-    assert c.L["step"] == "approach" and c.phase == "approach"
-    for _ in range(int(20 * 30)):  # the fake arm follows the command exactly
-        clock.now += 1 / 30
-        c.measured[5] = 5.6
-        c.tick()
-        if c.L["step"] != "approach":
-            break
-    assert np.allclose(c.cmd[:5], LC.LCFG.inspect_pose, atol=3.0)
-    assert insp.done.wait(2.0) and c.L["cycles"][-1].get("approach")
