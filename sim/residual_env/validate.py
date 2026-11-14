@@ -16,12 +16,18 @@ from pathlib import Path
 ap = argparse.ArgumentParser()
 ap.add_argument("--episodes", type=int, default=20)
 ap.add_argument("--num_envs", type=int, default=20)
-ap.add_argument("--data", default=str(Path.home() / "residual_env/data/duplo_teleop_3phase"))
+ap.add_argument("--data", default="/home/joe-spark-2/desmond/datasets/duplo-cal2-456-3stage-20261114/duplo_teleop_cal2_rgb_3stage",
+                help="cal2 3-stage build (current calibration); old-calibration data: --calib fit_old --data ~/residual_env/data/duplo_teleop_3phase")
 ap.add_argument("--out", default=str(Path.home() / "residual_env/out/validate"))
 ap.add_argument("--clamp", type=float, default=1000.0, help="replay clamp (teleop had none on the follower)")
 ap.add_argument("--fps_envs", default="8,16,32")
 ap.add_argument("--skip", default="")
 ap.add_argument("--joint_offsets", default="fit_old", help="fit_old (default) | joe | fit_cal2")
+ap.add_argument("--calib", default="joe_cal2", help="calibration profile (calib.py): joe | fit_old | fit_cal2 | joe_cal2; "
+                "overrides --joint_offsets")
+ap.add_argument("--grasp_rule", default="gripper", choices=["labels", "gripper"],
+                help="where to place the brick: FK at the labels' grasp_frame, or at the frame the gripper closes "
+                     "(cal2 3-stage labels mark 'pickup done', ~0.8 s after the close)")
 args = ap.parse_args()
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
@@ -40,7 +46,7 @@ out = Path(args.out)
 out.mkdir(parents=True, exist_ok=True)
 report = {}
 cfg = EnvCfg(num_envs=args.num_envs, max_relative_target=args.clamp, meas_noise=False, episode_s=60,
-             joint_offsets=args.joint_offsets)
+             joint_offsets=args.joint_offsets, calib=args.calib)
 sim, scene, layout, env = make(cfg)
 dev = env.device
 J = ["shoulder_pan", "shoulder_lift", "elbow_flex", "wrist_flex", "wrist_roll", "gripper"]
@@ -85,6 +91,17 @@ if "step" not in args.skip:
 
 # ---------------------------------------------------------------- (c) replay (incl. (b) gripper hold on the brick)
 eps = load_episodes(args.data)
+if args.grasp_rule == "gripper":
+    def _close_frame(grip, insp, thr=12.0, stay=15.0, open_min=15.0):
+        g = grip[:insp] if insp else grip
+        if len(g) == 0 or g.max() < open_min:
+            return None
+        for f in range(1, len(g)):
+            if g[f - 1] > thr >= g[f] and (g[f:] <= stay).all():
+                return f
+        return None
+    for d in eps.values():
+        d["grasp_frame"] = _close_frame(d["state"][:, 5], d["inspection_frame"])
 ok = [e for e, d in eps.items() if not d["excluded"] and (d["grasp_frame"] or 0) > 5 and d["inspection_frame"]]
 rng = np.random.default_rng(0)
 chosen = sorted(rng.choice(ok, size=min(args.episodes, len(ok), env.n), replace=False).tolist())
@@ -171,7 +188,7 @@ report["replay"] = {
     "brick_max_height_m": np.round(max_z, 3).tolist(),
     "in_inspect_view_at_mark_frac": float(view_at_insp.mean()),
     "gripper_hold_median_sim": float(np.median([np.median(h) for h in hold if h])) if any(hold) else None,
-    "gripper_hold_median_real": 5.75,
+    "gripper_hold_median_real": 5.75, "calib": env.profile.name, "data": args.data, "grasp_rule": args.grasp_rule,
     "ticks": T, "wall_s": round(wall, 1), "ticks_per_s_all_envs": round(T * env.n / wall, 1)}
 print("REPLAY", json.dumps(report["replay"]), flush=True)
 (out / "validate.json").write_text(json.dumps(report, indent=1))

@@ -179,8 +179,17 @@ def load_layout(path: str | Path | None, camera_source: str = "joe") -> Layout:
     return lay
 
 
+def _robot_usd(profile) -> str:
+    if profile is not None and getattr(profile, "robot_usd", None):
+        from calib import check_robot_usd
+
+        return check_robot_usd(profile.robot_usd)
+    return ROBOT_USD
+
+
 def build_scene_cfg(num_envs: int, layout: Layout, cameras: bool, env_spacing: float = 2.5,
-                    drive_stiffness: float = 60.0, drive_damping: float = 2.0, effort_limit: float = 2.9):
+                    drive_stiffness: float = 60.0, drive_damping: float = 2.0, effort_limit: float = 2.9,
+                    profile=None):
     """InteractiveSceneCfg with robot, table, bricks, bowls (+ optional wrist/top cameras)."""
     import isaaclab.sim as sim_utils
     from isaaclab.actuators import ImplicitActuatorCfg
@@ -202,7 +211,7 @@ def build_scene_cfg(num_envs: int, layout: Layout, cameras: bool, env_spacing: f
     cfg.robot = ArticulationCfg(
         prim_path="{ENV_REGEX_NS}/Robot",
         spawn=sim_utils.UsdFileCfg(
-            usd_path=ROBOT_USD,
+            usd_path=_robot_usd(profile),
             articulation_props=sim_utils.ArticulationRootPropertiesCfg(
                 enabled_self_collisions=False, solver_position_iteration_count=16,
                 solver_velocity_iteration_count=4),
@@ -214,7 +223,9 @@ def build_scene_cfg(num_envs: int, layout: Layout, cameras: bool, env_spacing: f
                                        damping=drive_damping, effort_limit_sim=effort_limit,
                                        velocity_limit_sim=math.radians(240.0)),
             "gripper": ImplicitActuatorCfg(joint_names_expr=["gripper"], stiffness=drive_stiffness,
-                                           damping=drive_damping, effort_limit_sim=effort_limit,
+                                           damping=drive_damping,
+                                           effort_limit_sim=(profile.gripper_effort if profile is not None and
+                                                             getattr(profile, "gripper_effort", None) else effort_limit),
                                            velocity_limit_sim=math.radians(240.0)),
         },
     )
@@ -263,7 +274,15 @@ def build_scene_cfg(num_envs: int, layout: Layout, cameras: bool, env_spacing: f
                                                  clipping_range=(0.005, 20.0)),
                 offset=CameraCfg.OffsetCfg(pos=tuple(float(v) for v in m[3, :3]), rot=mat_to_quat_xyzw(m),
                                            convention="opengl"))
-        top_m = np.asarray(layout.top_cam_rows) if layout.top_cam_rows else TOP_CAM_M
-        cfg.top_cam = cam("{ENV_REGEX_NS}/TopCam", top_m, layout.top_cam_intr or TOP_CAM_INTR)
-        cfg.wrist_cam = cam("{ENV_REGEX_NS}/" + GRIPPER_LINK + "/WristCam", WRIST_CAM_M, WRIST_CAM_INTR)
+        if profile is not None and profile.top is not None:  # calibration profile (calib.py) wins
+            top_m, top_i = np.asarray(profile.top.rows), profile.top.intr
+        else:
+            top_m = np.asarray(layout.top_cam_rows) if layout.top_cam_rows else TOP_CAM_M
+            top_i = layout.top_cam_intr or TOP_CAM_INTR
+        cfg.top_cam = cam("{ENV_REGEX_NS}/TopCam", top_m, top_i)
+        if profile is not None and profile.wrist is not None:
+            wr_m, wr_i = np.asarray(profile.wrist.rows), profile.wrist.intr
+        else:
+            wr_m, wr_i = WRIST_CAM_M, WRIST_CAM_INTR
+        cfg.wrist_cam = cam("{ENV_REGEX_NS}/" + GRIPPER_LINK + "/WristCam", wr_m, wr_i)
     return cfg

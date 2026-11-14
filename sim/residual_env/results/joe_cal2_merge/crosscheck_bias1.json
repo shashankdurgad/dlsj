@@ -1,0 +1,137 @@
+{
+ "joe_cal2": {
+  "ep101": {
+   "episode": 101,
+   "max_lift_m": 0.0001,
+   "hold_over5cm": false,
+   "closest_tip_to_target_m": 0.0111,
+   "mean_arm_tracking_deg": [
+    1.9,
+    10.28,
+    4.11,
+    1.75,
+    0.61
+   ],
+   "final_gripper_units": 3.95,
+   "final_gripper_rad": 0.1
+  },
+  "ep120": {
+   "episode": 120,
+   "max_lift_m": 0.0019,
+   "hold_over5cm": false,
+   "closest_tip_to_target_m": 0.0118,
+   "mean_arm_tracking_deg": [
+    2.26,
+    3.19,
+    3.91,
+    1.89,
+    2.06
+   ],
+   "final_gripper_units": 4.22,
+   "final_gripper_rad": 0.107
+  },
+  "ep120ca": {
+   "episode": 120,
+   "max_lift_m": 0.002,
+   "hold_over5cm": false,
+   "closest_tip_to_target_m": 0.0106,
+   "mean_arm_tracking_deg": [
+    2.26,
+    3.19,
+    3.9,
+    1.9,
+    2.06
+   ],
+   "final_gripper_units": 4.22,
+   "final_gripper_rad": 0.107
+  }
+ },
+ "fit_cal2": {
+  "ep101": {
+   "episode": 101,
+   "max_lift_m": -0.0005,
+   "hold_over5cm": false,
+   "closest_tip_to_target_m": 0.0987,
+   "mean_arm_tracking_deg": [
+    2.05,
+    7.97,
+    4.04,
+    1.54,
+    0.58
+   ],
+   "final_gripper_units": 3.94,
+   "final_gripper_rad": 0.111
+  },
+  "ep120": {
+   "episode": 120,
+   "max_lift_m": -0.0005,
+   "hold_over5cm": false,
+   "closest_tip_to_target_m": 0.1141,
+   "mean_arm_tracking_deg": [
+    2.21,
+    3.31,
+    3.96,
+    1.72,
+    2.03
+   ],
+   "final_gripper_units": 4.22,
+   "final_gripper_rad": 0.116
+  },
+  "ep120ca": {
+   "episode": 120,
+   "max_lift_m": -0.0005,
+   "hold_over5cm": false,
+   "closest_tip_to_target_m": 0.1106,
+   "mean_arm_tracking_deg": [
+    2.21,
+    3.31,
+    3.96,
+    1.72,
+    2.03
+   ],
+   "final_gripper_units": 4.22,
+   "final_gripper_rad": 0.116
+  }
+ },
+ "joe_own_sim": {
+  "ep101": {
+   "max_lift_m": 0.1557,
+   "hold_over5cm": true,
+   "closest_tip_to_target_m": 0.0022,
+   "mean_arm_tracking_deg": [
+    1.0,
+    2.03,
+    0.98,
+    1.04,
+    0.57
+   ],
+   "final_gripper_rad": 0.242
+  },
+  "ep120": {
+   "max_lift_m": 0.0375,
+   "hold_over5cm": false,
+   "closest_tip_to_target_m": 0.012,
+   "mean_arm_tracking_deg": [
+    1.14,
+    1.49,
+    0.84,
+    0.76,
+    0.73
+   ],
+   "final_gripper_rad": 0.185
+  },
+  "ep120ca": {
+   "max_lift_m": 0.1643,
+   "hold_over5cm": true,
+   "closest_tip_to_target_m": 0.0024,
+   "mean_arm_tracking_deg": [
+    1.26,
+    1.55,
+    0.8,
+    1.11,
+    0.89
+   ],
+   "final_gripper_rad": 0.235
+  }
+ }
+}

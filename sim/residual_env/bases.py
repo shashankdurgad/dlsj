@@ -36,7 +36,8 @@ def load_episodes(root: str | Path, episodes: list[int] | None = None) -> dict[i
         out[ep] = {"action": np.stack(g["action"].values).astype(np.float32),
                    "state": np.stack(g["observation.state"].values).astype(np.float32),
                    "grasp_frame": lab.get("grasp_frame"), "inspection_frame": lab.get("inspection_frame"),
-                   "bowl": lab.get("bowl_final", lab.get("bowl")), "excluded": lab.get("excluded")}
+                   "bowl": lab.get("bowl_final", lab.get("bowl")),
+                   "excluded": lab.get("excluded") or (lab.get("exclude_reason") if lab.get("exclude_from_training") else None)}
     return out
 
 

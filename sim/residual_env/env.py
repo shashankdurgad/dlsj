@@ -61,6 +61,10 @@ class EnvCfg:
     scene_params: str = ""  # sim/realism/scene_params.json (A2)
     camera_source: str = "joe"  # "joe" (camera-fit.json, default) | "a2_refined" (rejected by A2; opt-in only)
     joint_offsets: str = "fit_old"  # data-fitted (sim/realism/joint_offset_fit.md); "joe" = original camera-fit; "fit_cal2" for cal2 states
+    # Calibration profile (calib.py): "joe" | "fit_old" | "fit_cal2" | "joe_cal2". Empty = use `joint_offsets` as the
+    # profile name (back-compatible). joe_cal2 also sets cameras, inspect camera, gripper scale and robot USD.
+    calib: str = "joe_cal2"  # default: cal2 = the current robot calibration and the cal2 datasets
+    target_size: tuple | None = None  # override the target brick size (m), e.g. (0.064, 0.032, 0.0192) for a 2x4
     servo_params: str = ""  # sim/realism/servo_params.json (A1)
     max_relative_target: float = 10.0  # LeRobot clamp, units per tick (all joints incl. gripper)
     meas_noise: bool = True
@@ -135,7 +139,11 @@ class ResidualEnv:
         self.vmax = torch.tensor(vmax, device=d)
         self.bias = torch.tensor(bias, device=d)
         self.noise = torch.tensor(noise, device=d) if cfg.meas_noise else torch.zeros(6, device=d)
-        self.off = torch.tensor(resolve_joint_offsets(cfg.joint_offsets), device=d)
+        from calib import load_profile
+
+        self.profile = load_profile(cfg.calib or cfg.joint_offsets)
+        self.off = torch.tensor(self.profile.joint_offsets, device=d)
+        self.g_scale, self.g_bias = float(self.profile.grip_scale), float(self.profile.grip_bias)
         self.jidx = [self.robot.joint_names.index(j) for j in JOINTS]
         self.grip_body = self.robot.body_names.index("gripper_link")
         self.tip_local = torch.tensor(TIP_LOCAL, device=d)
@@ -143,7 +151,9 @@ class ResidualEnv:
         self.bowl_xy = torch.tensor([[b[0], b[1]] for b in layout.bowls.values()], device=d)
         self.bowl_xy_env = self.bowl_xy.unsqueeze(0).repeat(self.n, 1, 1)  # per-env plate centres (randomised)
         self.bowl_r = torch.tensor([b[2] for b in layout.bowls.values()], device=d)
-        self.inspect_cam = _cam_from_rows(np.array(_INSPECT_ROWS), device=d)
+        ins = self.profile.inspect
+        self.inspect_cam = _cam_from_rows(np.array(ins.rows if ins else _INSPECT_ROWS), device=d,
+                                          f_px=ins.f_px if ins else None)
         self.table_z = -0.002
         self.res_scale = torch.tensor(cfg.residual_scale, device=d)
         self.res_joints = list(cfg.residual_joints)
@@ -167,12 +177,12 @@ class ResidualEnv:
     # ------------------------------------------------------------------ unit conversions
     def to_sim(self, ours: torch.Tensor) -> torch.Tensor:
         q = torch.deg2rad(ours) + self.off
-        q[..., 5] = (ours[..., 5] + GRIP_OFFSET_UNITS) / 100.0 * GRIPPER_UPPER
+        q[..., 5] = ours[..., 5] * self.g_scale + self.g_bias
         return q
 
     def to_ours(self, q: torch.Tensor) -> torch.Tensor:
         s = torch.rad2deg(q - self.off)
-        s[..., 5] = q[..., 5] / GRIPPER_UPPER * 100.0 - GRIP_OFFSET_UNITS
+        s[..., 5] = (q[..., 5] - self.g_bias) / self.g_scale
         return s
 
     def measured(self, noisy: bool = True) -> torch.Tensor:
@@ -504,11 +514,11 @@ _INSPECT_ROWS = [[-0.999530856702204, 0.03062787129655299, 0, 0],
                  [0.19372239888012727, 0.30782613116852947, 0.09, 1]]
 
 
-def _cam_from_rows(m, device):
+def _cam_from_rows(m, device, f_px=None):
     """USD row-vector camera matrix -> (R with camera axes as columns... used as p_cam = (p - t) @ R, t, f_px)."""
     R = torch.tensor(np.asarray(m)[:3, :3].T, dtype=torch.float32, device=device)  # columns = cam axes in world
     t = torch.tensor(np.asarray(m)[3, :3], dtype=torch.float32, device=device)
-    f = 20.0 / 27.234043 * 640
+    f = f_px if f_px else 20.0 / 27.234043 * 640
     return R, t, f
 
 

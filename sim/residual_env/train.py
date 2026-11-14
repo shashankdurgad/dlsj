@@ -19,7 +19,8 @@ ap.add_argument("--latency", type=float, default=0.074)
 ap.add_argument("--episode_s", type=float, default=12.0)
 ap.add_argument("--warmup_steps", type=int, default=2000, help="transitions before updates start")
 ap.add_argument("--updates_per_step", type=int, default=1)
-ap.add_argument("--data", default=str(Path.home() / "residual_env/data/duplo_teleop_3phase"))
+ap.add_argument("--data", default="/home/joe-spark-2/desmond/datasets/duplo-cal2-456-3stage-20261114/duplo_teleop_cal2_rgb_3stage")
+ap.add_argument("--calib", default="joe_cal2", help="calibration profile (calib.py); fit_old for old-calibration data")
 ap.add_argument("--ipc", default=str(Path.home() / "residual_env/ipc"))
 ap.add_argument("--out", default=str(Path.home() / "residual_env/out/train"))
 ap.add_argument("--seed", type=int, default=0)
@@ -50,7 +51,7 @@ elif args.base == "hold":
 else:
     base = IPCVLABase(args.ipc)
 cfg = EnvCfg(num_envs=args.num_envs, cameras=args.base == "smolvla", base_latency_s=args.latency,
-             episode_s=args.episode_s)
+             episode_s=args.episode_s, calib=args.calib)
 sim, scene, layout, env = make(cfg, base)
 agent = SAC(env.obs_dim, env.act_dim, env.device)
 obs = env.reset()

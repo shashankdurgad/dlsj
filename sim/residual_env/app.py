@@ -141,8 +141,19 @@ def make(cfg, base=None, device: str = "cuda:0"):
     from scene import build_scene_cfg, load_layout
 
     sim = sim_utils.SimulationContext(sim_utils.SimulationCfg(dt=1.0 / cfg.physics_hz, device=device))
+    from calib import load_profile
+    from scene import Brick
+
     layout = load_layout(cfg.scene_params or DEFAULT_SCENE_PARAMS, getattr(cfg, "camera_source", "joe"))
-    scene = InteractiveScene(build_scene_cfg(cfg.num_envs, layout, cfg.cameras))
+    if getattr(cfg, "target_size", None):
+        t = layout.target
+        sx, sy, sz = cfg.target_size
+        mass = t.mass * (sx * sy * sz) / (t.size[0] * t.size[1] * t.size[2])
+        layout.target = Brick(t.name, tuple(cfg.target_size), t.pos, t.color, mass)
+    profile = load_profile(getattr(cfg, "calib", "") or cfg.joint_offsets)
+    print("calibration profile:", profile.name, "| offsets", [round(v, 4) for v in profile.joint_offsets],
+          "| gripper q = units *", round(profile.grip_scale, 5), "+", round(profile.grip_bias, 4), flush=True)
+    scene = InteractiveScene(build_scene_cfg(cfg.num_envs, layout, cfg.cameras, profile=profile))
     if cfg.cameras:
         paint_robot(cfg.num_envs)
     import os
