@@ -2,14 +2,21 @@
 # MolmoAct2-SO100_101 fine-tune on a GCP GPU VM through Physical AI Studio. Idempotent: rerun after a Spot
 # preemption and it skips finished stages and resumes from the newest checkpoint.
 #
-#   RUN_NAME=molmoact2-cal2-221-20261114 STAGE=gate bash run.sh   # setup, smoke, 200-step timing, OpenVINO export
-#   RUN_NAME=molmoact2-cal2-221-20261114 STAGE=full bash run.sh   # the 8k-step run
+#   RUN_NAME=<name> METHOD=ai2 DATASET_URI=gs://.../molmoact2-cal2-431-... STAGE=gate bash run.sh  # smoke, timing, export
+#   RUN_NAME=<name> METHOD=ai2 DATASET_URI=gs://.../molmoact2-cal2-431-... STAGE=full bash run.sh  # the full run
 #
+# METHOD: ai2 (method A, Ai2 LoRA split) | studio (method B). DATASET_URI overrides versions.env; DATASET_URI=wait
+# (launch_vm.sh without --dataset) sets up Studio + the model, then polls the VM's `dataset` metadata key and that
+# snapshot's READY.json for up to DATASET_WAIT_S (default 6 h) before continuing (the VM powers off after that; restarting it resumes the wait).
 # Optional env: GPUS (default: all visible), RUN_ARTIFACTS (gs://onflow-30k-pi05-artifacts/runs/$RUN_NAME),
 # WORK_DIR (/opt/$RUN_NAME), MAX_UPTIME_S (default 25200 = 7 h), AUTO_SHUTDOWN=1, STEPS (8000).
 set -euo pipefail
 here="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+dataset_override="${DATASET_URI:-}"
 source "$here/versions.env"
+DATASET_URI="${dataset_override:-$DATASET_URI}"
+METHOD="${METHOD:-ai2}"
+[[ "$METHOD" == ai2 || "$METHOD" == studio ]] || { echo "METHOD must be ai2 or studio" >&2; exit 2; }
 : "${RUN_NAME:?set RUN_NAME}"
 STAGE="${STAGE:-gate}"
 [[ "$STAGE" == gate || "$STAGE" == full ]] || { echo "STAGE must be gate or full" >&2; exit 2; }
@@ -44,7 +51,7 @@ finish() {
   exit "$code"
 }
 trap finish EXIT
-echo "STAGE_STARTED $STAGE $(date -u +%FT%TZ) artifacts=$RUN_ARTIFACTS"
+echo "STAGE_STARTED $STAGE $(date -u +%FT%TZ) method=$METHOD steps=$STEPS dataset=$DATASET_URI artifacts=$RUN_ARTIFACTS"
 
 # --- environment: Studio at the pinned commit with the molmoact2 extra -------------------------------------
 for _ in $(seq 1 36); do nvidia-smi -L && break; sleep 5; done
@@ -54,6 +61,7 @@ command -v uv >/dev/null || curl -LsSf https://astral.sh/uv/install.sh | sh
 export PATH="$HOME/.local/bin:$PATH" STUDIO_DIR="$work/studio"
 [[ -x "$STUDIO_DIR/library/.venv/bin/python" ]] || bash "$here/setup.sh"
 py="$STUDIO_DIR/library/.venv/bin/python"
+bash "$here/fix_opencv.sh" "$py"  # idempotent; also repairs a venv made before the fix existed
 
 # --- pinned base model: download, check `main` is the pinned revision, then go offline ----------------------
 export HF_HOME="$work/hf-home" HF_HUB_DISABLE_TELEMETRY=1
@@ -66,6 +74,23 @@ print("MODEL_PINNED", path)
 PY
 export HF_HUB_OFFLINE=1
 
+# --- data: wait until a prepared snapshot is named and uploaded (launch without --dataset) --------------------
+metadata() { curl -sf -H 'Metadata-Flavor: Google' \
+  "http://metadata.google.internal/computeMetadata/v1/instance/attributes/$1" 2>/dev/null || true; }
+waited=0
+until [[ "$DATASET_URI" == gs://* ]] && gcloud storage ls "$DATASET_URI/READY.json" >/dev/null 2>&1; do
+  (( waited < ${DATASET_WAIT_S:-21600} )) || { echo "no dataset after $waited s" >&2; exit 1; }
+  (( waited % 600 == 0 )) && echo "WAITING_FOR_DATASET $(date -u +%FT%TZ) dataset=$DATASET_URI (set metadata dataset=gs://.../<snapshot>)"
+  sleep 60; waited=$(( waited + 60 ))
+  v="$(metadata dataset)"; [[ -n "$v" ]] && DATASET_URI="$v"
+  v="$(metadata method)"; [[ -n "$v" ]] && METHOD="$v"
+  v="$(metadata steps)"; [[ -n "$v" ]] && STEPS="$v"
+done
+[[ "$METHOD" == ai2 || "$METHOD" == studio ]] || { echo "METHOD must be ai2 or studio" >&2; exit 2; }
+[[ "$STEPS" =~ ^[0-9]+$ ]] || { echo "STEPS must be a number" >&2; exit 2; }
+echo "DATASET_READY $DATASET_URI method=$METHOD steps=$STEPS"
+echo "$DATASET_URI method=$METHOD steps=$STEPS" | gcloud storage cp - "$RUN_ARTIFACTS/dataset-$STAGE.txt" || true
+
 # --- data: prepared snapshot from GCS, checksum-verified ----------------------------------------------------
 if [[ ! -f data/.verified ]]; then
   mkdir -p data
@@ -76,11 +101,12 @@ fi
 dataset="$work/data"
 
 if [[ "$STAGE" == gate ]]; then
-  [[ -f runs/smoke.done ]] || { "$py" "$here/train.py" "$dataset" --output runs/smoke --gpus "$GPUS" --smoke \
+  [[ -f runs/smoke.done ]] || { "$py" "$here/train.py" "$dataset" --output runs/smoke --gpus "$GPUS" --method "$METHOD" --smoke \
     && touch runs/smoke.done; }
   if [[ ! -f runs/timing/checkpoints/snapshots/step000200.ckpt ]]; then
     rm -rf runs/timing
-    "$py" "$here/train.py" "$dataset" --output runs/timing --gpus "$GPUS" --steps 200 --snapshot-every 200
+    "$py" "$here/train.py" "$dataset" --output runs/timing --gpus "$GPUS" --method "$METHOD" \
+      --steps 200 --snapshot-every 200
   fi
   "$py" - "$STEPS" <<'PY'
 import json, sys
@@ -120,7 +146,7 @@ syncer=$!
 remaining=$(( deadline - $(date +%s) - 900 ))  # leave 15 min for the final checkpoint and upload
 (( remaining > 900 )) || { echo "not enough VM time left ($remaining s)"; exit 1; }
 set +e
-"$py" "$here/train.py" "$dataset" --output "$run" --gpus "$GPUS" --steps "$STEPS" \
+"$py" "$here/train.py" "$dataset" --output "$run" --gpus "$GPUS" --method "$METHOD" --steps "$STEPS" \
   --deadline-seconds "$remaining" "${resume[@]}"
 code=$?
 set -e

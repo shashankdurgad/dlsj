@@ -6,7 +6,7 @@ smaller datasets or similar embodiments"; SO100/SO101 fine-tuning starts from al
 ("< 200 demonstrations: global batch 16-32, LoRA"; image augmentation). Trained through Studio's own MolmoAct2
 policy (pinned commit) so the checkpoint exports to OpenVINO for the XPS.
 
-    python train.py <prepared dataset> --output runs/plan --plan-only
+    python train.py <prepared dataset> --output runs/plan --plan-only [--method ai2|studio]
     python train.py <prepared dataset> --output runs/smoke --smoke            # 1 train + 1 val batch
     python train.py <prepared dataset> --output runs/timing --steps 200
     python train.py <prepared dataset> --output runs/full                     # 8,000 steps, global batch 32
@@ -17,15 +17,31 @@ import argparse
 import json
 import os
 from pathlib import Path
+import re
 import subprocess
 
 HERE = Path(__file__).resolve().parent
 CAMERAS = ("observation.images.wrist", "observation.images.top")
 
-# Studio MolmoAct2 init_args. NOTE: with no lora_target_modules, Studio freezes every base weight and puts
-# rank-64/alpha-16 adapters on the LLM, ViT, connector AND action expert (mixins/peft + model.get_default_peft_targets
-# at the pinned commit). Ai2's LoRA recipe differs: adapters on LLM + ViT only, connector and action expert trained
-# in full. Rank/alpha/dropout (64/16/0.05) and the 5e-5 LRs do match Ai2.
+# Shared Studio MolmoAct2 init_args. The two methods (methods.py) differ only in which weights train; both train
+# the whole action expert:
+#   ai2    (A) LoRA on LLM + ViT linears; connector, action expert and ln_f trained in full (Ai2's LoRA recipe)
+#   studio (B) Studio's LLM + ViT LoRA targets (incl. ViT patch embedding); connector and action expert in full
+# Rank/alpha/dropout 64/16/0.05 (Studio defaults = Ai2) and 5e-5 for every LR group in both.
+METHODS = {"ai2": "methods.MolmoAct2Ai2Split", "studio": "methods.MolmoAct2StudioLoraFullExpert"}
+# Method B adapters: Studio's default VLM leaves (model._VLM_LORA_LINEAR_LEAVES at the pinned commit) restricted to
+# the LLM and the ViT (incl. patch embedding); nothing in the connector or the action expert, which train in full.
+STUDIO_VLM_LORA_TARGETS = (
+    r"backbone\.model\.(transformer\.(?:.*\.)?(att_proj|attn_out|ff_proj|ff_out)"
+    r"|vision_backbone\.image_vit\.(?:.*\.)?(wq|wk|wv|wo|w1|w2|patch_embedding))$"
+)
+# Method A adapters: LLM block linears and ViT block linears only (no connector, action expert or patch embedding).
+AI2_LORA_TARGETS = (
+    r"backbone\.model\.("
+    r"transformer\.blocks\.\d+\.(self_attn\.(att_proj|attn_out)|mlp\.(ff_proj|ff_out))"
+    r"|vision_backbone\.image_vit\.transformer\.resblocks\.\d+\.(attention\.(wq|wk|wv|wo)|feed_forward\.(w1|w2))"
+    r")$"
+)
 RECIPE = {
     "pretrained_name_or_path": "allenai/MolmoAct2-SO100_101",
     "setup_type": "single so100/so101 robotic arm in molmoact2",  # exact strings of the checkpoint's norm tag
@@ -54,27 +70,32 @@ def versions():
 
 
 def check_dataset(root):
-    """The snapshot must be what prepare_data.py writes."""
+    """The snapshot must be what prepare_data.py writes (3-stage version, with an episode list)."""
     info = json.loads((root / "meta/info.json").read_text())
     cams = sorted(k for k in info["features"] if k.startswith("observation.images."))
     if cams != sorted(CAMERAS):
         raise ValueError(f"expected cameras {sorted(CAMERAS)} (run prepare_data.py), found {cams}")
     if info["features"]["observation.images.top"]["shape"][:2] != [480, 560]:
         raise ValueError("top must be cropped to 560x480")
-    for name in ("TRAIN-NORMALIZATION.json", "meta/dlsj/labels.jsonl", "calibration/follower.json",
-                 "MANIFEST.json"):
+    for name in ("TRAIN-NORMALIZATION.json", "meta/dlsj/labels.jsonl", "MANIFEST.json"):
         if not (root / name).exists():
             raise ValueError(f"missing {name}")
     manifest = json.loads((root / "MANIFEST.json").read_text())
+    if not isinstance(manifest.get("episodes"), list) or not manifest["episodes"]:
+        raise ValueError("MANIFEST.json has no episode list (snapshot from the old prepare_data.py?)")
     return info, manifest
 
 
-def build_config(*, dataset, output, gpus, steps=STEPS, global_batch=GLOBAL_BATCH, smoke=False,
-                 snapshot_every=2000, resume_every=500, val_every=500, deadline_seconds=None):
+def build_config(*, dataset, output, gpus, episodes, validation_episodes, method="ai2", steps=STEPS, global_batch=GLOBAL_BATCH,
+                 smoke=False, snapshot_every=2000, resume_every=500, val_every=500, deadline_seconds=None,
+                 wandb=None):
     if global_batch % gpus:
         raise ValueError(f"global batch {global_batch} is not divisible by {gpus} GPUs")
+    if method not in METHODS:
+        raise ValueError(f"method must be one of {sorted(METHODS)}")
     dataset, output = Path(dataset), Path(output)
     model = dict(RECIPE)
+    model["lora_target_modules"] = AI2_LORA_TARGETS if method == "ai2" else STUDIO_VLM_LORA_TARGETS
     callbacks = [
         {"class_path": "lightning.pytorch.callbacks.ModelCheckpoint", "init_args": {  # resume (full state)
             "dirpath": str(output / "checkpoints/resume"), "every_n_train_steps": resume_every,
@@ -94,11 +115,13 @@ def build_config(*, dataset, output, gpus, steps=STEPS, global_batch=GLOBAL_BATC
         callbacks.append({"class_path": "lightning.pytorch.callbacks.Timer", "init_args": {
             "duration": {"hours": s // 3600, "minutes": s % 3600 // 60, "seconds": s % 60}, "interval": "step"}})
     config = {
-        "model": {"class_path": "policy_text.MolmoAct2Text128", "init_args": model},  # 128-token text (policy_text.py)
+        # both method classes subclass policy_text.MolmoAct2Text128 (128-token static text, must match the export)
+        "model": {"class_path": METHODS[method], "init_args": model},
         "data": {"class_path": "phase_data.PhaseDataModule", "init_args": {
             "repo_id": "local/molmoact2", "root": str(dataset), "data_format": "physicalai",
+            "episodes": list(episodes), "validation_episodes": list(validation_episodes),
             "train_batch_size": global_batch // gpus, "val_batch_size": 8, "num_workers": 6,
-            "val_split": 0.1, "val_split_seed": 42, "video_backend": "pyav", "image_transforms": AUGMENT}},
+            "video_backend": "pyav", "image_transforms": AUGMENT}},  # split: validation_episodes (team's)
         "trainer": {
             "accelerator": "gpu", "devices": gpus, "num_nodes": 1,
             "strategy": "ddp_find_unused_parameters_true" if gpus > 1 else "auto",
@@ -107,24 +130,32 @@ def build_config(*, dataset, output, gpus, steps=STEPS, global_batch=GLOBAL_BATC
             "limit_val_batches": 32, "num_sanity_val_steps": 1, "default_root_dir": str(output),
             "callbacks": callbacks},
     }
+    if wandb and not smoke:  # {"project": ..., "name": ...}; the id is fixed so a resumed run continues the same W&B run
+        run_id = re.sub(r"[^A-Za-z0-9_-]", "-", wandb["name"])[:64]
+        config["trainer"]["logger"] = {"class_path": "lightning.pytorch.loggers.WandbLogger", "init_args": {
+            "project": wandb["project"], "name": wandb["name"], "id": run_id, "resume": "allow",
+            "save_dir": str(output), "log_model": False, "config": {"method": method, "steps": steps,
+                                                                     "global_batch": global_batch, "gpus": gpus}}}
     if smoke:
         config["trainer"].update(fast_dev_run=1, callbacks=[], enable_checkpointing=False, logger=False,
                                  val_check_interval=1.0, check_val_every_n_epoch=1)
     return config
 
 
-def plan(info, manifest, gpus, steps, global_batch):
-    train_frames = info["total_frames"] * len(manifest["studio_split"]["train"]) // info["total_episodes"]
-    return {"gpus": gpus, "per_gpu_batch": global_batch // gpus, "global_batch": global_batch, "steps": steps,
-            "approx_epochs": round(steps * global_batch / train_frames, 1),
-            "train_episodes": len(manifest["studio_split"]["train"]),
-            "validation_episodes": manifest["studio_split"]["validation"], "versions": versions()}
+def plan(manifest, gpus, steps, global_batch, method):
+    train_frames = manifest["train_frames"]
+    return {"method": method, "gpus": gpus, "per_gpu_batch": global_batch // gpus, "global_batch": global_batch,
+            "steps": steps, "train_frames": train_frames, "epochs": round(steps * global_batch / train_frames, 2),
+            "train_episodes": len(manifest["split"]["train"]), "split_source": manifest["split"]["source"],
+            "validation_episodes": manifest["split"]["validation"], "versions": versions()}
 
 
 def main():
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("dataset", type=Path)
     p.add_argument("--output", type=Path, required=True)
+    p.add_argument("--method", choices=sorted(METHODS), default="ai2",
+                   help="ai2 = method A (Ai2 LoRA split), studio = method B (Studio default LoRA)")
     p.add_argument("--gpus", type=int, choices=(1, 2, 4, 8), default=4)
     p.add_argument("--steps", type=int, default=STEPS)
     p.add_argument("--global-batch", type=int, default=GLOBAL_BATCH)
@@ -133,14 +164,20 @@ def main():
     p.add_argument("--smoke", action="store_true")
     p.add_argument("--resume", type=Path, help="Lightning .ckpt to resume (same dataset/GPUs/batch)")
     p.add_argument("--plan-only", action="store_true")
+    p.add_argument("--wandb-project", default="molmoact2-finetune")
+    p.add_argument("--wandb-name", help="W&B run name (logging is on when WANDB_API_KEY is set)")
     args = p.parse_args()
     dataset, output = args.dataset.resolve(), args.output.resolve()
     try:
         info, manifest = check_dataset(dataset)
-        summary = plan(info, manifest, args.gpus, args.steps, args.global_batch)
-        config = build_config(dataset=dataset, output=output, gpus=args.gpus, steps=args.steps,
+        summary = plan(manifest, args.gpus, args.steps, args.global_batch, args.method)
+        config = build_config(dataset=dataset, output=output, gpus=args.gpus, episodes=manifest["episodes"],
+                              validation_episodes=manifest["split"]["validation"],
+                              method=args.method, steps=args.steps,
                               global_batch=args.global_batch, smoke=args.smoke,
-                              snapshot_every=args.snapshot_every, deadline_seconds=args.deadline_seconds)
+                              snapshot_every=args.snapshot_every, deadline_seconds=args.deadline_seconds,
+                              wandb={"project": args.wandb_project, "name": args.wandb_name or output.name}
+                              if os.environ.get("WANDB_API_KEY") else None)
     except (ValueError, OSError, KeyError) as exc:
         p.error(str(exc))
     print(json.dumps(summary, indent=2), flush=True)

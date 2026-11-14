@@ -16,7 +16,10 @@ else
 fi
 git -C "$studio" fetch --depth 1 origin "$STUDIO_COMMIT"
 GIT_LFS_SKIP_SMUDGE=1 git -C "$studio" checkout --detach "$STUDIO_COMMIT"
-uv sync --project "$studio/library" --locked --python 3.12 --extra cu128 --extra molmoact2 --extra loggers
+# --frozen, not --locked: Studio's pyproject has a relative `exclude-newer = "7 days"`, so newer uv sees the
+# lock's absolute cutoff as changed and re-resolves (which fails); --frozen installs the lock exactly as written.
+uv sync --project "$studio/library" --frozen --python 3.12 --extra cu128 --extra molmoact2 --extra loggers
+bash "$here/fix_opencv.sh" "$studio/library/.venv/bin/python"  # the lock installs two clashing OpenCV builds
 "$studio/library/.venv/bin/python" - <<'PY'
 import torch, peft
 from physicalai.policies import MolmoAct2  # noqa: F401
