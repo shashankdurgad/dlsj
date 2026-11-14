@@ -82,10 +82,17 @@ def main() -> None:
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--out", required=True, type=Path)
     p.add_argument("--repo-id", default=None, help="default local/<out name>")
-    p.add_argument("--full", type=Path, help="full-demo dataset root")
-    p.add_argument("--full-episodes", type=Path, help='json {"episodes": [...]} or a list; default all')
+    p.add_argument("--full", type=Path, action="append", default=[], help="full-demo dataset root (repeatable)")
+    p.add_argument("--full-episodes", action="append", default=[],
+                   help='per --full, in order: json file ({"episodes": [...]} or a list), "a-b", or "all" (default)')
     p.add_argument("--pick", type=Path, action="append", default=[], help="pick-only dataset root (repeatable)")
-    p.add_argument("--pick-episodes", default=None, help="a-b: only these episodes of each --pick dataset")
+    p.add_argument("--pick-episodes", default=None,
+                   help="a-b or a json episode list: only these episodes of each --pick dataset")
+    p.add_argument("--offset", default=None,
+                   help="name in configs/joint_offsets.json: add its offset_deg to state and action of every --old-cal "
+                        "source, bringing data recorded under the old calibration into the current one")
+    p.add_argument("--old-cal", type=Path, action="append", default=[], help="source root recorded with the old calibration")
+    p.add_argument("--crf", type=int, default=30, help="video quality of the output (lower = better, bigger)")
     p.add_argument("--hold-s", type=float, default=0.3)
     p.add_argument("--crop", action="append", default=[], help="key=x,y,w,h")
     p.add_argument("--pad-to", default=None, help="W,H: pad smaller cameras with black to this size, e.g. 640,480")
@@ -97,27 +104,38 @@ def main() -> None:
     resize = tuple(int(v) for v in args.resize.split(",")) if args.resize else None
     pad_to = tuple(int(v) for v in args.pad_to.split(",")) if args.pad_to else None  # (W, H)
 
+    def episode_list(spec: str | None, total: int) -> list[int]:
+        if not spec or spec == "all":
+            return list(range(total))
+        if "-" in spec and not spec.endswith(".json"):
+            a, b = (int(v) for v in spec.split("-"))
+            return list(range(a, min(b, total - 1) + 1))
+        sel = json.loads(Path(spec).read_text())
+        return sel["episodes"] if isinstance(sel, dict) else sel
+
+    offset = None
+    if args.offset:
+        table_ = json.loads((Path(__file__).resolve().parents[1] / "configs" / "joint_offsets.json").read_text())
+        offset = table_[args.offset]["offset_deg"]
+    old_cal = {r.resolve() for r in args.old_cal}
+
     jobs = []  # (meta, table, episode, n_frames, provenance)
-    if args.full:
-        meta = LeRobotDatasetMetadata(f"local/{args.full.name}", root=args.full)
+    for i_full, root in enumerate(args.full):
+        meta = LeRobotDatasetMetadata(f"local/{root.name}", root=root)
         labels = {json.loads(l)["episode_index"]: json.loads(l)
-                  for l in (args.full / "meta" / "dlsj" / "labels.jsonl").read_text().splitlines() if l.strip()}
-        sel = json.loads(args.full_episodes.read_text()) if args.full_episodes else list(range(meta.total_episodes))
-        sel = sel["episodes"] if isinstance(sel, dict) else sel
-        table = load_table(args.full)
+                  for l in (root / "meta" / "dlsj" / "labels.jsonl").read_text().splitlines() if l.strip()}
+        sel = episode_list(args.full_episodes[i_full] if i_full < len(args.full_episodes) else None, meta.total_episodes)
+        table = load_table(root)
         hold = int(round(args.hold_s * meta.fps))
         for ep in sel[: args.limit]:
             split = labels[ep]["inspection_frame"]
             n = min(int(meta.episodes[ep]["length"]), split + hold)
-            jobs.append((meta, table, ep, n, {"source": str(args.full), "episode": ep, "frames": [0, n],
+            jobs.append((meta, table, ep, n, {"source": str(root), "episode": ep, "frames": [0, n],
                                               "cut": f"inspection_frame {split} + {hold}"}))
     for root in args.pick:
         meta = LeRobotDatasetMetadata(f"local/{root.name}", root=root)
         table = load_table(root)
-        pick_eps = range(meta.total_episodes)
-        if args.pick_episodes:
-            a, b = (int(v) for v in args.pick_episodes.split("-"))
-            pick_eps = range(a, min(b, meta.total_episodes - 1) + 1)
+        pick_eps = episode_list(args.pick_episodes, meta.total_episodes)
         for ep in list(pick_eps)[: args.limit]:
             n = int(meta.episodes[ep]["length"])
             jobs.append((meta, table, ep, n, {"source": str(root), "episode": ep, "frames": [0, n], "cut": "whole"}))
@@ -138,11 +156,17 @@ def main() -> None:
         feats[k] = {"dtype": "video", "shape": (h, w, c), "names": ["height", "width", "channels"]}
     ds = LeRobotDataset.create(args.repo_id or f"local/{args.out.name}", meta0.fps, features=feats, root=args.out,
                                robot_type=meta0.robot_type, use_videos=True, image_writer_threads=4 * len(cams),
-                               rgb_encoder=RGBEncoderConfig(vcodec=args.vcodec), streaming_encoding=True)
+                               rgb_encoder=RGBEncoderConfig(vcodec=args.vcodec, crf=args.crf), streaming_encoding=True)
+    names = [n.removesuffix(".pos") for n in meta0.features["observation.state"]["names"]]
+    shift = np.array([offset.get(n, 0.0) for n in names], dtype=np.float32) if offset else None
     prov = []
     for i, (meta, table, ep, n, info) in enumerate(jobs):
         g = table[table.episode_index == ep].iloc[:n]
         S, A = np.stack(g["observation.state"].to_numpy()), np.stack(g["action"].to_numpy())
+        shifted = shift is not None and Path(info["source"]).resolve() in old_cal
+        if shifted:  # old calibration -> current one
+            S, A = S + shift, A + shift
+        info = {**info, "calibration_shift": shift.tolist() if shifted else None}
         imgs = {}
         for k in cams:
             fr = episode_frames(meta, ep, k, n)
