@@ -1,0 +1,39 @@
+{
+ "invariant_node_status_counts": {
+  "OPTIMIZED_OUT": 810
+ },
+ "action_expert_ms_by_node_type": {
+  "SDPA": 84.28,
+  "FullyConnectedCompressed": 55.34,
+  "RMS": 15.4,
+  "Multiply": 6.84,
+  "Transpose": 3.78,
+  "Gather": 2.45,
+  "Add": 0.0,
+  "Reshape": 0.0,
+  "Swish": 0.0,
+  "Concat": 0.0,
+  "VariadicSplit": 0.0,
+  "Crop": 0.0
+ },
+ "action_expert_kernel_counts": {
+  "Add": 6540,
+  "Reshape": 4700,
+  "Multiply": 4690,
+  "FullyConnectedCompressed": 3002,
+  "Crop": 2890,
+  "RMS": 2278,
+  "Transpose": 1116,
+  "Gather": 1080,
+  "SDPA": 720,
+  "Concat": 720,
+  "Swish": 380,
+  "VariadicSplit": 370
+ },
+ "expert_attention_kernels": {
+  "SDPA | ocl::sdpa::opt__f16": {
+   "count": 720,
+   "ms": 84.28
+  }
+ }
+}

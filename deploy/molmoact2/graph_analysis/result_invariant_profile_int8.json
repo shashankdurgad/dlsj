@@ -1,0 +1,18 @@
+{
+ "export": "/home/intel/inference/exports/molmoact2_so101_rtc_int8",
+ "runtime_invariant_nodes": 0,
+ "runtime_invariant_node_types": {},
+ "per_chunk_ms": {
+  "block_modulation": 0.0,
+  "final_modulation": 0.0,
+  "time_embed": 0.0
+ },
+ "per_chunk_kernels": {
+  "block_modulation": 730,
+  "final_modulation": 20,
+  "time_embed": 60
+ },
+ "invariant_total_ms": 0.0,
+ "all_kernels_ms_with_profiling": 302.5,
+ "invariant_share": 0.0
+}
