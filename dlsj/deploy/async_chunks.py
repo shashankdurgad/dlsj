@@ -57,6 +57,8 @@ class AsyncChunker:
     def stop(self) -> None:
         self._stop.set()
         self._new_obs.set()
+        if self._thread.is_alive():  # let an in-flight prediction finish; exiting mid-call aborts the process
+            self._thread.join(timeout=5)
 
     def push(self, tick: int, obs: dict[str, np.ndarray]) -> None:
         with self.lock:
