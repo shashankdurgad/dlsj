@@ -25,6 +25,12 @@ run yet: no fine-tuned checkpoint existed when this was written.
     .venv/bin/python ~/inference/deploy/pi05/studio_export.py \
         --compress_from ~/inference/exports/pi05_studio_fp16 --out ~/inference/exports/pi05_studio_int8
 
+    # Real-Time Chunking: adds prev_chunk_left_over / inference_delay / max_guidance_weight / execution_horizon
+    # inputs to the graph (Studio's gradient-free RTC correction, OpenVINO-traceable); run it with
+    # physicalai.runtime.RTCExecution or any loop that feeds those inputs.
+    .venv/bin/python ~/inference/deploy/pi05/studio_export.py --ckpt final.ckpt --rtc \
+        --out ~/inference/exports/pi05_ft_rtc_fp16 --steps 5 --tokens 64
+
     # fine-tuned checkpoint from Studio training (training/pi05/full.json):
     .venv/bin/python ~/inference/deploy/pi05/studio_export.py \
         --ckpt runs/pi05/.../checkpoints/last.ckpt --out ~/inference/exports/pi05_ft_int8 --precision int8
@@ -45,12 +51,28 @@ import torch
 DEFAULT_MODEL = "lerobot/pi05_base"
 
 
-def load_policy(pretrained: str, ckpt: str | None, steps: int | None, tokens: int | None = None) -> torch.nn.Module:
+def load_policy(pretrained: str, ckpt: str | None, steps: int | None, tokens: int | None = None,
+                rtc: bool = False) -> torch.nn.Module:
     """Build a Pi05 policy on CPU in fp32; the IR is traced in fp32 and saved as FP16."""
     from physicalai.policies import Pi05
 
     if ckpt:
-        policy = Pi05.load_from_checkpoint(ckpt, map_location="cpu")
+        # Memory-map the checkpoint: its ~12 GB of tensors are paged from disk (reclaimable page cache) instead of
+        # sitting in RAM next to the model being built. Cuts the export's peak RSS by about the checkpoint's size.
+        _load = torch.load
+
+        def _mmap_load(f, *a, **kw):
+            path = getattr(f, "name", f)  # Lightning passes an open file; mmap needs the path
+            if isinstance(path, (str, os.PathLike)) and os.path.isfile(path):
+                kw.setdefault("mmap", True)
+                f = path
+            return _load(f, *a, **kw)
+
+        torch.load = _mmap_load
+        try:
+            policy = Pi05.load_from_checkpoint(ckpt, map_location="cpu")
+        finally:
+            torch.load = _load
         # Pi05Config is a frozen dataclass: swap in a modified copy instead of assigning fields.
         changes = {}
         if steps is not None:  # Pi05Model reads this at sample time; the export unrolls that many steps
@@ -68,6 +90,11 @@ def load_policy(pretrained: str, ckpt: str | None, steps: int | None, tokens: in
     else:
         kwargs = {"num_inference_steps": steps} if steps is not None else {}
         policy = Pi05(pretrained_name_or_path=pretrained, dtype="float32", gradient_checkpointing=False, **kwargs)
+    if rtc:
+        # RTC needs the whole chunk available to the runtime (it executes `execution_horizon` <= chunk/2 of it).
+        if policy.config.n_action_steps != policy.config.chunk_size:
+            policy.config = dataclasses.replace(policy.config, n_action_steps=policy.config.chunk_size)
+        policy.rtc_enabled = True  # RTCPolicyMixin: adds the RTC inputs to the export schema and the graph
     return policy.to(torch.float32).eval()
 
 
@@ -128,6 +155,7 @@ def main() -> None:
     ap.add_argument("--steps", type=int, help="denoising steps baked into the graph (default: model's, 10)")
     ap.add_argument("--tokens", type=int, help="prompt length baked into the IR (pi05_base default 200)")
     ap.add_argument("--compress_from", type=Path, help="existing FP16 export dir to INT8-compress into --out")
+    ap.add_argument("--rtc", action="store_true", help="export with Real-Time Chunking inputs (policy.rtc_enabled)")
     args = ap.parse_args()
 
     out = Path(args.out).expanduser()
@@ -139,7 +167,7 @@ def main() -> None:
         pretrained = args.pretrained
         if args.tokens and not args.ckpt:
             pretrained = with_token_length(pretrained, args.tokens, Path(tempfile.gettempdir()) / "pi05_models")
-        policy = load_policy(pretrained, args.ckpt, args.steps, args.tokens if args.ckpt else None)
+        policy = load_policy(pretrained, args.ckpt, args.steps, args.tokens if args.ckpt else None, rtc=args.rtc)
         t1 = time.perf_counter()
         before = set(glob.glob(os.path.join(tempfile.gettempdir(), "tmp*.onnx.data")))
         try:
