@@ -170,3 +170,14 @@ def test_episode_velocity_handles_episodes_shorter_than_a_window():
     for T in (60, 400):
         v = episode_velocity(m, cfg, np.random.default_rng(0).normal(size=(T, 4)).astype(np.float32), "cpu")
         assert v.shape == (T,) and np.isfinite(v).all()
+
+
+def test_chunk_ending_in_place_is_judged_by_place_pace():
+    cfg = weights.WeightConfig(chunk=50, min_keep=0.0)
+    v = np.r_[np.full(100, 0.5), np.full(100, 1.0)]
+    fr = weights.episode_frame_table(0, v, 100, None, 30, cfg)
+    df = weights.compute_weights(fr, {0: 0.4, 1: 2.0}, cfg)
+    late_pick = df[(df.frame_index >= 60) & (df.frame_index < 100)]  # chunks end in place: 1.0/2.0 = 0.5
+    assert (late_pick.stage_end == 1).all() and (late_pick.weight == 0).all()
+    early_pick = df[df.frame_index < 40]  # chunks end in pick: 0.5/0.4 = 1.25 > tau
+    assert (early_pick.weight > 0).all()

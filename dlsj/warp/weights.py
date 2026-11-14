@@ -77,14 +77,18 @@ def episode_frame_table(ep: int, v: np.ndarray, split: int | None, grip: np.ndar
         protected |= gripper_events(np.asarray(grip, float), fps, cfg.grip_threshold, cfg.grip_window_s)
     return pd.DataFrame({
         "episode_index": ep, "frame_index": np.arange(n), "v": v, "v_end": v[end],
-        "stage": stages, "phase": phase_of(stages, cfg.phase_bins), "protected": protected,
+        "stage": stages, "stage_end": stages[end], "phase": phase_of(stages, cfg.phase_bins), "protected": protected,
     })
 
 
 def compute_weights(frames: pd.DataFrame, stage_ref: dict[int, float], cfg: WeightConfig) -> pd.DataFrame:
-    """Add `v_norm`, `weight` and `reason` columns. `stage_ref[stage]` = reference median v of that stage."""
+    """Add `v_norm`, `weight` and `reason` columns. `stage_ref[stage]` = reference median v of that stage.
+
+    v_end is normalised by the reference pace of the stage the chunk *ends* in (a long chunk that starts in pick
+    can end in place); coverage is still counted by the stage/phase of the chunk's first frame (its state).
+    """
     df = frames.copy()
-    ref = df["stage"].map(lambda s: stage_ref.get(int(s), 1.0)).astype(float).clip(lower=1e-3)
+    ref = df["stage_end"].map(lambda s: stage_ref.get(int(s), 1.0)).astype(float).clip(lower=1e-3)
     df["v_norm"] = (df["v_end"] / ref).fillna(0.0)
     keep = df["v_norm"] > cfg.tau
     df["weight"] = np.where(keep, df["v_norm"].clip(upper=cfg.w_max), 0.0)
