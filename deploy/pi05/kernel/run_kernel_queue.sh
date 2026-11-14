@@ -21,7 +21,8 @@ mkdir -p "$LOG" "$I/eval/preds/kernel"
 
 wait_idle() {
   while true; do
-    busy=$(pgrep -f "python[0-9.]* .*(quantize\.py|bench_variants|eval_actions|studio_bench)" | grep -v -w $$ || true)
+    # other agents' heavy jobs, and the team's live π0.5 robot control (it uses the GPU; never contend with it)
+    busy=$(pgrep -f "python[0-9.]* .*(quantize\.py|bench_variants|eval_actions|studio_bench|pi05_control)" | grep -v -w $$ || true)
     avail=$(free -g | awk '/^Mem:/{print $7}')
     if [[ -z $busy && $avail -ge 25 ]]; then return; fi
     echo "$(date +%T) waiting: busy=[$(echo $busy | tr '\n' ' ')] avail=${avail}G"
@@ -43,7 +44,6 @@ stage_A() {
     [ -s $LOG/prof_fp16_release.json ] || $PY $K/profile_kernels.py $FP16/pi05.xml --out $LOG/prof_fp16_release.json > $LOG/prof_fp16_release.log 2>&1
     [ -s $LOG/sweep_int8.jsonl ] || $PY $K/sweep.py $INT8 --rounds 3 --iters 40 --out $LOG/sweep_int8.jsonl > $LOG/sweep_int8.log 2>&1
     [ -s $LOG/host_calls.json ] || $PY $K/host_overhead.py calls $INT8/pi05.xml --out $LOG/host_calls.json > $LOG/host_calls.log 2>&1
-    [ -s $LOG/host_compile.json ] || $PY $K/host_overhead.py compile $INT8/pi05.xml --out $LOG/host_compile.json > $LOG/host_compile.log 2>&1
     for v in 32 64 128; do
       $PY $EVAL run $INT8 --cache $CACHE --limit 100 --out $I/eval/preds/kernel/int8_dq\$v.npz \
          --config DYNAMIC_QUANTIZATION_GROUP_SIZE=\$v --config CACHE_DIR=$I/ovcache_kernel/dq\$v >> $LOG/eval_dq.log 2>&1
@@ -78,6 +78,24 @@ stage_C() {
        --config CACHE_DIR=$I/ovcache_kernel_dbg/eval_off >> $LOG/eval_dbg.log 2>&1
     OV_GPU_DISABLE_GATED_MLP_FUSION=0 OV_GPU_GATED_MLP_GELU=1 $DPY $EVAL run $INT8 --cache $CACHE \
        --out $I/eval/preds/kernel/int8_dbg_gelu.npz --config CACHE_DIR=$I/ovcache_kernel_dbg/eval_gelu >> $LOG/eval_dbg.log 2>&1
+  "
+}
+
+stage_D() {
+  # GatedMLP follow-up after stage C was terminated: 300-frame accuracy, re-timed latency, FP16 profile, micro-benchmark
+  # shellcheck disable=SC1091
+  source "$I/ovbuild/env.sh"
+  cd "$I/physical-ai-studio/library"
+  locked bash -c "
+    set -x
+    $DPY $EVAL run $INT8 --cache $CACHE --out $I/eval/preds/kernel/int8_dbg_off.npz \
+       --config CACHE_DIR=$I/ovcache_kernel_dbg/eval_off >> $LOG/eval_dbg.log 2>&1
+    OV_GPU_DISABLE_GATED_MLP_FUSION=0 OV_GPU_GATED_MLP_GELU=1 $DPY $EVAL run $INT8 --cache $CACHE \
+       --out $I/eval/preds/kernel/int8_dbg_gelu.npz --config CACHE_DIR=$I/ovcache_kernel_dbg/eval_gelu >> $LOG/eval_dbg.log 2>&1
+    SWEEP_CACHE_ROOT=$I/ovcache_kernel_dbg $DPY $K/sweep.py $INT8 --python $DPY --rounds 3 --iters 40 \
+       --only default,gm_gelu,gm_stock,release --out $LOG/sweep_dbg_int8_b.jsonl > $LOG/sweep_dbg_int8_b.log 2>&1
+    $DPY $K/gated_mlp_micro.py --out $LOG/gmlp_micro2.json > $LOG/gmlp_micro2.log 2>&1
+    OV_GPU_DISABLE_GATED_MLP_FUSION=0 OV_GPU_GATED_MLP_GELU=1 $DPY $K/profile_kernels.py $FP16/pi05.xml --out $LOG/prof_fp16_dbg_gelu.json > $LOG/prof_fp16_dbg_gelu.log 2>&1
   "
 }
 

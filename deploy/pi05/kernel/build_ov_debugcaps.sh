@@ -40,13 +40,18 @@ if [[ $STAGE == all || $STAGE == configure ]]; then
     -DENABLE_SYSTEM_TBB=OFF -DENABLE_JS=OFF
 fi
 if [[ $STAGE == all || $STAGE == build ]]; then
+  # oneDNN-for-GPU is an ExternalProject whose inner `cmake --build` would otherwise use all cores while the outer
+  # ninja counts it as one job: build it first on its own, then everything else, both capped at $JOBS.
+  export CMAKE_BUILD_PARALLEL_LEVEL=$JOBS
+  cmake --build "$BUILD" --parallel 1 --target onednn_gpu_build
   cmake --build "$BUILD" --parallel "$JOBS"
   cmake --install "$BUILD"
   # Python package: the install puts it under $PREFIX/python; expose it to the venv (ahead of the Studio pth below)
   SP=$("$VENV/bin/python" -c "import sysconfig; print(sysconfig.get_paths()['purelib'])")
   echo "$PREFIX/python" > "$SP/00_ov_debugcaps.pth"
   # physicalai, openvino_tokenizers, torch, ... from the Studio env (read-only; its openvino is shadowed by the line above)
-  echo "$HOME/inference/physical-ai-studio/library/.venv/lib/python3.12/site-packages" > "$SP/zz_studio_site.pth"
+  printf '%s\n' "$HOME/inference/physical-ai-studio/library/.venv/lib/python3.12/site-packages" \
+    "$HOME/inference/physical-ai-studio/library/src" > "$SP/zz_studio_site.pth"  # + its editable physicalai-train
   cat > "$ROOT/env.sh" <<ENV
 export LD_LIBRARY_PATH=$PREFIX/runtime/lib/intel64:$PREFIX/runtime/3rdparty/tbb/lib:\${LD_LIBRARY_PATH:-}
 export PATH=$PREFIX/samples_bin:\$PATH

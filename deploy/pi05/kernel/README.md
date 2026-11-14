@@ -15,8 +15,10 @@ Core Ultra X9 388H, Arc B390 (`Intel(R) Graphics [0xb080]`), xe driver, OpenVINO
 | `sweep.py` | Interleaved config sweep through `../studio_bench.py` (`physicalai.InferenceModel`). Each variant runs in a fresh process with its own `CACHE_DIR`, baseline first in every round, the rest in shuffled order; reports the paired Δ against that round's baseline |
 | `host_overhead.py` | `calls`: five ways of calling the same compiled model. `compile`: no cache vs cold vs warm `CACHE_DIR` |
 | `build_ov_debugcaps.sh` | Builds OpenVINO 2026.4.1 from source with `ENABLE_DEBUG_CAPS=ON` (GPU+CPU, IR frontend, Python) into `~/inference/ovbuild/install` for `~/inference/.venv-ovdbg` |
+| `build_governor.sh` | Runs the build at nice 19 / ionice idle and SIGSTOPs the whole build tree while load > 12 or available RAM < 15 GB |
 | `patch_gated_mlp_gelu.py` | Extends the GPU `FuseGatedMLP` pass to Gemma's GeGLU MLP (see §3). Opt-in at runtime |
-| `run_kernel_queue.sh` | The queue used on the XPS. Stage A = release profile + sweep + host + accuracy, B = build, C = debug build. Each stage waits for an idle machine (≥25 GB available) and runs under `flock ~/inference/tmp/heavy.lock` at nice 10 |
+| `gated_mlp_micro.py` | One synthetic MLP block (expert/VLM shapes; Swish, GeLU-tanh, GeLU-erf; INT8 or f16 weights), fusion off vs on, debug build only |
+| `run_kernel_queue.sh` | The queue used on the XPS. Stage A = release profile + sweep + host + accuracy, B = build, C = debug-build profiles + latency, D = GatedMLP accuracy + re-timing + micro. Each stage waits for an idle machine (≥25 GB available, no other benchmark and no live `pi05_control`) and runs under `flock ~/inference/tmp/heavy.lock` at nice 10 |
 
 ## 1. Kernel profile: `pi05_junction_int8` on the GPU (release 2026.4.1)
 
@@ -146,27 +148,100 @@ Rounds 1–2 (contended) agree on the direction of every large effect. dq0 measu
 - **Nothing in the GPU plugin's config space beats the defaults** that `studio_bench.py` and `eval_actions.py`
   already use. The priority and throttle hints, f16, the latency hint and P-core pinning are all within ±2 ms when idle.
 - **Keep dynamic quantisation at its default** (per-token, `UINT64_MAX` group size on Xe3,
-  `execution_config.cpp`). Turning it off costs +31 ms (+18%), and group sizes ≤64 cost +4 to +34 ms. dq128 equals
-  the default. Accuracy of dq0 is the other agent's `int8_nodq` run (`../opt/README.md`). No setting that changes
-  numerics was faster than the default, so none needed an accuracy check. The planned 100-frame evals of dq32/64/128
-  were not run because of the pause.
+  `execution_config.cpp`). Turning it off costs +31 ms (+18%), and group sizes ≤64 cost +4 to +34 ms. dq128 is
+  bit-identical to the default.
+- **Accuracy of the numerics-changing settings** (`eval_actions.py run --limit 100`, fixed noise, first 100 held-out
+  frames; `acc_dq_*.json`). Every variant uses its own `CACHE_DIR`:
+
+  | Variant | MAE k10 vs recorded | Δ k10 vs FP16 [95% CI] | dev vs FP16 MAE / max | dev vs INT8-default MAE / max |
+  |---|---|---|---|---|
+  | INT8 default (300 frames) | 6.665 | +3.9% [+3.2, +4.7] | 1.33 / 26.7 | — |
+  | DQ group 0 (off) | 7.075 | +3.1% [+2.2, +4.2] | 1.23 / 23.2 | 0.47 / 8.1 |
+  | DQ group 32 | 7.068 | +3.1% [+2.0, +4.3] | 1.29 / 21.6 | 0.46 / 8.4 |
+  | DQ group 64 | 7.068 | +3.1% [+2.1, +4.2] | 1.30 / 26.5 | 0.52 / 7.3 |
+  | DQ group 128 | 7.084 | +3.3% [+2.1, +4.5] | 1.44 / 26.7 | **0.00 / 0.00** (bit-identical) |
+  | `OV_GPU_DYNAMIC_QUANTIZATION_THRESHOLD=16` | 7.084 | +3.3% [+2.1, +4.5] | 1.44 / 26.7 | **0.00 / 0.00** |
+
+  (The k10 MAE of the 100-frame subset is higher than the 300-frame figure because the frames differ. Compare
+  within the subset.) Dynamic quantisation moves actions by about 0.5° MAE, far below the 9.9° seed floor and below
+  INT8-vs-FP16 (1.3°). The faster default is also no less accurate than DQ off.
+- **Cache-key pitfall (affects `../opt/` results).** `~/inference/eval/preds/int8_nodq.npz` is **bit-identical** to
+  `int8.npz` (max |Δ| = 0.0). Both runs used the shared `~/inference/ov_cache`, and the `DYNAMIC_QUANTIZATION_GROUP_SIZE=0`
+  run evidently loaded the default blob. The same setting with a fresh `CACHE_DIR` (`kernel/int8_dq0_fresh.npz`)
+  differs by up to 8.1°. So `int8_nodq` and probably `int8_tok64_5step_nodq` did not measure "DQ off". Re-run them with
+  a per-config `CACHE_DIR`. Any compile-property or `OV_*` env A/B on this stack needs its own cache directory.
 - **Keep the fused SDPA on.** Disabling it costs +39 ms (+22%) and makes the latency noisy.
 - **Host overhead:** runtime − OV-only is **5.1 ms** (174.1 − 169.0): the OV tokenizer on CPU, resizing three
   640×480 frames, normalisation and denormalisation. The OV-only call through physicalai's adapter (169.0 ms) is
   within 0.2 ms of a raw `InferRequest.infer()` on pre-set tensors (168.8 ms, `profile_kernels.py`). Pre-allocating
-  and reusing input tensors can therefore save at most ~0.2 ms. `host_overhead.py calls` (which separates the five
-  call styles) has not been run yet because of the pause.
-- **CACHE_DIR cold vs warm** (`load_compile_s` of the same processes, each variant with its own cache dir):
+  and reusing input tensors can therefore save at most ~0.2 ms. `host_overhead.py calls` (raw IR, 4 interleaved blocks
+  × 15 calls per style) ran during teleop with the source build running (load 15–30), so it is noisy. Medians:
+  `compiled_model(dict)` 290.9, `req.infer(dict)` 290.2, `share_inputs/outputs` 289.8, pre-set tensors 284.5,
+  `start_async+wait` 263.5 ms. The minima are 228–231 ms for all five, so no call style is reliably faster.
+- **CACHE_DIR cold vs warm** (`load_compile_s` of the same processes, each variant with its own cache dir;
+  `host_overhead.py compile` was dropped because a source build was running in parallel):
   the first compile into an empty cache took **8.7–12.3 s** (round 0). Loading the cached blob took **2.0–2.8 s** (rounds
-  1–2, under load). The deployed runtime should always set `CACHE_DIR`. `host_overhead.py compile` (no cache vs cold vs
-  warm, isolated) has not been run yet.
+  1–2, under load). The deployed runtime should always set `CACHE_DIR`.
 
 ## 3. GatedMLP fusion (debug-capable OpenVINO build)
 
-**Status: the build has not run yet.** The coordinator paused all heavy XPS work for the YOLO test. Source is
-cloned at `~/inference/ovbuild/src` (tag `2026.4.1` = commit `e213a14725769a…`, the same commit as the wheel in the
-Studio env), and `~/inference/.venv-ovdbg` exists (uv Python 3.12.16, cmake 3.31.10, ninja, numpy). The
-measurements below are still to come. The source findings are already firm:
+**Result: on OpenVINO 2026.4.1 / Arc B390, GatedMLP makes π0.5 slower and cannot help.** The stock pass never
+fires on π0.5. With our GeGLU extension it fires (197 GatedMLP primitives), but oneDNN runs them with its
+**reference kernel** (`ocl:ref:any`), so `pi05_junction_int8` goes from **169 to 266 ms**. With INT8-compressed weights
+the fused primitive cannot even be created, and the FP16 export fails to compile. Do not use it. Upstream deleted the
+op in PR #39202 ("We decided to use binary-mul-inplace instead").
+
+**Build (worked).** OpenVINO 2026.4.1 was built from source on the XPS with `-DENABLE_DEBUG_CAPS=ON` (GPU + CPU
+plugins, IR frontend, Python): 2,236 + oneDNN-GPU steps, GCC 15.2, `rc=0`, about 52 min wall (23:13–00:05, including
+restarts and governor pauses) at -j4/-j5. It reports `2026.4.1-1-e213a147257`, the same commit as the wheel. **The debug build is as fast as the release
+wheel** with the fusion off: raw `infer()` 169.5 vs 168.8 ms, the same 3,940 kernels; through `InferenceModel` 173.4 vs
+176.4 ms, measured back to back.
+
+**Profiles** (`profile_kernels.py`, `pi05_junction_int8`, 14 Nov 00:06–00:08, load 3–6 with teleop running):
+
+| Build / setting | Raw `infer()` median ms | Σ GPU kernel ms | Kernels | GatedMLP prims | GatedMLP ms | VLM ms | Expert ms |
+|---|---|---|---|---|---|---|---|
+| Release wheel | 168.8 | 158.1 | 3,940 | 0 | 0 | 82.4 | 53.4 |
+| Debug build, fusion off (default) | 169.5 | 156.7 | 3,940 | 0 | 0 | 81.8 | 53.1 |
+| Debug, `OV_GPU_DISABLE_GATED_MLP_FUSION=0` (stock pass) | 169.1 | 157.7 | 3,940 | **0** | 0 | 82.8 | 53.0 |
+| Debug, + `OV_GPU_GATED_MLP_GELU=1` (our GeGLU patch) | **265.7** | 244.9 | 3,349 | **197** | 172.4 | 169.2 | 54.1 |
+
+Where the time goes with the patch on:
+- All 197 GatedMLP primitives run on oneDNN's **`ocl:ref:any`** (f16), the generic reference implementation: no
+  XMX, no tiling.
+- 17 are VLM MLPs at **8.8 ms each**. Unfused, those MLPs ran as XMX GEMMs (`jit:gemm:any`) at about 3.6 ms per layer
+  (gate+up 2 × 0.90 ms, down ≈0.6 ms, plus dynamic quantisation). The VLM goes from 82 to 169 ms.
+- 180 are expert MLPs at **125 µs each**, against ≈107 µs unfused (gate+up 2 × 39 µs, down ≈27 µs plus DQ). The
+  expert is flat at 5.3 ms/step because the 2 saved launches per layer are smaller than the slower kernel.
+- 180 small `Multiply` kernels (0.47 ms) newly appear: the expert's gating multiplies lost their post-op fusion.
+- 591 fewer kernel launches did not help, which matches §1: launch gaps are only ≈2.7 µs each here.
+
+**Synthetic check** (`gated_mlp_micro.py`, one MLP block at expert and VLM shapes, INT8-sym compressed weights like
+NNCF's): with the fusion on, creating the primitive fails for GeLU-tanh and GeLU-erf:
+`[GPU] Failed to create oneDNN gated_mlp primitive descriptor status=2 (dnnl_invalid_arguments) ... compressed_weights=1
+... wg layout=i8:bfyx:1024x4096x1x1 md=s8:ab:4194304x1` (`gated_mlp_onednn.cpp:231`; the 2-D weight memory
+descriptor is flattened to `4194304x1`). In the π0.5 graph the pass instead produced uncompressed f16 GatedMLPs,
+which is why it compiled. The SwiGLU and f16-weight cases are queued (stage D); the first run had a model-builder bug
+(f32 `beta` for an f16 Swish). Its other timings ran concurrently with the team's robot control and are not used.
+
+**FP16 export + GeGLU patch does not compile:**
+`[FuseGatedMLP] END: node: opset1::MatMul node_mul_232 (... f16[1,50,4096], opset1::Constant ...[0]:f16[1,1024,4096]) ...
+CALLBACK HAS THROWN: Check 'w_down_ps.rank().compatible(2)' failed at plugins/intel_gpu/src/plugin/transformations/op/gated_mlp.cpp:93:
+GatedMLP supports rank-2 w_down only.` Studio's FP16 IR keeps 3-D `[1, out, in]` weight constants. The obvious fix
+(return `false` from the matcher for rank ≠ 2) would just leave FP16 unfused. Given the INT8 result it was not pursued.
+
+**Latency through `InferenceModel`** (`sweep.py`, debug build except `release`, round 0 only, 14 Nov 00:08–00:10,
+load 1.3–2.3; rounds 1–2 were terminated by a teammate taking the GPU):
+
+| Variant | Runtime median / p90 ms | OV-only ms |
+|---|---|---|
+| debug build, fusion off | 173.4 / 174.0 | 168.8 |
+| release wheel (same session) | 176.4 / 177.8 | 171.2 |
+| debug, stock pass on | 208.4 / 224.5 (single noisy run; its profile is identical to "off", 169.1 ms raw) | 201.1 |
+| debug, GeGLU GatedMLP on | **268.4 / 280.7** | 263.7 |
+
+Re-timing (3 rounds) and the 300-frame action-accuracy check of GatedMLP on vs off are queued as stage D. Stage D
+waits until the team's `pi05_control` has stopped using the GPU. See "What's left".
 
 **The knob (2026.4.1 source):**
 - `src/plugins/intel_gpu/include/intel_gpu/runtime/options.inl:116`:
@@ -192,15 +267,11 @@ branch is opt-in (`OV_GPU_GATED_MLP_GELU=1`), so the same binary also shows the 
 applies the patch before building. This is our own extension, not upstream code. The upstream pass does not match Gemma's
 GeGLU, so the GatedMLP step in Intel's 555 → 172 ms progression presumably used a modified pass (not verifiable).
 
-**Expected size of the win (from §1, to be confirmed):** the expert MLP's three FCs take ≈105 µs per layer at
-≈107 GB/s weight streaming (about 80% of peak DRAM bandwidth). A fused GatedMLP reads the same weights, so the
-expected saving is roughly the 2 removed launches per layer (≈2.7 µs of gap each) plus any oneDNN fused-kernel
-efficiency: a few ms per chunk, not the tens of ms in Intel's progression. Measuring it is the remaining work.
-
-**Build commands** (run when the machine is free; ~1.5–2.5 h at `-j8` is an estimate, not a measurement):
+**Build commands** (≈52 min at -j4/-j5 on the XPS during teleop, with oneDNN-GPU built first as its own step):
 ```bash
 cd ~/inference/deploy/pi05/kernel
-nohup flock ~/inference/tmp/heavy.lock nice -n 10 bash build_ov_debugcaps.sh > ~/inference/logs/pi05/kernel/build.log 2>&1 &
+JOBS=4 setsid nohup bash build_governor.sh > ~/inference/logs/pi05/kernel/build_governor.log 2>&1 < /dev/null &
+# build_governor.sh: nice 19 + ionice idle; SIGSTOPs the whole build tree while load > 12 or RAM < 15 GB
 # key cmake flags: -DENABLE_DEBUG_CAPS=ON -DENABLE_INTEL_GPU=ON -DENABLE_ONEDNN_FOR_GPU=ON -DENABLE_INTEL_CPU=ON
 #   (the tokenizer IR runs on CPU) -DENABLE_INTEL_NPU=OFF, only the IR frontend, -DENABLE_PYTHON=ON -DENABLE_WHEEL=OFF,
 #   -DENABLE_TESTS=OFF -DCMAKE_COMPILE_WARNING_AS_ERROR=OFF (GCC 15.2), installs to ~/inference/ovbuild/install
@@ -257,7 +328,7 @@ InferenceModel(export_dir, backend="openvino", device="GPU",
 - Remaining runtime-side levers, in order of measured size: (1) the 5.1 ms of host pre/post work (tokenizer and
   image resize; could move into the graph with `ov.preprocess.PrePostProcessor` and a cached tokenisation of the
   fixed instruction strings); (2) the 10.7 ms of launch gaps (only fusion/graph-level reductions can remove them);
-  (3) GatedMLP via the debug build (§3, pending).
+  (3) GatedMLP via the debug build: measured **+96 ms slower** (§3). Do not use it.
 
 ## What failed / caveats
 
@@ -265,11 +336,21 @@ InferenceModel(export_dir, backend="openvino", device="GPU",
   `systemd-poweroff`). The coordinator says the team rebooted it. Killed: the other agent's `bench_variants`, my
   first queue (still waiting) and the FP16 profile (re-run afterwards). After that, everything waits for ≥25 GB
   available and runs under `flock`.
-- **Paused by the coordinator** for the YOLO spin-and-inspect test after the config sweep. Not run yet:
-  `host_overhead.py calls/compile`, the 100-frame dq32/64/128 and dq_thr16 accuracy checks, the OpenVINO debug build
-  (stage B) and all GatedMLP measurements (stage C). Resume with
-  `nohup bash run_kernel_queue.sh A B C > ~/inference/logs/pi05/kernel/queue.log 2>&1 &`. Stage A skips every step whose output already exists (profiles, benchmark_app, the sweep; delete
-  `sweep_int8.jsonl` to re-run the sweep on an idle machine).
+- **Paused by the coordinator** for the YOLO test after the config sweep (13 Nov 23:10), then resumed **during
+  teleop/recording**. Everything from 23:13 onwards (host-call modes, DQ accuracy, the build, all debug-build numbers)
+  was taken on a shared machine: load 3–30, `pi05_control` and the recorder running at times. Treat those latencies
+  as noisy. The §1 profile and the §2 round-0 sweep are from the quiet window.
+- **Stage C was terminated** at 00:10 (`Terminated flock ... heavy.lock`) when a teammate started the live
+  `dlsj.deploy.pi05_control` on the GPU. Lost: debug sweep rounds 1–2 and the 300-frame GatedMLP accuracy runs. They
+  are re-queued as stage D, which waits for `pi05_control` to exit:
+  `setsid nohup bash run_kernel_queue.sh D > ~/inference/logs/pi05/kernel/queue_D.log 2>&1 < /dev/null &`.
+- **First build attempt:** oneDNN-for-GPU is an ExternalProject whose inner `cmake --build` ran ~11 compilers. That
+  ignored `-j`, and because ninja gives every job its own process group, a group SIGSTOP did not reach it either
+  (load 30). Fixed: `build_ov_debugcaps.sh` builds `onednn_gpu_build` first with `CMAKE_BUILD_PARALLEL_LEVEL=$JOBS`, and
+  `build_governor.sh` signals the whole process tree.
+- `host_overhead.py compile` was dropped (a parallel build would distort compile times); cold/warm numbers come from the
+  sweep's `load_compile_s`. `benchmark_app` (C++) was not built (samples are not compiled by the install); per-kernel
+  data for the debug build comes from `get_profiling_info()` via `profile_kernels.py`, the same counters `-pc` prints.
 - Sweep rounds 1–2 were contaminated by the YOLO test (see §2), so only round 0 is quoted. Each round-0 cell is one
   40-iteration run. Re-run `sweep.py --rounds 3` on an idle machine before quoting fine (<2 ms) differences.
 - First run of benchmark_app: `FileNotFoundError: .../bapp_int8/benchmark_report.csv` (benchmark_app does not create
