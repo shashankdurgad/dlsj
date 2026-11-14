@@ -16,7 +16,7 @@ set -euo pipefail
 CFG=~/inference/deploy/molmoact2/finetune_cal2_456.json
 if [ -z "${EXPORT:-}" ]; then
   EXPORT=~/inference/exports/molmo_opt/ft_cal2_456/rtc_int8
-  [ -f "$EXPORT/manifest.json" ] || EXPORT=$(dirname "$(ls -t ~/Downloads/manifest.json ~/Downloads/*/manifest.json ~/Downloads/*/*/manifest.json 2>/dev/null | head -1)")
+  [ -f "$EXPORT/manifest.json" ] || EXPORT=$(dirname "$(ls -t ~/Downloads/manifest.json ~/Downloads/*/manifest.json ~/Downloads/*/*/manifest.json 2>/dev/null | head -1 || true)")
 fi
 [ -f "$EXPORT/manifest.json" ] || { echo "no export found: run export_finetuned.sh on the checkpoint in ~/Downloads first"; exit 1; }
 echo "export: $EXPORT"

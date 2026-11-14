@@ -10,7 +10,7 @@
 # optimize.py waits while a robot controller is running. Then:
 #   BRICK=red ~/inference/deploy/molmoact2/run_finetuned.sh     (finds ~/inference/exports/molmo_opt/ft_cal2_456/rtc_int8)
 set -euo pipefail
-CKPT=${1:-$(ls -t ~/Downloads/*.ckpt ~/Downloads/*/*.ckpt 2>/dev/null | head -1)}
+CKPT=${1:-$(ls -t ~/Downloads/*.ckpt ~/Downloads/*/*.ckpt 2>/dev/null | head -1 || true)}
 [ -n "$CKPT" ] || { echo "no checkpoint given and no *.ckpt in ~/Downloads"; exit 1; }
 echo "checkpoint: $CKPT ($(du -h "$CKPT" | cut -f1))"
 NAME=${2:-ft_cal2_456}
