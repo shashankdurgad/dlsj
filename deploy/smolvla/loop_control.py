@@ -100,7 +100,7 @@ def make_loop_controller_class(base):
                          "inspect": None, "workspace": list(LCFG.workspace)}
             self._plates: dict[str, P.Plate] = {}
             self._count_hist: collections.deque = collections.deque(maxlen=64)  # (t, n bricks on the table)
-            self._pose_hist: collections.deque = collections.deque(maxlen=20)
+            self._pose_hist: collections.deque = collections.deque(maxlen=60)  # 2 s at 30 Hz
             self._grip_hist: collections.deque = collections.deque(maxlen=15)
             self._insp_frames: list[dict] = []
             self._insp_crops: list = []
@@ -310,8 +310,12 @@ def make_loop_controller_class(base):
                 return
             # the VLA brings the brick to the camera by itself (the same bring prompt as the manual console): spin
             # once it has finished, i.e. the arm has been still for a while
-            settled = len(self._pose_hist) >= 15 and float(np.ptp(np.stack(self._pose_hist)[:, :5], axis=0).max()) < 1.5
-            arrived = (self._elapsed() > 3.0 and self._held_for("settled", settled, 1.5)) or self._elapsed() > LCFG.bring_timeout
+            # "finished" = < 2.5 deg over the last 2 s on every joint. The VLA's last stretch towards the camera is a slow
+            # 2-4 deg/s creep; a 0.67 s window called that "still" and spun ~10-15 deg short of where the manual runs
+            # pressed M (traces, 15 Nov). Manual M presses came after 4.5-8 s of bring at <= ~1 deg/s.
+            settled = (len(self._pose_hist) >= 60
+                       and float(np.ptp(np.stack(self._pose_hist)[:, :5], axis=0).max()) < 2.5)
+            arrived = (self._elapsed() > 4.0 and self._held_for("settled", settled, 0.5)) or self._elapsed() > LCFG.bring_timeout
             if arrived:
                 self._cycle(t_inspect=round(time.time() - self.L["cycles"][-1]["t0"], 1))
                 self._insp_frames, self._insp_crops = [], []
