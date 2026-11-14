@@ -57,6 +57,7 @@ DP_ARGS = [
     "--ema.type=warmup",
     "--accelerator.mixed_precision=bf16",  # ~2x faster than fp32 on H100; no loss scaling needed
     "--dataset.image_transforms.enable=true",
+    "--dataset.image_transforms.backend=gpu",  # colour augmentation on the GPU, not the dataloader CPUs
 ]
 
 
@@ -70,8 +71,10 @@ def parse_log_line(line: str) -> dict[str, float] | None:
 @app.function(image=image, gpu="H100:8", cpu=64, memory=262144, timeout=12 * 3600,
               volumes={"/data": data, "/runs": runs}, secrets=[modal.Secret.from_name("wandb")])
 def train(dataset: str = "duplo_pickset_300", run: str = "dp_pick_v1", steps: int = 20_000, batch_size: int = 32,
-          gpus: int = 8, workers: int = 7, save_freq: int = 2_000, wandb_project: str = "dlsj-dp",
-          crop: str = "324,432") -> str:
+          gpus: int = 8, workers: int = 4, save_freq: int = 2_000, wandb_project: str = "dlsj-dp",
+          crop: str = "324,432", wandb_entity: str = "") -> str:
+    import os
+
     import wandb
 
     cmd = [
@@ -86,7 +89,8 @@ def train(dataset: str = "duplo_pickset_300", run: str = "dp_pick_v1", steps: in
     config = {"dataset": dataset, "steps": steps, "batch_size_per_gpu": batch_size, "gpus": gpus,
               "global_batch": batch_size * gpus, "policy": "diffusion", "gpu": "H100", "args": DP_ARGS, "crop": crop}
     try:
-        wb = wandb.init(project=wandb_project, name=run, config=config)
+        wb = wandb.init(project=wandb_project, name=run, config=config, entity=wandb_entity or None)
+        print(f"W&B run: {wb.url}", flush=True)
     except Exception as e:  # noqa: BLE001  tracking must never stop training
         print(f"W&B disabled: {e}", flush=True)
         wb = None
@@ -99,7 +103,10 @@ def train(dataset: str = "duplo_pickset_300", run: str = "dp_pick_v1", steps: in
 
     threading.Thread(target=commit_periodically, daemon=True).start()
     t0 = time.time()
-    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1)
+    # One maths thread per process: 8 trainers + 8 x `workers` dataloader processes otherwise each spawn a thread
+    # per core, oversubscribe the 64 vCPUs and starve the GPUs (seen: ~1.4 s/step, GPUs at ~30% power).
+    env = {**os.environ, "OMP_NUM_THREADS": "2", "MKL_NUM_THREADS": "2", "OPENBLAS_NUM_THREADS": "2"}
+    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1, env=env)
     logged = 0
     try:
         for line in proc.stdout:
@@ -136,8 +143,8 @@ def check() -> str:
 
 @app.local_entrypoint()
 def main(dataset: str = "duplo_pickset_300", run: str = "dp_pick_v1", steps: int = 20_000, batch_size: int = 32,
-         gpus: int = 8, workers: int = 7, save_freq: int = 2_000, crop: str = "324,432"):
+         gpus: int = 8, workers: int = 4, save_freq: int = 2_000, crop: str = "324,432", wandb_entity: str = ""):
     """--crop H,W: random-crop size, ~90% of the stored images (360x480 -> 324,432; 288x384 -> 260,346)."""
     fn = train.with_options(gpu=f"H100:{gpus}", cpu=min(64, 8 * gpus), memory=32768 * gpus)  # Modal: <= 64 cores
     print(fn.remote(dataset=dataset, run=run, steps=steps, batch_size=batch_size, gpus=gpus, workers=workers,
-                    save_freq=save_freq, crop=crop))
+                    save_freq=save_freq, crop=crop, wandb_entity=wandb_entity))
