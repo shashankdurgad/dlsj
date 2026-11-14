@@ -127,8 +127,10 @@ def main() -> int:
         log.info("follower by supply voltage: %s (%s)", port, volts)
         if not port:
             p.error("follower not found; check USB and the 12 V supply")
+    # Dry runs never move the arm, so never drop it either: keep torque on (holding its pose) after disconnect.
     robot = make_robot_from_config(SO101FollowerConfig(port=port, id=args.follower_id,
-                                                       calibration_dir=arms.FOLLOWER_CAL_DIR))
+                                                       calibration_dir=arms.FOLLOWER_CAL_DIR,
+                                                       disable_torque_on_disconnect=not args.dry_run))
     robot.connect(calibrate=False)
     joints = list(robot.action_features)  # recorder order: shoulder_pan.pos ... gripper.pos
     home = arms.load_home(args.follower_id)
