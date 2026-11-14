@@ -1,0 +1,10 @@
+{
+  "best_step": 1250,
+  "val_progress_mae": 0.08955869637429714,
+  "val_loss": 1.1782669425010681,
+  "val_forward_velocity": 0.9029200077056885,
+  "val_reverse_velocity": -0.9555953145027161,
+  "ref_len_cut_s": 5.966666666666667,
+  "n_reference": 153,
+  "n_val": 16
+}

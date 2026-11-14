@@ -1,0 +1,14 @@
+{
+  "kept_fraction": 0.6533678937966304,
+  "reasons": {
+    "pace": 31361,
+    "dropped": 29688,
+    "protected": 24598
+  },
+  "stage_ref_velocity": {
+    "0": 0.9778239779895351,
+    "1": 0.8779580961255466
+  },
+  "corr_length_vs_mean_v": -0.8343365993103911,
+  "min_phase_kept": 0.3313934153641503
+}

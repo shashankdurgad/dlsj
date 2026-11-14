@@ -69,6 +69,30 @@ python scripts/train_act.py --run act_417 --steps 20000
 Loss starts at about 13 and drops below 3 within a few hundred steps. Use the W&B curve, or the console lines,
 to see when it flattens.
 
+## 3b. WARP ACT (WARP-BC weighted training)
+
+Same VM, environment, dataset and command as above, plus one flag. Each training sample is weighted by a
+per-frame score from a progress model trained on the fastest demos. Hesitant, fumbled stretches get weight 0;
+the inspection hold, the successful grasp and the release are always kept. See `docs/WARP_BC.md`.
+
+```bash
+python scripts/train_act.py --run act_417_warp --steps 20000 \
+    --warp-weights warp/duplo417/warp_weights.parquet
+```
+
+- The weights file is committed in the repo, so no extra download is needed. It was computed for exactly
+  `akoniti/dlsj-duplo-417` (417 episodes, 85,647 frames). At start-up the script checks every episode's start
+  index and length against the dataset, and stops if they differ. If the dataset is rebuilt with more episodes,
+  the weights must be recomputed first (on the GB10: `dlsj.warp.features` → `train_rm` → `score`).
+- Look for `WARP weights ...: {'episodes': 417, 'frames': 85647}` near the top of the log. Training lines then
+  include `sample_weight_kept_in_batch` (≈0.6) and `sample_weight_mean_weight`.
+- Everything else is identical to plain ACT, so the result can be compared with `act_417` directly. Use the same
+  steps and batch size. Zero-weight samples still occupy batch slots, so each step effectively trains on ~60% of
+  its batch.
+- The checkpoint is a normal LeRobot ACT checkpoint. Export and deploy it exactly as in step 4, with the same crop.
+- Resume after preemption: `python scripts/train_act.py --run act_417_warp --resume --warp-weights
+  warp/duplo417/warp_weights.parquet`. Pass the flag again so the WARP trainer is used.
+
 ## 4. Bring the checkpoint back and export for the XPS
 
 ```bash
