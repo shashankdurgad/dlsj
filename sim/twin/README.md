@@ -22,6 +22,15 @@ Verified 2026-11-14 on watson (GB10): isaaclab 28.0.0 (v3.0.0), physicalai-train
 * `calib/charuco_7x5_35mm_A4.pdf`: board for measured extrinsics (top / inspect on the table, wrist hand-eye),
   with the board pose in the robot frame from touching its corners with the gripper tip.
 
+## Camera check from recorded data (target-free)
+`align/make_samples.py` -> `align/export_points.py` (Isaac: robot surface points at recorded joint states, the sim's
+own kinematics) -> `align/fit_cameras.py` (silhouette fit, factory intrinsics, 2:1 episode split). Results in
+`calib/cameras_fit.json`, overlays in `out/align/overlay_{top,inspect}.jpg` (red = joe_cal2, green = fitted).
+* top: joe_cal2 is already right (held-out IoU 0.363 -> 0.369 fitted; pose change 3 cm / 3 deg).
+* inspect: fitted is better (held-out loss 12.8 -> 4.2) but tentative; measure with the screen board.
+* wrist: not fitted (unknown intrinsics; needs the board).
+Screen boards for a phone / laptop instead of the printed PDF: `calib/make_screen_boards.py`, `calib/screen_boards.json`.
+
 ## Next
 1. measured camera extrinsics (ChArUco) + render-vs-real overlay check on recorded episodes;
 2. appearance: table texture from the top camera, plate / Duplo meshes, phone scan (USDZ) of the surroundings;

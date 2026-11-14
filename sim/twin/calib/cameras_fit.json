@@ -1,0 +1,140 @@
+{
+ "top": {
+  "world_to_cv": [
+   [
+    0.25568165946135596,
+    0.9663901667991268,
+    -0.026775633121238006
+   ],
+   [
+    0.8609680087410774,
+    -0.24021251425874618,
+    -0.4483659620420756
+   ],
+   [
+    -0.4397282989978147,
+    0.0915859896897313,
+    -0.8934489518450626
+   ]
+  ],
+  "position": [
+   0.5647893900204025,
+   -0.2138872318461122,
+   0.6449500184247237
+  ],
+  "fx": 604.7434692382812,
+  "fy": 603.7742919921875,
+  "cx": 304.16571044921875,
+  "cy": 239.0305938720703,
+  "resolution": [
+   640,
+   480
+  ],
+  "frame": "robot base (sim world, env origin)",
+  "method": "silhouette fit to recorded cal2 episodes, factory intrinsics, start joe_cal2",
+  "metrics": {
+   "joe_cal2 as-is": {
+    "fit": [
+     5.098703384399414,
+     0.3559430234900164
+    ],
+    "held_out": [
+     4.806670188903809,
+     0.36269548366150084
+    ]
+   },
+   "joe_cal2 pose + factory intrinsics": {
+    "fit": [
+     6.307301998138428,
+     0.30897090145328093
+    ],
+    "held_out": [
+     6.8065104484558105,
+     0.300650164414314
+    ]
+   },
+   "fitted": {
+    "fit": [
+     4.923007965087891,
+     0.3642596562417834
+    ],
+    "held_out": [
+     4.644983291625977,
+     0.3691136309972233
+    ]
+   }
+  },
+  "n_fit_frames": 264,
+  "n_held_out_frames": 132,
+  "status": "confirmed: overlays hug the real arm on held-out episodes; within ~3 cm / 3 deg of joe_cal2 (already accurate)"
+ },
+ "inspect": {
+  "world_to_cv": [
+   [
+    -0.9517042750534073,
+    0.2897463848652556,
+    -0.10151849734202839
+   ],
+   [
+    0.13572664446880744,
+    0.10047081469446544,
+    -0.9856388250144513
+   ],
+   [
+    -0.2753856401962641,
+    -0.9518154484206197,
+    -0.13494480842755033
+   ]
+  ],
+  "position": [
+   0.4048900047157657,
+   0.1682709316688032,
+   0.1107060421830333
+  ],
+  "fx": 605.0665283203125,
+  "fy": 604.3594970703125,
+  "cx": 309.6224670410156,
+  "cy": 252.01724243164062,
+  "resolution": [
+   640,
+   480
+  ],
+  "frame": "robot base (sim world, env origin)",
+  "method": "silhouette fit to recorded cal2 episodes, factory intrinsics, start joe_cal2",
+  "metrics": {
+   "joe_cal2 as-is": {
+    "fit": [
+     14.855676651000977,
+     0.32266007203612473
+    ],
+    "held_out": [
+     12.760787963867188,
+     0.33544317188279904
+    ]
+   },
+   "joe_cal2 pose + factory intrinsics": {
+    "fit": [
+     16.662033081054688,
+     0.30036593200828166
+    ],
+    "held_out": [
+     14.680765151977539,
+     0.31593119067167963
+    ]
+   },
+   "fitted": {
+    "fit": [
+     4.937105178833008,
+     0.5588046994685381
+    ],
+    "held_out": [
+     4.195242881774902,
+     0.5748886016544117
+    ]
+   }
+  },
+  "n_fit_frames": 132,
+  "n_held_out_frames": 66,
+  "status": "TENTATIVE: held-out loss 12.8 -> 4.2, IoU 0.34 -> 0.58, but overlays still offset in some frames (held brick and people in the background pollute the mask); replace with the ChArUco screen-board measurement"
+ }
+}
