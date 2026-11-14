@@ -19,11 +19,11 @@ import numpy as np
 PAGE = r'''<!doctype html><html lang="en"><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1"><title>Live brick inspection</title>
 <style>
-*{box-sizing:border-box}body{margin:0;background:#101827;color:#f8fafc;font:16px system-ui}main{max-width:1120px;margin:auto;padding:24px}h1{margin:0 0 8px}p{color:#cbd5e1;line-height:1.5}button,select,input{font:inherit}button,select{padding:12px;border-radius:9px;border:1px solid #64748b;background:#25344b;color:white}button{cursor:pointer}button:disabled{opacity:.5}label{display:block;margin:14px 0 8px}.row{display:flex;gap:12px;align-items:center;flex-wrap:wrap}select{flex:1;min-width:180px}.layout{display:grid;grid-template-columns:2fr 1fr;gap:20px;margin-top:20px}.stage{position:relative;align-self:start;background:#030712;border-radius:12px;overflow:hidden}video{display:block;width:100%;min-height:160px}.stage canvas{position:absolute;inset:0;width:100%;height:100%;touch-action:none;cursor:crosshair}aside{background:#1e293b;border-radius:12px;padding:18px}#result{font-size:28px;font-weight:750;margin:10px 0}.normal{color:#86efac}.marked{color:#fda4af}.muted{color:#cbd5e1}#view{width:100%;background:#030712;border-radius:8px}#status{min-height:24px;margin-top:12px}small{color:#94a3b8;line-height:1.5}input[type=range]{width:180px}#score{font-variant-numeric:tabular-nums}@media(max-width:750px){.layout{grid-template-columns:1fr}}
+*{box-sizing:border-box}body{margin:0;background:#101827;color:#f8fafc;font:16px system-ui}main{max-width:1120px;margin:auto;padding:24px}h1{margin:0 0 8px}p{color:#cbd5e1;line-height:1.5}button,select,input{font:inherit}button,select{padding:12px;border-radius:9px;border:1px solid #64748b;background:#25344b;color:white}button{cursor:pointer}button:disabled{opacity:.5}label{display:block;margin:14px 0 8px}.row{display:flex;gap:12px;align-items:center;flex-wrap:wrap}select{flex:1;min-width:180px}.layout{display:grid;grid-template-columns:2fr 1fr;gap:20px;margin-top:20px}.stage{position:relative;align-self:start;background:#030712;border-radius:12px;overflow:hidden}video,#remote{display:block;width:100%;min-height:160px}[hidden]{display:none!important}.stage canvas{position:absolute;inset:0;width:100%;height:100%;touch-action:none;cursor:crosshair}aside{background:#1e293b;border-radius:12px;padding:18px}#result{font-size:28px;font-weight:750;margin:10px 0}.normal{color:#86efac}.marked{color:#fda4af}.muted{color:#cbd5e1}#view{width:100%;background:#030712;border-radius:8px}#status{min-height:24px;margin-top:12px}small{color:#94a3b8;line-height:1.5}input[type=range]{width:180px}#score{font-variant-numeric:tabular-nums}@media(max-width:750px){.layout{grid-template-columns:1fr}}
 </style><main><h1>Live brick inspection</h1>
 <p>Choose a camera and place one brick inside the square, with its marked face visible. Click the preview to move the square; adjust its size to fit the whole brick face.</p>
 <div class="row"><select id="camera" aria-label="Camera"><option value="">Default laptop camera</option></select><button id="connect">Enable camera</button><button id="toggle" disabled>Start detection</button></div>
-<div class="layout"><div><div class="stage"><video id="video" autoplay playsinline muted></video><canvas id="overlay" aria-label="Click to position the inspection square"></canvas></div>
+<div class="layout"><div><div class="stage"><video id="video" autoplay playsinline muted></video><img id="remote" alt="Intel XPS inspection camera" hidden><canvas id="overlay" aria-label="Click to position the inspection square"></canvas></div>
 <label for="size">Inspection square size</label><input id="size" type="range" min="15" max="95" value="60"><span id="sizeValue">60%</span></div>
 <aside><small id="model">Loading model…</small><div id="result" class="muted" role="status">Waiting for camera</div><div id="score">Score —</div>
 <p><small id="classification">YOLO: not loaded</small></p>
@@ -33,13 +33,26 @@ PAGE = r'''<!doctype html><html lang="en"><meta charset="utf-8">
 <p><small>Scores above the threshold are marked. The score is averaged over three frames; it is not a probability. Keep the brick steady while testing. With YOLO loaded, weak or conflicting predictions request reinspection.</small></p></aside></div>
 <div id="status" role="status">Connecting…</div><small>Inspect the whole face. Hidden marks and empty inspection squares are not reliable tests.</small>
 <script>
-const $=id=>document.getElementById(id);let stream=null,ready=false,running=false,inflight=false,switching=false,revision=0,center={x:.5,y:.5},scores=[],defaultThreshold=.683024,last=null,modelReady=false,classFrames=[],classifierSettings=null;
+const $=id=>document.getElementById(id);let stream=null,ready=false,running=false,inflight=false,switching=false,revision=0,center={x:.5,y:.5},scores=[],defaultThreshold=.683024,last=null,modelReady=false,classFrames=[],classifierSettings=null,remoteConfigured=false,remoteActive=false,remoteGeneration=0,remoteUpdated=0;
 function reset(message='Collecting frames…'){revision++;scores=[];classFrames=[];last=null;$('classification').textContent=classifierSettings?'YOLO: waiting for three frames':'YOLO: not loaded';$('view').getContext('2d').clearRect(0,0,320,320);$('result').className='muted';$('result').textContent=message;$('score').textContent='Score —';$('detail').textContent='Plain = normal · Cross or circle = marked';}
 function controls(){$('toggle').disabled=!ready||!modelReady||switching;$('connect').disabled=switching;$('camera').disabled=switching;$('toggle').textContent=running?'Pause detection':'Start detection';}
-function roi(){const v=$('video'),side=Math.min(v.videoWidth,v.videoHeight)*Number($('size').value)/100;return {x:Math.max(0,Math.min(v.videoWidth-side,center.x*v.videoWidth-side/2)),y:Math.max(0,Math.min(v.videoHeight-side,center.y*v.videoHeight-side/2)),side};}
-function drawBox(){if(!ready)return;const c=$('overlay'),v=$('video');c.width=v.videoWidth;c.height=v.videoHeight;const ctx=c.getContext('2d'),r=roi();ctx.fillStyle='rgba(0,0,0,.3)';ctx.fillRect(0,0,c.width,c.height);ctx.clearRect(r.x,r.y,r.side,r.side);ctx.strokeStyle='#38bdf8';ctx.lineWidth=Math.max(3,c.width/300);ctx.strokeRect(r.x,r.y,r.side,r.side);}
-async function enumerate(){const selected=stream?.getVideoTracks()[0]?.getSettings().deviceId;const devices=await navigator.mediaDevices.enumerateDevices();$('camera').replaceChildren();for(const [i,d]of devices.filter(d=>d.kind==='videoinput').entries())$('camera').add(new Option(d.label||'Camera '+(i+1),d.deviceId));if(selected)$('camera').value=selected;}
-async function camera(){if(switching)return;switching=true;running=false;ready=false;reset('Connecting camera…');controls();try{const id=$('camera').value;stream?.getTracks().forEach(t=>t.stop());stream=await navigator.mediaDevices.getUserMedia({audio:false,video:{...(id?{deviceId:{exact:id}}:{}),width:{ideal:1280},height:{ideal:720}}});const track=stream.getVideoTracks()[0];track.onended=()=>{running=false;ready=false;reset('Camera disconnected');controls();};$('video').srcObject=stream;await $('video').play();await enumerate();ready=true;drawBox();$('result').textContent='Ready';$('status').textContent='Camera: '+track.label;$('connect').textContent='Restart camera';}catch(e){$('status').textContent=e.name==='NotAllowedError'?'Allow camera access for localhost, then click Enable camera.':e.message;$('result').textContent='Camera unavailable';}finally{switching=false;controls();}}
+function frame(){return remoteActive?$('remote'):$('video');}
+function dimensions(){const v=frame();return {width:remoteActive?v.naturalWidth:v.videoWidth,height:remoteActive?v.naturalHeight:v.videoHeight};}
+function roi(){const {width,height}=dimensions(),side=Math.min(width,height)*Number($('size').value)/100;return {x:Math.max(0,Math.min(width-side,center.x*width-side/2)),y:Math.max(0,Math.min(height-side,center.y*height-side/2)),side};}
+function drawBox(){if(!ready)return;const c=$('overlay'),d=dimensions();c.width=d.width;c.height=d.height;const ctx=c.getContext('2d'),r=roi();ctx.fillStyle='rgba(0,0,0,.3)';ctx.fillRect(0,0,c.width,c.height);ctx.clearRect(r.x,r.y,r.side,r.side);ctx.strokeStyle='#38bdf8';ctx.lineWidth=Math.max(3,c.width/300);ctx.strokeRect(r.x,r.y,r.side,r.side);}
+async function enumerate(){const selected=remoteActive?'remote':stream?.getVideoTracks()[0]?.getSettings().deviceId;const devices=await navigator.mediaDevices.enumerateDevices();$('camera').replaceChildren();if(remoteConfigured)$('camera').add(new Option('Intel XPS inspection camera','remote'));$('camera').add(new Option('Default laptop camera',''));for(const [i,d]of devices.filter(d=>d.kind==='videoinput').entries())$('camera').add(new Option(d.label||'Camera '+(i+1),d.deviceId));if(selected)$('camera').value=selected;}
+async function pollRemote(generation){
+ if(!remoteActive||generation!==remoteGeneration)return;
+ try{
+  const response=await fetch('/camera/frame.jpg',{cache:'no-store',signal:AbortSignal.timeout(5000)});
+  if(!response.ok)throw Error('Intel camera unavailable ('+response.status+')');
+  const blob=await response.blob(),url=URL.createObjectURL(blob),image=new Image();
+  try{image.src=url;await image.decode();if(!remoteActive||generation!==remoteGeneration)return;$('remote').src=url;await $('remote').decode();remoteUpdated=performance.now();const first=!ready;ready=true;drawBox();if(first){$('result').textContent='Ready';$('status').textContent='Camera: Intel XPS inspection camera';}controls();}finally{URL.revokeObjectURL(url);}
+ }catch(e){if(generation!==remoteGeneration)return;running=false;ready=false;reset('Camera disconnected');$('status').textContent=e.message+' · retrying';controls();}
+ if(remoteActive&&generation===remoteGeneration)setTimeout(()=>pollRemote(generation),200);
+}
+async function camera(){if(switching)return;switching=true;running=false;ready=false;remoteGeneration++;reset('Connecting camera…');controls();try{const id=$('camera').value;stream?.getTracks().forEach(t=>{t.onended=null;t.stop();});stream=null;remoteActive=id==='remote';$('video').hidden=remoteActive;$('remote').hidden=!remoteActive;if(remoteActive){await pollRemote(remoteGeneration);}else{stream=await navigator.mediaDevices.getUserMedia({audio:false,video:{...(id?{deviceId:{exact:id}}:{}),width:{ideal:1280},height:{ideal:720}}});const track=stream.getVideoTracks()[0];track.onended=()=>{running=false;ready=false;reset('Camera disconnected');controls();};$('video').srcObject=stream;await $('video').play();await enumerate();ready=true;drawBox();$('result').textContent='Ready';$('status').textContent='Camera: '+track.label;}$('connect').textContent='Restart camera';}catch(e){$('status').textContent=e.name==='NotAllowedError'?'Allow camera access for localhost, then click Enable camera.':e.message;$('result').textContent='Camera unavailable';}finally{switching=false;controls();}}
+
 function classify(){
  if(!scores.length)return;
  const mean=scores.reduce((a,b)=>a+b,0)/scores.length;
@@ -59,10 +72,10 @@ function classify(){
  }else{$('result').className=marked?'marked':'normal';$('result').textContent=marked?'MARKED / DEFECTIVE':'PLAIN / NORMAL';}
 }
 function render(){if(!last)return;const ctx=$('view').getContext('2d');ctx.clearRect(0,0,320,320);ctx.drawImage(last.crop,0,0,320,320);if($('heatmap').checked&&last.map)ctx.drawImage(last.map,0,0,320,320);}
-async function tick(){try{if(!running||!ready||inflight)return;inflight=true;const generation=revision,v=$('video');if(v.readyState<2)return;const r=roi(),crop=document.createElement('canvas');crop.width=crop.height=320;crop.getContext('2d').drawImage(v,r.x,r.y,r.side,r.side,0,0,320,320);const response=await fetch('/predict',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({frame:crop.toDataURL('image/jpeg',.95).split(',')[1]})});const result=await response.json();if(!response.ok)throw Error(result.error||'Prediction failed');if(generation!==revision||!running)return;if(classifierSettings){if(!result.class_probabilities)throw Error('YOLO prediction missing');classFrames.push(result.class_probabilities);if(classFrames.length>3)classFrames.shift();}scores.push(result.score);if(scores.length>3)scores.shift();last={crop,map:null};classify();$('detail').textContent='Last prediction: '+result.latency_ms+' ms · model input 320 × 320';$('status').textContent='Live detection running';render();const map=new Image();map.onload=()=>{if(generation===revision&&last?.crop===crop){last.map=map;render();}};map.src='data:image/png;base64,'+result.anomaly_map;}catch(e){reset('Prediction unavailable');running=false;$('status').textContent=e.message;controls();}finally{inflight=false;setTimeout(tick,350);}}
+async function tick(){try{if(!running||!ready||inflight)return;inflight=true;const generation=revision,v=frame();if(remoteActive){if(performance.now()-remoteUpdated>2000)throw Error('Intel camera frame is stale');}else if(v.readyState<2)return;const r=roi(),crop=document.createElement('canvas');crop.width=crop.height=320;crop.getContext('2d').drawImage(v,r.x,r.y,r.side,r.side,0,0,320,320);const response=await fetch('/predict',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({frame:crop.toDataURL('image/jpeg',.95).split(',')[1]})});const result=await response.json();if(!response.ok)throw Error(result.error||'Prediction failed');if(generation!==revision||!running)return;if(classifierSettings){if(!result.class_probabilities)throw Error('YOLO prediction missing');classFrames.push(result.class_probabilities);if(classFrames.length>3)classFrames.shift();}scores.push(result.score);if(scores.length>3)scores.shift();last={crop,map:null};classify();$('detail').textContent='Last prediction: '+result.latency_ms+' ms · model input 320 × 320';$('status').textContent='Live detection running';render();const map=new Image();map.onload=()=>{if(generation===revision&&last?.crop===crop){last.map=map;render();}};map.src='data:image/png;base64,'+result.anomaly_map;}catch(e){reset('Prediction unavailable');running=false;$('status').textContent=e.message;controls();}finally{inflight=false;setTimeout(tick,350);}}
 $('connect').onclick=camera;$('camera').onchange=camera;$('toggle').onclick=()=>{running=!running;reset(running?'Collecting frames…':'Paused');controls();};$('overlay').onpointerdown=e=>{const r=$('overlay').getBoundingClientRect();center={x:(e.clientX-r.left)/r.width,y:(e.clientY-r.top)/r.height};reset(running?'Collecting frames…':'Ready');drawBox();};$('size').oninput=()=>{$('sizeValue').textContent=$('size').value+'%';reset(running?'Collecting frames…':'Ready');drawBox();};$('heatmap').onchange=render;$('threshold').oninput=()=>{$('thresholdValue').textContent=Number($('threshold').value).toFixed(6);classify();};$('reset').onclick=()=>{$('threshold').value=defaultThreshold;$('threshold').oninput();};
 window.addEventListener('beforeunload',()=>stream?.getTracks().forEach(t=>t.stop()));
-(async()=>{try{const r=await fetch('/health'),s=await r.json();if(!r.ok)throw Error(s.error);classifierSettings=s.classifier||null;defaultThreshold=s.threshold;$('threshold').value=defaultThreshold;$('threshold').oninput();$('model').textContent=s.model+(classifierSettings?' + '+classifierSettings.model:'');modelReady=true;controls();}catch(e){$('model').textContent='Model unavailable';$('status').textContent=e.message;}if(navigator.mediaDevices?.getUserMedia)await camera();else $('status').textContent='Open this page at http://localhost:8006 to enable your camera.';tick();})();
+(async()=>{try{const r=await fetch('/health'),s=await r.json();if(!r.ok)throw Error(s.error);remoteConfigured=Boolean(s.camera_source);if(remoteConfigured){$('camera').add(new Option('Intel XPS inspection camera','remote'));$('camera').value='remote';}classifierSettings=s.classifier||null;defaultThreshold=s.threshold;$('threshold').value=defaultThreshold;$('threshold').oninput();$('model').textContent=s.model+(classifierSettings?' + '+classifierSettings.model:'');modelReady=true;controls();}catch(e){$('model').textContent='Model unavailable';$('status').textContent=e.message;}if(remoteConfigured||navigator.mediaDevices?.getUserMedia)await camera();else $('status').textContent='Open this page at http://localhost:8006 to enable your camera.';tick();})();
 </script></main></html>'''
 
 
@@ -157,7 +170,18 @@ class LocalModel(StudioModel):
                 'latency_ms': round((time.perf_counter() - start) * 1000)}
 
 
-def make_handler(model):
+def fetch_camera_frame(source):
+    with urllib.request.urlopen(source, timeout=3) as response:
+        frame = response.read(5 * 1024 * 1024 + 1)
+    if len(frame) > 5 * 1024 * 1024 or not frame.startswith(b'\xff\xd8'):
+        raise ValueError('Camera did not return a JPEG')
+    image = cv2.imdecode(np.frombuffer(frame, np.uint8), cv2.IMREAD_COLOR)
+    if image is None:
+        raise ValueError('Camera returned an invalid JPEG')
+    return frame
+
+
+def make_handler(model, camera_source=None):
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, *_):
             pass
@@ -176,9 +200,14 @@ def make_handler(model):
         def do_GET(self):
             if self.path == '/':
                 self.send(200, PAGE.encode(), 'text/html; charset=utf-8')
+            elif self.path == '/camera/frame.jpg' and camera_source:
+                try:
+                    self.send(200, fetch_camera_frame(camera_source), 'image/jpeg')
+                except (OSError, ValueError) as exc:
+                    self.send(503, json.dumps({'error': f'Camera unavailable: {exc}'}).encode())
             elif self.path == '/health':
                 try:
-                    self.send(200, json.dumps(model.health()).encode())
+                    self.send(200, json.dumps({**model.health(), 'camera_source': bool(camera_source)}).encode())
                 except (OSError, ValueError) as exc:
                     self.error(exc)
             else:
@@ -208,13 +237,14 @@ def main():
     parser.add_argument('--device', default='CPU', help='OpenVINO device for --model-dir (default CPU)')
     parser.add_argument('--classifier-dir', help='Optional exported YOLO directory containing classifier.json')
     parser.add_argument('--studio-url', default='http://127.0.0.1:8005')
+    parser.add_argument('--camera-source', help='Remote HTTP JPEG snapshot URL (proxied locally)')
     parser.add_argument('--port', type=int, default=8006)
     args = parser.parse_args()
     model = LocalModel(args.model_dir, args.device) if args.model_dir else StudioModel(args.run_dir, args.studio_url)
     if args.classifier_dir:
         from dlsj.inspect.yolo_classifier import CombinedModel, YoloClassifier
         model = CombinedModel(model, YoloClassifier(args.classifier_dir, args.device))
-    server = ThreadingHTTPServer(('127.0.0.1', args.port), make_handler(model))
+    server = ThreadingHTTPServer(('127.0.0.1', args.port), make_handler(model, args.camera_source))
     print(f'Live inspection: http://localhost:{args.port} · {model.name}', flush=True)
     try:
         server.serve_forever()

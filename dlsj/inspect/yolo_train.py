@@ -21,7 +21,7 @@ from ultralytics import YOLO
 from ultralytics.data.dataset import ClassificationDataset
 from ultralytics.models.yolo.classify import ClassificationTrainer
 
-from dlsj.inspect.yolo_classifier import LABEL_MAP, capture_predictions
+from dlsj.inspect.yolo_classifier import LABEL_MAP, capture_predictions, calibrate_joint_gate
 
 
 def dump(path, value):
@@ -33,6 +33,9 @@ def prepare(source_manifest, destination):
     source = json.loads(Path(source_manifest).read_text())
     destination = Path(destination)
     rows = source['images']
+    existing = destination / 'manifest.json'
+    if existing.exists() and json.loads(existing.read_text())['images'] != rows:
+        raise ValueError('Dataset manifest changed; use a new output directory to avoid stale training images')
     groups = defaultdict(list)
     for row in rows:
         groups[row['capture']].append(row)
@@ -58,11 +61,11 @@ def prepare(source_manifest, destination):
 
 class WholeFaceTransform:
     """PIL RGB -> float CHW. Training transforms retain the complete source crop."""
-    def __init__(self, size=320, training=False):
+    def __init__(self, size=320, training=False, rotation=15):
         self.size = size
         self.training = training
         self.augment = A.Compose([
-            A.SafeRotate(limit=(-15, 15), border_mode=cv2.BORDER_CONSTANT, fill=(127, 127, 127), p=.7),
+            A.SafeRotate(limit=(-rotation, rotation), border_mode=cv2.BORDER_CONSTANT, fill=(127, 127, 127), p=.7),
             A.PadIfNeeded(min_height=352, min_width=352, border_mode=cv2.BORDER_CONSTANT, fill=(127, 127, 127)),
             A.Affine(scale=(.95, 1.05), translate_percent=(-.02, .02), keep_ratio=True,
                      border_mode=cv2.BORDER_CONSTANT, fill=(127, 127, 127), p=.7),
@@ -85,7 +88,8 @@ class WholeFaceTransform:
 class BrickDataset(ClassificationDataset):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        self.torch_transforms = WholeFaceTransform(kwargs['args'].imgsz, kwargs.get('augment', False))
+        self.torch_transforms = WholeFaceTransform(kwargs['args'].imgsz, kwargs.get('augment', False),
+                                                  getattr(kwargs['args'], 'degrees', 15))
 
 
 class BrickTrainer(ClassificationTrainer):
@@ -124,27 +128,41 @@ def main():
     parser.add_argument('--name', default='train')
     parser.add_argument('--device', default='mps')
     parser.add_argument('--smoke', action='store_true')
+    parser.add_argument('--lr0', type=float, default=.001)
+    parser.add_argument('--freeze', type=int, default=0)
+    parser.add_argument('--patience', type=int, default=15)
+    parser.add_argument('--warmup-bias-lr', type=float, default=.1)
+    parser.add_argument('--rotation', type=float, default=15)
+    parser.add_argument('--validation-only', action='store_true', help='Select candidates without evaluating test or exporting')
+    parser.add_argument('--checkpoint', type=Path, help='Evaluate/export an existing checkpoint without training again')
+    parser.add_argument('--joint-anomaly-run', type=Path, help='Calibrate confidence using matching Anomalib validation predictions')
     args = parser.parse_args()
     args.out = args.out.resolve()
     args.out.mkdir(parents=True, exist_ok=True)
     rows = prepare(args.source_manifest, args.out / 'dataset')
     torch.set_num_threads(4)
-    model = YOLO(args.weights)
-    start = time.perf_counter()
-    model.train(data=str(args.out / 'dataset'), trainer=BrickTrainer,
-                epochs=args.epochs, imgsz=320, batch=16, device=args.device,
-                workers=0, seed=2026, deterministic=True, optimizer='AdamW', lr0=.001,
-                weight_decay=.0005, patience=15, project=str(args.out), name=args.name,
-                exist_ok=False, plots=False, amp=False, save=True,
-                auto_augment=None, erasing=0., cache=False)
-    elapsed = time.perf_counter() - start
-    dump(args.out / f'{args.name}_summary.json', {'seconds': elapsed, 'epochs_requested': args.epochs,
-          'device': args.device, 'seed': 2026, 'versions': {n: version(n) for n in
-          ('ultralytics', 'torch', 'torchvision', 'albumentations', 'openvino', 'numpy')}})
-    if args.smoke:
-        print(f'SMOKE COMPLETE in {elapsed:.1f}s', flush=True)
-        return
-    best_path = args.out / args.name / 'weights/best.pt'
+    if args.checkpoint:
+        best_path = args.checkpoint.resolve()
+        summary = args.out / f'{args.name}_summary.json'
+        elapsed = json.loads(summary.read_text())['seconds'] if summary.exists() else None
+    else:
+        model = YOLO(args.weights)
+        start = time.perf_counter()
+        model.train(data=str(args.out / 'dataset'), trainer=BrickTrainer,
+                    epochs=args.epochs, imgsz=320, batch=16, device=args.device,
+                    workers=0, seed=2026, deterministic=True, optimizer='AdamW', lr0=args.lr0,
+                    freeze=args.freeze, warmup_bias_lr=args.warmup_bias_lr, degrees=args.rotation,
+                    weight_decay=.0005, patience=args.patience, project=str(args.out), name=args.name,
+                    exist_ok=False, plots=False, amp=False, save=True,
+                    auto_augment=None, erasing=0., cache=False)
+        elapsed = time.perf_counter() - start
+        dump(args.out / f'{args.name}_summary.json', {'seconds': elapsed, 'epochs_requested': args.epochs,
+              'device': args.device, 'seed': 2026, 'versions': {n: version(n) for n in
+              ('ultralytics', 'torch', 'torchvision', 'albumentations', 'openvino', 'numpy')}})
+        if args.smoke:
+            print(f'SMOKE COMPLETE in {elapsed:.1f}s', flush=True)
+            return
+        best_path = args.out / args.name / 'weights/best.pt'
     best = YOLO(best_path)
     classes = [best.names[i] for i in range(len(best.names))]
     validation = frame_predictions(best.model, rows, 'validation', args.device)
@@ -165,8 +183,24 @@ def main():
         confidence, margin = .8, .2
     calibration = {'min_confidence': confidence, 'min_margin': margin,
                    'target_met': bool(candidates), 'basis': 'validation only; mean probabilities across three frames'}
+    if args.joint_anomaly_run:
+        anomaly_frames = json.loads((args.joint_anomaly_run / 'validation_predictions.json').read_text())
+        groups = defaultdict(list)
+        for row in anomaly_frames:
+            groups[row['capture']].append(row['score'])
+        if any(len(values) != 3 for values in groups.values()):
+            raise ValueError('Expected three anomaly validation scores per capture')
+        anomaly_scores = {key: float(np.mean(values)) for key, values in groups.items()}
+        anomaly_threshold = json.loads((args.joint_anomaly_run / 'evaluation.json').read_text())['validation_selected_threshold']
+        calibration = calibrate_joint_gate(captures, anomaly_scores, anomaly_threshold)
+        confidence, margin = calibration['min_confidence'], calibration['min_margin']
     dump(args.out / 'validation_frames.json', validation)
     dump(args.out / 'validation_captures.json', captures)
+    validation_metrics = classification_report([r['actual'] for r in captures], [r['predicted'] for r in captures], labels=classes, output_dict=True, zero_division=0)
+    dump(args.out / 'validation_metrics.json', {'metrics': validation_metrics, 'calibration': calibration, 'checkpoint': str(best_path)})
+    if args.validation_only:
+        print(json.dumps({'validation': validation_metrics, 'checkpoint': str(best_path)}, indent=2), flush=True)
+        return
     test = frame_predictions(best.model, rows, 'test', args.device)
     test_captures = capture_predictions(test, classes)
     dump(args.out / 'test_frames.json', test)

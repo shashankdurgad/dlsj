@@ -129,3 +129,32 @@ For standalone anomaly inference use `--model-dir` with the extracted PatchCore
 release instead of `--run-dir`. The YOLO classifier was trained on whole brick
 crops, so do not feed it the tighter anomaly-region crops used by the team's
 existing stage-2 classifier without a matching training/evaluation change.
+
+## Intel XPS camera feed
+
+The live tester can reuse a running camera server without opening the camera
+hardware or sending robot commands:
+
+```bash
+python -m dlsj.inspect.live_web --run-dir /path/to/anomaly/run \
+  --classifier-dir /path/to/best_openvino_model \
+  --camera-source http://100.77.191.42:8000/snapshot/inspect.jpg
+```
+
+The URL and port must match the current XPS camera service, and the Mac must be
+on the Tailscale network containing that laptop. The configured camera appears
+as **Intel XPS inspection camera** in the selector alongside local cameras. The
+local server proxies JPEG snapshots, avoiding browser cross-origin restrictions.
+The preview refreshes after each request with a 200 ms delay. Inference still
+uses the selected square resized to 320 × 320 and the existing three-frame gate.
+A failed fetch clears decisions and pauses inference; the preview retries, and
+detection must be started again after recovery. Frames older than two seconds
+in the browser cannot be classified. The upstream snapshot service does not
+provide frame timestamps, so a frozen upstream camera that continues serving
+JPEGs cannot be detected by this age check.
+
+On 14 November 2026, the inspection feed returned changing 640 × 480 frames and
+reported approximately 30 fps upstream. Combined inference was verified through
+the browser using this physical feed. This verifies connectivity, not accuracy
+on the new camera view; position a visible brick face in the inspection square
+before assessing predictions.

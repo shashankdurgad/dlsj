@@ -50,3 +50,23 @@ def test_calibration_must_match_model(tmp_path):
     model_files(tmp_path)
     (tmp_path/'evaluation.json').write_text(json.dumps({'model_id':'another-model','validation_selected_threshold':.5}))
     with pytest.raises(ValueError,match='do not match'):StudioModel(tmp_path)
+
+
+def test_remote_camera_preserves_jpeg_and_bounds_download(monkeypatch):
+    from dlsj.inspect.live_web import fetch_camera_frame
+    frame = crop(640)
+    requests = []
+    def response(url, timeout):
+        requests.append((url, timeout))
+        return closing(io.BytesIO(frame))
+    monkeypatch.setattr('urllib.request.urlopen', response)
+    assert fetch_camera_frame('http://camera/snapshot/inspect.jpg') == frame
+    assert requests == [('http://camera/snapshot/inspect.jpg', 3)]
+
+
+@pytest.mark.parametrize('data', [b'not an image', b'\xff\xd8broken', b'\xff\xd8' + b'x' * (5 * 1024 * 1024)])
+def test_remote_camera_rejects_invalid_or_oversized_frames(monkeypatch, data):
+    from dlsj.inspect.live_web import fetch_camera_frame
+    monkeypatch.setattr('urllib.request.urlopen', lambda *a, **k: closing(io.BytesIO(data)))
+    with pytest.raises(ValueError):
+        fetch_camera_frame('http://camera/snapshot/inspect.jpg')

@@ -42,6 +42,31 @@ def combine_decision(anomalous, probabilities, min_confidence, min_margin):
     return 'plain' if label == 'plain' else 'uncertain'
 
 
+def calibrate_joint_gate(captures, anomaly_scores, anomaly_threshold):
+    """Validation-only calibration of the complete gate, not classifier confidence alone.
+
+    Zero observed validation errors is a selection rule, not a correctness guarantee.
+    Among settings with >=50% correct coverage, maximize correct decisions, then
+    prefer the higher confidence/margin thresholds for ties.
+    """
+    if not captures or any(row['capture'] not in anomaly_scores for row in captures):
+        raise ValueError('Every validation capture needs a matching anomaly score')
+    candidates = []
+    for confidence in (.5, .6, .7, .8, .9, .95):
+        for margin in (0., .1, .2, .3):
+            decisions = [combine_decision(anomaly_scores[row['capture']] >= anomaly_threshold,
+                                          row['probabilities'], confidence, margin) for row in captures]
+            wrong = sum(d != 'uncertain' and d != row['actual'] for d, row in zip(decisions, captures))
+            correct = sum(d == row['actual'] for d, row in zip(decisions, captures))
+            if wrong == 0 and correct >= .5 * len(captures):
+                candidates.append((correct, confidence, margin))
+    correct, confidence, margin = max(candidates) if candidates else (None, .8, .2)
+    return {'min_confidence': confidence, 'min_margin': margin, 'target_met': bool(candidates),
+            'calibration_scope': 'joint Anomalib/YOLO gate',
+            'validation_correct_decisions': correct, 'validation_captures': len(captures),
+            'basis': 'Validation only: zero observed joint errors, >=50% correct coverage; maximize coverage. No generalization guarantee.'}
+
+
 class YoloClassifier:
     def __init__(self, directory, device='CPU'):
         import openvino as ov
@@ -61,7 +86,7 @@ class YoloClassifier:
         self.device = device
 
     def health(self):
-        return {'model': 'YOLO26n brick classifier', 'device': self.device,
+        return {'model': self.config.get('name', 'YOLO26n brick classifier'), 'device': self.device,
                 'classes': self.classes, 'min_confidence': self.config['min_confidence'],
                 'min_margin': self.config['min_margin']}
 
