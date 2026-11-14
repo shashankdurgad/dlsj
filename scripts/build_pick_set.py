@@ -85,6 +85,7 @@ def main() -> None:
     p.add_argument("--full", type=Path, help="full-demo dataset root")
     p.add_argument("--full-episodes", type=Path, help='json {"episodes": [...]} or a list; default all')
     p.add_argument("--pick", type=Path, action="append", default=[], help="pick-only dataset root (repeatable)")
+    p.add_argument("--pick-episodes", default=None, help="a-b: only these episodes of each --pick dataset")
     p.add_argument("--hold-s", type=float, default=0.3)
     p.add_argument("--crop", action="append", default=[], help="key=x,y,w,h")
     p.add_argument("--pad-to", default=None, help="W,H: pad smaller cameras with black to this size, e.g. 640,480")
@@ -113,7 +114,11 @@ def main() -> None:
     for root in args.pick:
         meta = LeRobotDatasetMetadata(f"local/{root.name}", root=root)
         table = load_table(root)
-        for ep in range(meta.total_episodes)[: args.limit]:
+        pick_eps = range(meta.total_episodes)
+        if args.pick_episodes:
+            a, b = (int(v) for v in args.pick_episodes.split("-"))
+            pick_eps = range(a, min(b, meta.total_episodes - 1) + 1)
+        for ep in list(pick_eps)[: args.limit]:
             n = int(meta.episodes[ep]["length"])
             jobs.append((meta, table, ep, n, {"source": str(root), "episode": ep, "frames": [0, n], "cut": "whole"}))
 

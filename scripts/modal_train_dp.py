@@ -31,10 +31,24 @@ image = (
     modal.Image.debian_slim(python_version="3.12")
     .apt_install("ffmpeg", "libgl1", "libglib2.0-0")
     .uv_pip_install("lerobot[dataset,training,diffusion]==0.7.0", "wandb")
+    .add_local_python_source("dlsj")  # deploy code reused by the checkpoint sweep (run from the repo root)
 )
 
 data = modal.Volume.from_name("dlsj-teleop-data", create_if_missing=True)
 runs = modal.Volume.from_name("dlsj-act-runs", create_if_missing=True)
+
+# Stronger augmentation: every sample gets all six transforms, with a wider shift/rotation than LeRobot's default
+# (+-5 deg, 5%); combine with a smaller random crop (--crop) to fight overfitting to the ~300 training scenes.
+STRONG_AUG = [
+    "--dataset.image_transforms.max_num_transforms=6",
+    '--dataset.image_transforms.tfs={'
+    '"brightness": {"weight": 1.0, "type": "ColorJitter", "kwargs": {"brightness": [0.75, 1.25]}}, '
+    '"contrast": {"weight": 1.0, "type": "ColorJitter", "kwargs": {"contrast": [0.75, 1.25]}}, '
+    '"saturation": {"weight": 1.0, "type": "ColorJitter", "kwargs": {"saturation": [0.5, 1.5]}}, '
+    '"hue": {"weight": 1.0, "type": "ColorJitter", "kwargs": {"hue": [-0.05, 0.05]}}, '
+    '"sharpness": {"weight": 1.0, "type": "SharpnessJitter", "kwargs": {"sharpness": [0.5, 1.5]}}, '
+    '"affine": {"weight": 1.0, "type": "RandomAffine", "kwargs": {"degrees": [-8.0, 8.0], "translate": [0.08, 0.08]}}}',
+]
 
 _KV = re.compile(r"(?:^|\s)([a-z_/]+):(-?[0-9.]+(?:e[-+]?\d+)?)([KMB]?)(?=\s|$)")
 _SCALE = {"": 1, "K": 1e3, "M": 1e6, "B": 1e9}
@@ -72,7 +86,8 @@ def parse_log_line(line: str) -> dict[str, float] | None:
               volumes={"/data": data, "/runs": runs}, secrets=[modal.Secret.from_name("wandb-dlsj")])
 def train(dataset: str = "duplo_pickset_300", run: str = "dp_pick_v1", steps: int = 20_000, batch_size: int = 32,
           gpus: int = 8, workers: int = 7, save_freq: int = 2_000, wandb_project: str = "dlsj-dp",
-          crop: str = "324,432", wandb_entity: str = "james-j-carver-university-of-cambridge") -> str:
+          crop: str = "324,432", wandb_entity: str = "james-j-carver-university-of-cambridge",
+          strong_aug: bool = False) -> str:
     import os
     import shutil
 
@@ -89,7 +104,7 @@ def train(dataset: str = "duplo_pickset_300", run: str = "dp_pick_v1", steps: in
         "torchrun", "--standalone", f"--nproc_per_node={gpus}", "-m", "lerobot.scripts.lerobot_train",
         f"--dataset.repo_id=local/{dataset}", f"--dataset.root={local_root}", "--dataset.video_backend=torchcodec",  # 3.6x faster than pyav here, 1 ffmpeg thread per decoder
         *[a for a in DP_ARGS if not a.startswith("--policy.crop_shape=")], f"--policy.crop_shape=[{crop}]",
-        "--policy.device=cuda", "--policy.push_to_hub=false",
+        *(STRONG_AUG if strong_aug else []), "--policy.device=cuda", "--policy.push_to_hub=false",
         f"--output_dir=/runs/{run}", f"--job_name={run}", f"--batch_size={batch_size}", f"--steps={steps}",
         f"--save_freq={save_freq}", f"--log_freq={LOG_FREQ}", f"--num_workers={workers}",
     ]
@@ -137,6 +152,97 @@ def train(dataset: str = "duplo_pickset_300", run: str = "dp_pick_v1", steps: in
     return f"{run}: {steps} steps on {gpus}x H100 in {(time.time() - t0) / 60:.1f} min -> dlsj-act-runs:/{run}"
 
 
+@app.function(image=image, gpu="L4", cpu=8, memory=32768, timeout=3600, volumes={"/data": data, "/runs": runs})
+def sweep(run: str = "dp_pick_288", heldout: str = "duplo_pickset_heldout_288", steps: str = "", probes: int = 4,
+          seed: int = 0, ablate: bool = False) -> str:
+    """Score each checkpoint's EMA weights on held-out episodes: error of the predicted 0.5 s chunk (15 actions) vs the
+    operator's actions, against a hold-still baseline, at random moments and in the 0.5 s before the grasp.
+
+        modal run scripts/modal_train_dp.py::sweep --run dp_pick_288 --heldout duplo_pickset_heldout_288
+    """
+    import glob
+    import os
+
+    import numpy as np
+    import torch
+    from lerobot.configs.policies import PreTrainedConfig
+    from lerobot.datasets import LeRobotDataset
+    from lerobot.policies.factory import get_policy_class, make_pre_post_processors
+
+    from dlsj.deploy.async_chunks import AsyncChunker
+
+    ckpts = sorted(glob.glob(f"/runs/{run}/checkpoints/[0-9]*/pretrained_model_ema"))
+    if steps:
+        ckpts = [c for c in ckpts if int(c.split("/")[-2]) in {int(x) for x in steps.split(",")}]
+    root = f"/tmp/{heldout}"
+    import shutil
+
+    shutil.copytree(f"/data/{heldout}", root, dirs_exist_ok=True)
+    ds = LeRobotDataset(f"local/{heldout}", root=root, video_backend="torchcodec")
+    fe, A_all = np.array(ds.hf_dataset["episode_index"]), np.stack(ds.hf_dataset["action"])
+    rng = np.random.default_rng(seed)
+    probe_rows = []  # (row, kind)
+    for e in np.unique(fe):
+        r = np.flatnonzero(fe == e)
+        g = A_all[r, 5]
+        d = g[12:] - g[:-12]
+        closes = np.flatnonzero(d < -15)
+        for t in rng.integers(2, len(r) - 16, probes):
+            probe_rows.append((int(r[t]), "random"))
+        if len(closes):
+            gt = int(closes[-1])
+            for t in (gt - 15, gt - 8):
+                if 1 <= t and t + 15 <= len(r):
+                    probe_rows.append((int(r[t]), "pre-grasp"))
+
+    def obs(row):
+        it = ds[row]
+        o = {"observation.state": it["observation.state"].numpy().astype(np.float32)}
+        for k in ds.meta.video_keys:
+            o[k] = (it[k].permute(1, 2, 0).numpy() * 255).round().astype(np.uint8)
+        return o
+
+    cache = {row: (obs(row - 1), obs(row)) for row, _ in probe_rows}
+    out = []
+    names = ["pan", "lift", "elbow", "wflex", "wroll"]
+    for c in ckpts:
+        cfg = PreTrainedConfig.from_pretrained(c)
+        cfg.device, cfg.n_action_steps, cfg.num_inference_steps = "cuda", 15, 8
+        pol = get_policy_class(cfg.type).from_pretrained(c, config=cfg).to("cuda").eval()
+        pre, post = make_pre_post_processors(pol.config, pretrained_path=c,
+                                             preprocessor_overrides={"device_processor": {"device": "cuda"}})
+        ch = AsyncChunker(pol, pre, post, torch.device("cuda"))
+        variants = [None] + (list(ds.meta.video_keys) if ablate else [])
+        for blank in variants:
+          res = {"random": [], "pre-grasp": []}
+          for row, kind in probe_rows:
+            o1, o2 = cache[row]
+            if blank is not None:  # this camera replaced by flat grey
+                o1, o2 = dict(o1), dict(o2)
+                o1[blank] = np.full_like(o1[blank], 127)
+                o2[blank] = np.full_like(o2[blank], 127)
+            pred = ch.predict([(0, o1), (1, o2)])
+            true = A_all[row: row + len(pred)]
+            err = np.abs(pred[:, :5] - true[:, :5]).mean(0)
+            hold = np.abs(true[:, :5] - o2["observation.state"][:5]).mean(0)
+            res[kind].append((err, hold))
+          step = int(c.split("/")[-2])
+          tag = "all cameras" if blank is None else f"no {blank.split('.')[-1]}"
+          for kind, v in res.items():
+            if not v:
+                continue
+            err = np.median(np.stack([x[0] for x in v]), 0)
+            hold = np.median(np.stack([x[1] for x in v]), 0)
+            line = (f"step {step:6d} {tag:13s} {kind:9s} n={len(v):3d} model "
+                    + " ".join(f"{n} {e:5.1f}" for n, e in zip(names, err))
+                    + f" | mean {err.mean():5.2f} vs hold-still {hold.mean():5.2f}")
+            print("SWEEP", line, flush=True)
+            out.append(line)
+        del pol
+        torch.cuda.empty_cache()
+    return "\n".join(out)
+
+
 @app.function(image=image, cpu=8, timeout=600, volumes={"/data": data})
 def check_decode(dataset: str = "duplo_pickset_300_288") -> str:
     """Time LeRobot sample loading with each video backend inside the training image."""
@@ -179,8 +285,9 @@ def check() -> str:
 
 @app.local_entrypoint()
 def main(dataset: str = "duplo_pickset_300", run: str = "dp_pick_v1", steps: int = 20_000, batch_size: int = 32,
-         gpus: int = 8, workers: int = 7, save_freq: int = 2_000, crop: str = "324,432", wandb_entity: str = "james-j-carver-university-of-cambridge"):
+         gpus: int = 8, workers: int = 7, save_freq: int = 2_000, crop: str = "324,432", wandb_entity: str = "james-j-carver-university-of-cambridge",
+         strong_aug: bool = False):
     """--crop H,W: random-crop size, ~90% of the stored images (360x480 -> 324,432; 288x384 -> 260,346)."""
     fn = train.with_options(gpu=f"H100:{gpus}", cpu=min(64, 8 * gpus), memory=32768 * gpus)  # Modal: <= 64 cores
     print(fn.remote(dataset=dataset, run=run, steps=steps, batch_size=batch_size, gpus=gpus, workers=workers,
-                    save_freq=save_freq, crop=crop, wandb_entity=wandb_entity))
+                    save_freq=save_freq, crop=crop, wandb_entity=wandb_entity, strong_aug=strong_aug))
