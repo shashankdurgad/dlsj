@@ -1,0 +1,9 @@
+{
+ "_source": "pyrealsense2 factory calibration, colour stream 640x480 rgb8 @ 30 fps, read on the XPS 2026-11-14 (recording settings)",
+ "top": {"serial": "346422061366", "model": "Intel RealSense D415", "firmware": "5.15.1.55", "width": 640, "height": 480,
+         "fx": 604.7434692382812, "fy": 603.7742919921875, "cx": 304.16571044921875, "cy": 239.0305938720703,
+         "distortion_model": "inverse_brown_conrady", "coeffs": [0, 0, 0, 0, 0], "hfov_deg": 55.77},
+ "inspect": {"serial": "243722062690", "model": "Intel RealSense D415", "firmware": "5.15.1.55", "width": 640, "height": 480,
+             "fx": 605.0665283203125, "fy": 604.3594970703125, "cx": 309.6224670410156, "cy": 252.01724243164062,
+             "distortion_model": "inverse_brown_conrady", "coeffs": [0, 0, 0, 0, 0], "hfov_deg": 55.75}
+}
