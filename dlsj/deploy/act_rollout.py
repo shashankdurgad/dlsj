@@ -98,6 +98,10 @@ def main() -> int:
     p.add_argument("--num-inference-steps", type=int, default=None,
                    help="Diffusion Policy: DDIM denoising steps per chunk (trained with 16; fewer is faster)")
     p.add_argument("--amp", action="store_true", help="mixed precision (autocast) for the policy forward pass")
+    p.add_argument("--joint-offset", default="",
+                   help="calibration drift since the training data, as joint=deg pairs (current reading minus what the "
+                        "training-time calibration read for the same pose), e.g. shoulder_pan=22.1,shoulder_lift=-10.4. "
+                        "The policy sees state - offset; its actions are sent as action + offset.")
     p.add_argument("--async-chunks", action="store_true",
                    help="Diffusion Policy: predict chunks in a background thread from the latest 30 Hz observations while "
                         "the loop keeps executing (no freezes; stale actions skipped). Uses the full action window.")
@@ -196,6 +200,15 @@ def main() -> int:
     robot.connect(calibrate=False)
     joints = list(robot.action_features)  # recorder order: shoulder_pan.pos ... gripper.pos
     home = arms.load_home(args.follower_id)
+    off = np.zeros(len(joints), dtype=np.float32)
+    for kv in filter(None, args.joint_offset.split(",")):
+        k, v = kv.split("=")
+        name = k if k.endswith(".pos") else f"{k}.pos"
+        if name not in joints:
+            p.error(f"--joint-offset: unknown joint {k} (joints: {joints})")
+        off[joints.index(name)] = float(v)
+    if off.any():
+        log.info("joint offset (current calibration minus training): %s", dict(zip(joints, off.round(1).tolist())))
 
     def read_state() -> np.ndarray:
         o = robot.get_observation()
@@ -245,7 +258,7 @@ def main() -> int:
         while not stop and time.time() - t_start < args.max_seconds:
             t_tick = time.perf_counter()
             state = read_state()
-            obs = {"observation.state": state}
+            obs = {"observation.state": state - off}  # in the training-time calibration
             for name, s in streams.items():
                 obs[f"observation.images.{name}"] = to_policy_image(s.frame, top_crop if name == "top" else None,
                                                                      pad_to, resize)
@@ -255,19 +268,20 @@ def main() -> int:
             if chunker is not None:
                 chunker.push(tick, obs)
                 a = chunker.action(tick)
-                target = cmd.copy() if a is None else np.asarray(a, dtype=np.float32)  # hold until the first chunk
+                # hold until the first chunk arrives
+                target = cmd.copy() if a is None else np.asarray(a, dtype=np.float32) + off
             elif ov_policy is not None:
                 imgs = {f"observation.images.{n}": cv2.cvtColor(s.frame, cv2.COLOR_BGR2RGB) for n, s in streams.items()}
                 if ensembler is not None:  # fresh chunk every tick, blended with earlier chunks (ACT paper)
-                    chunk = ov_policy(state, imgs)
-                    target = ensembler.update(torch.from_numpy(chunk)[None]).squeeze(0).numpy().astype(np.float32)
+                    chunk = ov_policy(state - off, imgs)
+                    target = ensembler.update(torch.from_numpy(chunk)[None]).squeeze(0).numpy().astype(np.float32) + off
                 else:
                     if not ov_queue:
-                        ov_queue = list(ov_policy(state, imgs)[: cfg.n_action_steps])
-                    target = np.asarray(ov_queue.pop(0), dtype=np.float32)
+                        ov_queue = list(ov_policy(state - off, imgs)[: cfg.n_action_steps])
+                    target = np.asarray(ov_queue.pop(0), dtype=np.float32) + off
             else:
                 action = predict_action(obs, policy, device, pre, post, use_amp=args.amp)
-                target = action.squeeze(0).detach().cpu().numpy().astype(np.float32)
+                target = action.squeeze(0).detach().cpu().numpy().astype(np.float32) + off
             lat.append((time.perf_counter() - t_inf) * 1e3)
             cmd = teleop_web.step_toward(cmd if not args.dry_run else state, target, step_cap)
             send(cmd)
