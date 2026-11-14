@@ -26,7 +26,8 @@ PLATE_HSV = {
     # the yellow plate reads greenish under the venue light (H ~50, S ~80); the table stays below S 40
     "yellow": [((18, 90, 120), (38, 255, 255)), ((38, 55, 140), (64, 255, 255))],
     "orange": [((4, 140, 120), (17, 255, 255))],
-    "purple": [((120, 50, 50), (165, 255, 255))],
+    # the "purple" plate reads saturated light blue on the top camera (H ~102, S 255); size keeps blue bricks out
+    "purple": [((120, 50, 50), (165, 255, 255)), ((92, 120, 150), (135, 255, 255))],
 }
 
 

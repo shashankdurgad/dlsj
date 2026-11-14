@@ -41,7 +41,7 @@ import smolvla_control as S  # noqa: E402
 log = logging.getLogger("loop_control")
 LCFG = SimpleNamespace(hold_min=4.0, hold_max=9.0, lost_below=3.0, open_above=12.0, pick_timeout=45.0,
                        bring_timeout=25.0, place_timeout=40.0, max_cycles=12, max_attempts=3,
-                       workspace=(0, 60, 560, 480), empty_seconds=2.0, perception_hz=4.0,
+                       workspace=(0, 60, 560, 480), empty_seconds=2.0, perception_hz=4.0, held_min_px=110,
                        log_dir="~/inference/logs/loop")
 STEPS = ["survey", "pick", "bring", "inspect", "place", "home"]
 
@@ -384,16 +384,20 @@ def make_loop_controller_class(base):
             for d in dets:
                 x0, y0, x1, y1 = d.box
                 cx, cy = (x0 + x1) / 2, (y0 + y1) / 2
-                if abs(cx - w / 2) < w * 0.3 and abs(cy - h / 2) < h * 0.35 and (best is None or d.confidence > best.confidence):
+                big = max(x1 - x0, y1 - y0) >= LCFG.held_min_px  # held at the camera = close = big; table bricks are small
+                if big and abs(cx - w / 2) < w * 0.3 and abs(cy - h / 2) < h * 0.35 and (best is None or d.confidence > best.confidence):
                     best = d
             img = frame
             if best is not None:
                 cv2.rectangle(img, best.box[:2], best.box[2:], (0, 255, 120), 2)
-                cv2.putText(img, f"brick {best.confidence:.2f}", (best.box[0], max(14, best.box[1] - 6)),
+                cv2.putText(img, f"held brick {best.confidence:.2f}", (best.box[0], max(14, best.box[1] - 6)),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 255, 120), 2, cv2.LINE_AA)
                 with self.lock:
                     self.perc["inspect_seen"] = {"t": time.monotonic(), "conf": round(float(best.confidence), 2)}
-            _banner(img, "INSPECTION CAMERA  " + ("brick in view" if best is not None else "no brick in view"))
+            for d in dets:  # every detection, thin grey: shows what the camera sees without counting it as arrival
+                if d is not best:
+                    cv2.rectangle(img, d.box[:2], d.box[2:], (150, 150, 150), 1)
+            _banner(img, "INSPECTION CAMERA  " + ("held brick at the camera" if best is not None else "waiting for a held brick"))
             self.perc_streams["perc_inspect"].publish(img)
 
         def _on_inspect_frame(self, ev: dict) -> None:
@@ -515,6 +519,8 @@ def main() -> None:
     ap.add_argument("--max-attempts", type=int, default=LCFG.max_attempts)
     ap.add_argument("--workspace", default="0,60,560,480", help="x0,y0,x1,y1 of the top image the loop looks at")
     ap.add_argument("--empty-seconds", type=float, default=LCFG.empty_seconds)
+    ap.add_argument("--held-min-px", type=int, default=LCFG.held_min_px,
+                    help="a brick box this big (px) on the inspection camera counts as held at the camera")
     ap.add_argument("--inspect-device", default="NPU")
     ap.add_argument("--inspect-roi", default="")
     ap.add_argument("--inspect-frames", type=int, default=12)
@@ -525,7 +531,7 @@ def main() -> None:
         ap.print_help()
         return
     for k in ("hold_min", "hold_max", "lost_below", "open_above", "pick_timeout", "bring_timeout", "place_timeout",
-              "max_cycles", "max_attempts", "empty_seconds"):
+              "max_cycles", "max_attempts", "empty_seconds", "held_min_px"):
         setattr(LCFG, k, getattr(ours, k))
     LCFG.workspace = tuple(int(v) for v in ours.workspace.split(","))
     A.CFG.__dict__.update(inspect_device=ours.inspect_device, inspect_frames=ours.inspect_frames,
