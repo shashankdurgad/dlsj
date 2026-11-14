@@ -99,6 +99,9 @@ class EpisodeRecorder:
         self._stop = threading.Event()
         self.saved = {"success": 0, "failure": 0}
         self.bowl: str | None = None
+        # A plate chosen after a take is stopped (in review) is for the next take: the stopped take keeps the
+        # plate it was recorded with, and `next_bowl` takes over once that take is saved or discarded.
+        self.next_bowl: str | None = None
         self._reset_take()
 
     def _reset_take(self) -> None:
@@ -220,8 +223,12 @@ class EpisodeRecorder:
         if c.startswith("bowl") and c[4:].isdigit():
             i = int(c[4:]) - 1
             if 0 <= i < len(self.bowls) and self.phase != "saving":
-                self.bowl = self.bowls[i]
-                self._store_bowl()
+                choice = self.bowls[i]
+                if self.phase == "review" and self.bowl is not None:
+                    self.next_bowl = None if choice == self.bowl else choice
+                else:
+                    self.bowl, self.next_bowl = choice, None
+                    self._store_bowl()
             return
         if c == "inview" and self.phase == "recording" and self.stage == "pick":
             self._split(auto=False)
@@ -246,12 +253,19 @@ class EpisodeRecorder:
                 self.message = "Choose a plate (1–3)"
                 return
             self._save(success=success)
+            self._apply_next_bowl()
             if self.continuous and c != "accept_pause" and self.phase == "idle":
                 self._handle("start")  # chain straight into the next take
         elif c == "discard" and self.phase in ("recording", "review"):
             self.dataset.clear_episode_buffer()
             self.phase, self.message = "idle", "Discarded"
             self._reset_take()
+            self._apply_next_bowl()
+
+    def _apply_next_bowl(self) -> None:
+        if self.next_bowl is not None:
+            self.bowl, self.next_bowl = self.next_bowl, None
+            self._store_bowl()
 
     def _to_review(self) -> None:
         self._take_duration = time.perf_counter() - self._take_start
@@ -394,7 +408,7 @@ class EpisodeRecorder:
                 "phase": self.phase, "stage": self.stage, "message": self.message, "elapsed": round(elapsed, 2),
                 "frames": self._frames, "episodes": self.dataset.num_episodes if self.dataset is not None else 0,
                 "saved": dict(self.saved), "median_s": _median(self.stats.durations_s),
-                "bowls": self.bowls, "bowl": self.bowl, "split_frame": self.split_frame,
+                "bowls": self.bowls, "bowl": self.bowl, "next_bowl": self.next_bowl, "split_frame": self.split_frame,
                 "inspect_camera": self.inspect_camera,
                 "in_view": d.in_view, "candidate": d.candidate, "detect_reason": d.reason,
                 "prob": round(float(getattr(self.detector, "prob", d.area)), 3),
@@ -479,6 +493,7 @@ body{background:var(--bg);color:var(--fg);font:400 15px/1.35 Barlow,ui-sans-seri
 .bowls{display:flex;gap:18px;justify-content:center}
 .bowl{width:64px;height:64px;border-radius:50%;border:0;cursor:pointer;position:relative;background:var(--c);opacity:.35;transform:scale(.88);transition:opacity .2s,transform .2s,box-shadow .2s}
 .bowl.sel{opacity:1;transform:scale(1);box-shadow:0 0 0 3px var(--bg),0 0 0 5px var(--fg)}
+.bowl.next{opacity:.8;transform:scale(.94);outline:2px dashed var(--fg);outline-offset:4px}
 .bowl kbd{position:absolute;right:-6px;bottom:-6px;background:var(--panel);color:var(--fg);border:1px solid var(--line);border-radius:6px;padding:1px 6px;font:500 12px Barlow,sans-serif}
 .platesel{text-align:center;color:var(--mute);font-size:14px;margin-top:-18px}.platesel b{color:var(--fg);font-weight:500}
 .bowl:focus-visible{box-shadow:0 0 0 3px var(--bg),0 0 0 5px var(--glow)}
@@ -548,7 +563,7 @@ document.addEventListener('keydown',e=>{if(e.repeat||e.metaKey||e.ctrlKey||e.alt
  else if(k==='v'){split=!split;app.classList.toggle('single',!split);panes.forEach((n,i)=>{if(n)show(i,n)})}});
 function bowls(r){const b=$('bowls');if(b.dataset.k!==r.bowls.join()){b.dataset.k=r.bowls.join();b.innerHTML='';
  r.bowls.forEach((c,i)=>{const x=document.createElement('button');x.className='bowl';x.style.setProperty('--c',SW[c]||c);x.setAttribute('aria-label',c+' bowl');x.innerHTML='<kbd>'+(i+1)+'</kbd>';x.onclick=()=>rec('bowl'+(i+1));b.appendChild(x)})}
- [...b.children].forEach((x,i)=>x.classList.toggle('sel',r.bowl===r.bowls[i]))}
+ [...b.children].forEach((x,i)=>{x.classList.toggle('sel',r.bowl===r.bowls[i]);x.classList.toggle('next',r.next_bowl===r.bowls[i])})}
 function fracs(r,img){if(Array.isArray(r.guide))return r.guide;const w=img.naturalWidth||4,h=img.naturalHeight||3,s=Math.min(w,h);return[(w-s)/2/w,(h-s)/2/h,(w+s)/2/w,(h+s)/2/h]}
 function place(g,box,img,f){const cw=box.clientWidth,ch=box.clientHeight,nw=img.naturalWidth||4,nh=img.naturalHeight||3;
  const k=g.dataset.cover?Math.max(cw/nw,ch/nh):Math.min(cw/nw,ch/nh),rw=nw*k,rh=nh*k,ox=(cw-rw)/2,oy=(ch-rh)/2;
@@ -578,7 +593,7 @@ async function tick(){try{
  document.querySelectorAll('.node').forEach((n,i)=>{n.classList.toggle('on',active&&i<=now);n.classList.toggle('now',active&&i===now)});
  $('s1').classList.toggle('on',active&&now>=1);$('s2').classList.toggle('on',active&&now>=2);
  if(r.inspect_camera&&thumbs[r.inspect_camera])thumbs[r.inspect_camera].classList.toggle('seen',r.in_view);
- bowls(r);guides(r);$('platesel').innerHTML=r.bowl?'Plate <b>'+r.bowl+'</b>':'No plate chosen';
+ bowls(r);guides(r);$('platesel').innerHTML=(r.bowl?'Plate <b>'+r.bowl+'</b>':'No plate chosen')+(r.next_bowl?' · next take <b>'+r.next_bowl+'</b>':'');
  $('meter').style.display=(r.inspect_camera&&r.threshold)?'':'none';$('meter').classList.toggle('inview',r.in_view);app.classList.toggle('iv',!!r.in_view);
  $('mfill').style.width=Math.min(100,100*(r.prob||0))+'%';$('mthr').style.left=r.threshold?(100*r.threshold)+'%':'-9px';
  const cue=recording&&r.stage==='place';app.classList.toggle('cue',cue);

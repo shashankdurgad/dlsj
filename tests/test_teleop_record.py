@@ -177,6 +177,33 @@ def test_plate_choice_persists_across_takes_and_restarts(rec):
     assert again.bowl == "blue"  # and after a restart
 
 
+def test_plate_chosen_after_stopping_is_for_the_next_take(rec):
+    import json
+
+    rec.continuous = False
+    rec.teleop.go_live()
+    press(rec, "bowl1", "space")  # take 0 recorded for red
+    step(rec, 2)
+    press(rec, "inview")
+    step(rec, 2)
+    press(rec, "space")  # stop -> review
+    press(rec, "bowl2")  # operator picks the next take's plate before saving
+    assert rec.bowl == "red" and rec.next_bowl == "blue"
+    assert rec.snapshot()["next_bowl"] == "blue"
+    press(rec, "save")
+    assert rec.bowl == "blue" and rec.next_bowl is None
+    press(rec, "space")  # take 1, for blue
+    step(rec, 2)
+    press(rec, "inview")
+    step(rec, 2)
+    press(rec, "space", "bowl3", "discard")  # discarding also hands over the queued plate
+    assert rec.bowl == "green" and rec.next_bowl is None
+    labels = [json.loads(x) for x in (rec.sidecar / "labels.jsonl").read_text().splitlines()]
+    assert [x["bowl"] for x in labels] == ["red"]
+    tasks = rec.dataset.meta.tasks.index.tolist()
+    assert "place the brick in the red bowl" in tasks and "place the brick in the blue bowl" not in tasks
+
+
 def test_frames_skipped_while_not_live_and_time_limit(rec):
     rec.teleop.go_live()
     rec.episode_time_s = 0.0
