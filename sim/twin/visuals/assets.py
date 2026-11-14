@@ -7,11 +7,16 @@ Dimensions
   studs 9.4 mm diameter x 4.4 mm high (hollow top recess on real studs is ignored). The residual env's colliders are
   boxes of exactly the body size (31.8 x 31.8 x 19.2 mm / 63.6 x 31.8 x 19.2 mm) without studs, so the visual body
   matches the collider and the studs stick out on top (+z of the brick).
-* Plates: measured from the real top camera (measure_real.py, joe_cal2 camera, rim plane 18 mm above the table):
-  outer diameter orange 0.182 m, yellow 0.184 m, purple 0.189 m (IQR +-1-2 mm). Profile of a kids' plastic plate:
-  flat floor (with faint concentric ripples) to ~60 % of the radius, sloping wall up to a ~18 mm high rounded rim,
-  2 mm wall. The residual env's plate collider (6 mm high cylinder, centre 3 mm above the table) is kept; the dish
-  floor sits on the collider top so bricks dropped in the plate rest on the visual floor.
+* Brick variants on the real table (sim/twin/data/photos/table_topdown.jpg): 2x2 (31.7 x 31.7 mm), 2x4
+  (63.6 x 31.7 mm) and the curved-slope 2x2 (cream / yellow: one stud row, the other half rounds down to ~6 mm at the
+  front edge). `brick_mesh(kind)`; `brick_hull_points(kind)` is the matching convex collider (the curved slope is
+  convex, so its convex hull is exact; the others are boxes). Hollow underside / stud recesses not modelled.
+* Plates: user's measurement (14 Nov): radius 9.2 cm (0.184 m outer diameter; the top camera gave 0.182-0.189 m),
+  total height ~23 mm, ~2 mm plastic. Profile: flat floor (faint concentric ripples, the photo shows them over ~3/4
+  of the radius) whose top is 3 mm above the table (2 mm shell on a ~1 mm foot: assumed), sloping wall up to a
+  rounded rim 23 mm above the table. z is in the plate frame of the residual env's bowl bodies (origin 3 mm above
+  the table), so the floor top is at z = 0. The same profile is the plates' physics collider (sim/twin/physics:
+  triangle mesh on the kinematic plate body; the env's flat 6 mm cylinder collider is disabled there).
 """
 from __future__ import annotations
 
@@ -23,6 +28,14 @@ DUPLO_PITCH = 0.016
 DUPLO_BODY_H = 0.0192
 DUPLO_STUD_D = 0.0094
 DUPLO_STUD_H = 0.0044
+DUPLO_2X2 = (0.0317, 0.0317, DUPLO_BODY_H)
+DUPLO_2X4 = (0.0636, 0.0317, DUPLO_BODY_H)
+CURVED_LOW_H = 0.0064  # curved-slope 2x2: height of the rounded front edge (estimated from the photo)
+PLATE_RADIUS = 0.092  # m, outer (user's measurement)
+PLATE_RIM_H = 0.023  # m above the table (total height)
+PLATE_WALL = 0.002  # m plastic thickness
+PLATE_FLOOR_H = 0.003  # m, floor top above the table (assumed: 2 mm shell + ~1 mm foot)
+PLATE_FLOOR_FRAC = 0.75  # flat floor out to this fraction of the radius (photo: rings over ~3/4 of the plate)
 
 
 # ----------------------------------------------------------------------------------------------- mesh builders
@@ -106,14 +119,81 @@ def duplo_mesh(nx: int, ny: int, size=None, stud_seg: int = 24) -> tuple:
             parts.append(cylinder_mesh(DUPLO_STUD_D / 2, DUPLO_STUD_H, (x, y, sz / 2 + DUPLO_STUD_H / 2), stud_seg))
     return _merge(*parts)
 
+def curved_slope_mesh(size=DUPLO_2X2, low_h: float = CURVED_LOW_H, stud_seg: int = 24, n_arc: int = 12) -> tuple:
+    """Duplo curved-slope 2x2, centred on the body-box centre (same frame as a 2x2 box collider): the -y half keeps the
+    full height with one row of two studs, the +y half rounds down (quarter ellipse) to `low_h` at the +y edge."""
+    sx, sy, sz = size
+    hx, hy, hz = sx / 2, sy / 2, sz / 2
+    prof = curved_slope_profile(size, low_h, n_arc)  # (y, z) over the top from -y to +y
+    buf = MeshBuf()
+    m = len(prof)
+    # top surface strip (quads between consecutive profile points, x from -hx to +hx)
+    for k in range(m - 1):
+        (y0, z0), (y1, z1) = prof[k], prof[k + 1]
+        n = np.array([0.0, -(z1 - z0), (y1 - y0)])
+        n = n / max(np.linalg.norm(n), 1e-12)
+        buf.add([(-hx, y0, z0), (hx, y0, z0), (hx, y1, z1), (-hx, y1, z1)], [n] * 4, [[0, 1, 2, 3]])
+    # side walls (x = +-hx): polygon fan of the profile closed along the bottom
+    for sgn in (-1.0, 1.0):
+        pts = [(sgn * hx, y, z) for y, z in prof] + [(sgn * hx, hy, -hz), (sgn * hx, -hy, -hz)]
+        idx = list(range(len(pts)))
+        buf.add(pts, [(sgn, 0.0, 0.0)] * len(pts), [idx if sgn > 0 else idx[::-1]])
+    # back (-y), front (+y, low), bottom
+    buf.add([(hx, -hy, -hz), (-hx, -hy, -hz), (-hx, -hy, hz), (hx, -hy, hz)], [(0, -1.0, 0)] * 4, [[0, 1, 2, 3]])
+    zf = -hz + low_h
+    buf.add([(-hx, hy, -hz), (hx, hy, -hz), (hx, hy, zf), (-hx, hy, zf)], [(0, 1.0, 0)] * 4, [[0, 1, 2, 3]])
+    buf.add([(-hx, hy, -hz), (-hx, -hy, -hz), (hx, -hy, -hz), (hx, hy, -hz)], [(0, 0, -1.0)] * 4, [[0, 1, 2, 3]])
+    parts = [buf.arrays()]
+    for i in range(2):  # one stud row on the flat (-y) half
+        x = -hx + sx / 2 * (i + 0.5)
+        parts.append(cylinder_mesh(DUPLO_STUD_D / 2, DUPLO_STUD_H, (x, -hy + sy / 4, hz + DUPLO_STUD_H / 2), stud_seg))
+    return _merge(*parts)
 
-def plate_profile(radius: float, floor_z: float = 0.003, rim_h: float = 0.018, wall: float = 0.002,
-                  floor_frac: float = 0.62, rings: int = 7, ring_amp: float = 0.00025, n: int = 90):
+
+def curved_slope_profile(size=DUPLO_2X2, low_h: float = CURVED_LOW_H, n_arc: int = 12) -> np.ndarray:
+    """(y, z) top profile of the curved-slope 2x2 in the body-centred frame: flat to y = 0, then a quarter ellipse
+    down to -hz + low_h at y = +hy."""
+    _, sy, sz = size
+    hy, hz = sy / 2, sz / 2
+    a = np.linspace(0.0, math.pi / 2, n_arc)
+    ys = hy * np.sin(a)
+    zs = -hz + low_h + (sz - low_h) * np.cos(a)
+    return np.r_[[[-hy, hz]], np.c_[ys, zs]]
+
+
+BRICK_KINDS = {"2x2": DUPLO_2X2, "2x4": DUPLO_2X4, "curved_2x2": DUPLO_2X2}
+
+
+def brick_mesh(kind: str = "2x2", size=None) -> tuple:
+    """Visual mesh of a brick variant ('2x2' | '2x4' | 'curved_2x2'), centred on its body-box centre."""
+    size = tuple(size) if size is not None else BRICK_KINDS[kind]
+    if kind == "curved_2x2":
+        return curved_slope_mesh(size)
+    nx = max(1, round(size[0] / DUPLO_PITCH))
+    ny = max(1, round(size[1] / DUPLO_PITCH))
+    return duplo_mesh(nx, ny, size=size)
+
+
+def brick_hull_points(kind: str = "2x2", size=None) -> np.ndarray:
+    """Vertices of the brick's convex collider (studs excluded, as for the box colliders): the body box, or for the
+    curved slope the extruded profile (convex, so its hull is exact)."""
+    sx, sy, sz = tuple(size) if size is not None else BRICK_KINDS[kind]
+    hx, hy, hz = sx / 2, sy / 2, sz / 2
+    if kind == "curved_2x2":
+        prof = curved_slope_profile((sx, sy, sz))
+        yz = np.r_[prof, [[hy, -hz], [-hy, -hz]]]
+        return np.r_[np.c_[np.full(len(yz), -hx), yz], np.c_[np.full(len(yz), hx), yz]]
+    return np.array([[x, y, z] for x in (-hx, hx) for y in (-hy, hy) for z in (-hz, hz)])
+
+
+def plate_profile(radius: float = PLATE_RADIUS, floor_z: float = 0.0, rim_h: float = PLATE_RIM_H,
+                  wall: float = PLATE_WALL, floor_frac: float = PLATE_FLOOR_FRAC, rings: int = 7,
+                  ring_amp: float = 0.00025, n: int = 90, floor_h: float = PLATE_FLOOR_H):
     """(r, z) polyline of the plate's cross-section, going over the top surface from the centre to the rim lip and
-    back underneath. z is relative to the plate frame (collider centre, 3 mm above the table); the table is at
-    z = floor_z - 0.006."""
-    table = floor_z - 0.006
-    top_rim = table + rim_h
+    back underneath. z is relative to the plate frame (the env's bowl body origin, 3 mm above the table): floor top
+    at z = floor_z, table at z = floor_z - floor_h, rim top at table + rim_h."""
+    table = floor_z - floor_h
+    top_rim = table + rim_h - wall * 0.75  # inner top of the wall; the rounded lip adds wall * 0.75 -> table + rim_h
     rf = radius * floor_frac
     r_in = radius - wall * 1.5
     pts = []
