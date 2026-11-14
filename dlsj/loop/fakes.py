@@ -1,10 +1,14 @@
 """Fakes for dry runs and tests: a tiny simulated workcell that closes the whole loop on a laptop.
 
-* `FakeWorld`: a queue of bricks ("plain", "cross", "circle", "blob", "faint", "hidden_cross", "glare"), the brick
-  on the table, the brick in the gripper, and where each brick ended up. "circle" is a ring (minor defect);
-  "blob" is a solid dot: clearly marked for stage 1 but neither ring nor cross for stage 2 (stage-2 uncertain).
-  "faint" shows a low-contrast cross (stage 1 is unsure every time); "hidden_cross" / "glare" look faint until
-  the brick is turned (RESHOW), then show a clear cross / a plain face.
+* `FakeWorld`: a queue of bricks ("plain", "cross", "circle", "blob", "faint", "hidden_cross", "glare",
+  "side_cross", "side_circle", "glint"), the brick on the table, the brick in the gripper, and where each brick
+  ended up. "circle" is a ring (minor defect); "blob" is a solid dot: clearly marked for stage 1 but neither ring
+  nor cross for stage 2 (stage-2 uncertain). "faint" shows a low-contrast cross (stage 1 is unsure every time);
+  "hidden_cross" / "glare" look faint until the brick is turned (RESHOW), then show a clear cross / a plain face.
+  Sweep bricks (the wrist spins the brick, `dlsj.loop.sweep`): "side_cross" / "side_circle" carry their mark on
+  one face only, visible while wrist_roll is within `SIDE_FACE_DEG` of the inspect pose's roll (4 of the 12
+  default stops, so a per-frame majority vote says plain); "glint" is plain but throws a specular highlight at
+  `GLINT_DEG` (exactly one stop), which flips a max-score rule.
 * `FakeRobot`: joints track the command with a first-order lag; the gripper stalls on a brick when it closes
   near the grasp pose (so "closed then held" and the EMPTY grasp check behave like the real arm).
 * `FakeCameras`: renders `wrist` / `top` / `inspect` frames; `inspect` shows the held brick's face when the
@@ -25,7 +29,8 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
-from dlsj.contracts import InspectionResult, Label, MarkType, Observation
+from dlsj.contracts import FrameInspection, InspectionResult, Label, MarkType, Observation
+from dlsj.inspect.aggregate import AggregateConfig, SweepInspectorMixin, frame_label
 from dlsj.loop.poses import ARM, GRIPPER
 from dlsj.loop.skills import PLACE_BLUE, PLACE_MINOR, PLACE_PINK, Plates, default_skills
 
@@ -43,6 +48,8 @@ BRICK_RGB = np.array([235, 200, 40], dtype=np.float32)  # yellow brick
 BG_RGB = np.array([90, 90, 95], dtype=np.float32)
 HOLD_GRIP = 22.0  # where the jaws stall on a brick
 TURN_DEG = 30.0
+SIDE_FACE_DEG = (20.0, 80.0)  # wrist_roll offset (deg) from the inspect pose where a side_* brick shows its mark
+GLINT_DEG = (-62.0, -52.0)  # offset where a "glint" brick reflects the light
 
 
 def _near(a: np.ndarray, b: np.ndarray, tol: float) -> bool:
@@ -55,7 +62,14 @@ class Brick:
     kind: str
     turned: bool = False
 
-    def face(self) -> str:
+    def face(self, roll_offset: float = 0.0) -> str:
+        """What the inspect camera sees, given the wrist_roll offset from the inspect pose."""
+        if self.kind in ("side_cross", "side_circle"):
+            lo, hi = SIDE_FACE_DEG
+            return self.kind.removeprefix("side_") if lo <= roll_offset <= hi else "plain"
+        if self.kind == "glint":
+            lo, hi = GLINT_DEG
+            return "glint" if lo <= roll_offset <= hi else "plain"
         if self.kind in ("hidden_cross", "glare"):
             return ("cross" if self.kind == "hidden_cross" else "plain") if self.turned else "faint"
         return self.kind
@@ -132,10 +146,15 @@ class FakeCameras:
         w = self.world
         state = self.robot.read_state()
         if name == "inspect":
-            if w.held is not None and _near(state, w.poses["inspect"], 10.0):
+            ins = w.poses["inspect"]
+            if w.held is not None and float(np.max(np.abs(state[:4] - ins[:4]))) <= 10.0:  # roll may differ
                 x0, y0, x1, y1 = self.roi
                 img[y0:y1, x0:x1] = BRICK_RGB
-                face = w.held.face()
+                face = w.held.face(float(state[4] - ins[4]))
+                if face == "glint":  # specular highlight: a bright, soft-edged ellipse
+                    yy, xx = np.mgrid[y0:y1, x0:x1]
+                    g = ((xx - (x0 + 50)) / 30.0) ** 2 + ((yy - (y0 + 40)) / 16.0) ** 2 <= 1.0
+                    img[y0:y1, x0:x1][g] = (255, 255, 250)
                 if face in ("cross", "faint"):
                     a = 1.0 if face == "cross" else 0.45  # faint = low-contrast cross
                     col = BRICK_RGB * (1 - a)
@@ -171,12 +190,14 @@ class FakeCameras:
         return buf.tobytes() if ok else None
 
 
-class FakeInspector:
-    """Colour-distance 'anomaly model' on the inspect ROI. Same output contract as the Anomalib inspector."""
+class FakeInspector(SweepInspectorMixin):
+    """Colour-distance 'anomaly model' on the inspect ROI. Same output contract as the Anomalib inspector,
+    including the per-frame sweep API (`inspect_frame` / `inspect_sweep` / `start_sweep`)."""
 
     def __init__(self, roi: tuple[int, int, int, int], threshold: float = 0.5, band: float = 0.15,
-                 ref_rgb: np.ndarray = BRICK_RGB, classifier="auto"):
+                 ref_rgb: np.ndarray = BRICK_RGB, classifier="auto", agg: AggregateConfig | None = None):
         self.roi, self.threshold, self.band, self.ref = roi, threshold, band, ref_rgb.astype(np.float32)
+        self.agg = agg or AggregateConfig()
         self.norm = float(np.linalg.norm(self.ref))  # distance from the brick colour to black
         if classifier == "auto":
             try:
@@ -243,6 +264,47 @@ class FakeInspector:
             lat["stage2"] = (time.perf_counter() - t1) * 1000.0
         return InspectionResult(label, score, self.threshold, region, heat, tuple(scores),
                                 (time.perf_counter() - t0) * 1000.0, "FAKE-CPU", mark, float(conf), mdev, lat)
+
+
+    # ------------------------------------------------------------------ sweep API
+    def sweep_meta(self) -> dict:
+        mdev = "FAKE-NP" if self.classifier is None else self.classifier.device
+        return {"threshold": self.threshold, "band_low": self.threshold - self.band,
+                "band_high": self.threshold + self.band, "device": "FAKE-CPU", "mark_device": mdev}
+
+    def inspect_frame(self, frame: np.ndarray, index: int = 0, angle: float | None = None):
+        t0 = time.perf_counter()
+        x0, y0, x1, y1 = self.roi
+        heat = self._heat(frame)
+        score = float(np.percentile(heat[y0:y1, x0:x1], 99))
+        label = frame_label(score, self.threshold - self.band, self.threshold + self.band)
+        region = None
+        if label is not Label.PERFECT:
+            ys, xs = np.nonzero(heat > 0.5 * max(score, 1e-6))
+            if len(xs):
+                region = (int(xs.min()), int(ys.min()), int(xs.max()), int(ys.max()))
+        mark, conf, p = None, 0.0, None
+        if label is Label.DEFECTIVE:
+            if region is None:
+                mark = MarkType.UNKNOWN
+            elif self.classifier is not None:
+                from dlsj.inspect.classify import crop_box
+
+                bx0, by0, bx1, by1 = crop_box(region, frame.shape[:2], self.classifier.pad_frac)
+                p = self.classifier.p_cross([frame[by0:by1, bx0:bx1]], [heat[by0:by1, bx0:bx1]])[0]
+            else:
+                m, c = self._np_mark(heat, region)
+                p = None if m is MarkType.UNKNOWN and c == 0.0 else (0.5 if m is MarkType.UNKNOWN else
+                                                                    (c if m is MarkType.CROSS else 1 - c))
+            if mark is None:
+                if p is None:
+                    mark = MarkType.UNKNOWN
+                else:
+                    conf = max(p, 1 - p)
+                    mark = (MarkType.CROSS if p >= 0.5 else MarkType.CIRCLE) if conf >= 0.7 else MarkType.UNKNOWN
+        rec = FrameInspection(index, None if angle is None else float(angle), score, label, region, mark, float(conf),
+                              None if p is None else float(p), (time.perf_counter() - t0) * 1000.0)
+        return rec, heat
 
 
 class ScriptedInspector:

@@ -6,6 +6,13 @@ Only for validating the pipeline end to end before real images exist; retrain on
     python -m dlsj.inspect.synthetic --out ~/inference/inspect_data/synth3_train --good 120 --bad 30 --minor 30 --seed 0
     python -m dlsj.inspect.synthetic --out ~/inference/inspect_data/synth3_test  --good 40 --bad 40 --minor 40 --seed 1
 
+Spin-and-inspect sweeps (`generate_sweeps`): the brick rolled through N angles, the mark on one face only (visible
+in part of the sweep), occasional glare frames:
+
+    python -m dlsj.inspect.synthetic --sweeps dataset --out ~/inference/inspect_data/synthsweep_train --good 60 --views 12
+    python -m dlsj.inspect.synthetic --sweeps sweeps  --out ~/inference/inspect_data/synthsweep_eval \
+        --good 20 --minor 20 --bad 20 --views 12 --seed 7
+
 Writes full 640x480 RGB frames as `good/<brick>_f<k>.png` (plain), `bad/...` (cross), `minor/...` (circle):
 k views of one brick, with small jitter between views, like the 3 frames grabbed at inspection. `dataset.json`
 holds the suggested ROI and, per brick, the mark type and its bounding box in frame pixels (first view).
@@ -239,6 +246,167 @@ def generate(out: Path, n_good: int, n_bad: int, views: int, seed: int, n_minor:
              views, out)
 
 
+# ----------------------------------------------------------------------------- sweeps: the brick spun on wrist_roll
+DEPTH = 0.62  # side-face width relative to the front face
+FACES = {"front": 0.0, "right": 90.0, "back": 180.0, "left": -90.0}  # face normal angles at roll 0
+
+
+def _face_geometry(brick: dict, theta_deg: float):
+    """Visible vertical faces of the box rolled by `theta` about the vertical axis (orthographic, camera on +z).
+
+    Yields (face name, x_left, x_right, facing) with x in pixels relative to the brick centre and `facing` =
+    cos(angle between the face normal and the camera axis)."""
+    w, d = brick["w"], brick["w"] * DEPTH
+    t = np.deg2rad(theta_deg)
+    corners = {"A": (-w / 2, d / 2), "B": (w / 2, d / 2), "C": (w / 2, -d / 2), "D": (-w / 2, -d / 2)}
+    xp = {k: x * np.cos(t) + z * np.sin(t) for k, (x, z) in corners.items()}
+    edges = {"front": ("A", "B"), "right": ("B", "C"), "back": ("C", "D"), "left": ("D", "A")}
+    for name, (a, b) in edges.items():
+        n = np.deg2rad(FACES[name] + theta_deg)
+        facing = float(np.cos(n))
+        if facing > 0.02:
+            x0, x1 = sorted((xp[a], xp[b]))
+            yield name, x0, x1, facing
+
+
+def _face_texture(brick: dict, face: str, mark: dict | None, kind: str, mark_face: str, rng: np.random.Generator,
+                  glare: bool) -> np.ndarray:
+    """Unforeshortened face image (h x face width), brick colour with the mark if it is on this face."""
+    fw = int(round(brick["w"] * (1.0 if face in ("front", "back") else DEPTH)))
+    fh = int(round(brick["h"]))
+    rgb = brick["rgb"]
+    tex = np.empty((fh, fw, 3), np.float32)
+    tex[:] = rgb
+    tex[: int(0.18 * fh)] = np.minimum(255, rgb * 1.15 + 15)  # lighter top strip, like the frontal render
+    cv2.rectangle(tex, (0, 0), (fw - 1, fh - 1), tuple(float(c * 0.7) for c in rgb), 2, cv2.LINE_AA)
+    if mark is not None and face == mark_face:
+        m = dict(mark)
+        lim = max(0.0, (fw - m["size"]) / 2 * 0.8)
+        m["dx"] = float(np.clip(m["dx"], -lim, lim))
+        off = np.array([fw / 2, fh / 2])
+        if kind == "circle":
+            ring = _circle_points(m) + rng.normal(0, 0.4, (72, 2))
+            cv2.polylines(tex, [np.round(ring + off).astype(np.int32)], False, m["colour"], m["thick"], cv2.LINE_AA)
+        else:
+            for line in _cross_points(m, rng):
+                cv2.polylines(tex, [np.round(line + off).astype(np.int32)], False, m["colour"], m["thick"],
+                              cv2.LINE_AA)
+    if glare:  # specular highlight: bright soft ellipse
+        g = np.zeros((fh, fw), np.float32)
+        cv2.ellipse(g, (int(fw * rng.uniform(0.3, 0.7)), int(fh * rng.uniform(0.35, 0.65))),
+                    (int(fw * rng.uniform(0.08, 0.16)), int(fh * rng.uniform(0.08, 0.16))), rng.uniform(0, 180), 0, 360,
+                    1.0, -1, cv2.LINE_AA)
+        g = cv2.GaussianBlur(g, (0, 0), 3)[..., None]
+        tex = tex * (1 - g) + 252 * g
+    return tex
+
+
+def render_rotated(brick: dict, theta_deg: float, mark: dict | None, kind: str, mark_face: str,
+                   rng: np.random.Generator, glare: bool = False) -> np.ndarray:
+    """One `inspect` frame of the held brick rolled by `theta_deg` (0 = the front face to the camera)."""
+    yy, xx = np.mgrid[0:FRAME_H, 0:FRAME_W].astype(np.float32)
+    bg = 200 + 18 * (xx / FRAME_W) - 10 * (yy / FRAME_H)
+    img = np.repeat(bg[..., None], 3, axis=2) * np.array([1.0, 1.0, 0.97], np.float32)
+    cx, cy, h = brick["cx"], brick["cy"], brick["h"]
+    faces = list(_face_geometry(brick, theta_deg))
+    xl, xr = min(f[1] for f in faces), max(f[2] for f in faces)
+    sh = np.array([[cx + xl + 6, cy - h / 2 + 8], [cx + xr + 6, cy - h / 2 + 8], [cx + xr + 6, cy + h / 2 + 8],
+                   [cx + xl + 6, cy + h / 2 + 8]])
+    cv2.fillPoly(img, [np.round(sh).astype(np.int32)], (150, 150, 145))
+    img = cv2.GaussianBlur(img, (0, 0), 4)
+    y0 = int(round(cy - h / 2))
+    glare_face = max(faces, key=lambda f: f[3])[0] if glare else None
+    for name, x0, x1, facing in faces:
+        pw = int(round(x1 - x0))
+        if pw < 2:
+            continue
+        tex = _face_texture(brick, name, mark, kind, mark_face, rng, glare and name == glare_face)
+        tex = cv2.resize(tex, (pw, tex.shape[0]), interpolation=cv2.INTER_AREA) * (0.6 + 0.4 * facing)
+        xa = int(round(cx + x0))
+        ya, yb, xb = max(0, y0), min(FRAME_H, y0 + tex.shape[0]), min(FRAME_W, xa + pw)
+        img[ya:yb, max(0, xa):xb] = tex[ya - y0:yb - y0, max(0, xa) - xa:xb - xa]
+    # studs along the top edge
+    n = brick["studs"]
+    for i in range(n):
+        sx = cx + xl + (xr - xl) * (i + 0.5) / n
+        sw = 0.22 * (xr - xl) / n
+        cv2.rectangle(img, (int(sx - sw), y0 - 16), (int(sx + sw), y0), tuple(float(c * 0.92) for c in brick["rgb"]), -1)
+    for side, xe in ((-1, xl), (1, xr)):  # gripper fingers on the silhouette's sides
+        fx = cx + xe + side * 6
+        cv2.rectangle(img, (int(fx - 14), 0), (int(fx + 14), int(cy + 0.25 * h)), (55, 55, 60), -1)
+        cv2.rectangle(img, (int(fx - 11), 0), (int(fx - 7), int(cy + 0.25 * h) - 4), (85, 85, 90), -1)
+    img = img * brick["light"] * rng.uniform(0.97, 1.03)
+    img = cv2.GaussianBlur(img, (0, 0), 0.8) + rng.normal(0, 3.0, img.shape)
+    return np.clip(img, 0, 255).astype(np.uint8)
+
+
+SWEEP_LABEL = {"plain": "good", "circle": "minor", "cross": "bad"}  # sweep label -> dataset folder
+
+
+def sweep_angles(frames: int, range_deg: float) -> list[float]:
+    return [float(a) for a in np.linspace(-range_deg / 2, range_deg / 2, frames)]
+
+
+def generate_sweeps(out: Path, n_plain: int, n_circle: int, n_cross: int, frames: int = 12, range_deg: float = 180.0,
+                    seed: int = 0, layout: str = "sweeps", glare_prob: float = 0.4,
+                    mark_faces: tuple[str, ...] = ("front", "right", "left", "right", "left")) -> list[dict]:
+    """Bricks spun through `frames` roll angles. The mark sits on one face (default: 1/5 front, 4/5 a side face,
+    so it is visible in only part of the sweep); with `glare_prob` one frame of the sweep gets a specular highlight.
+
+    layout "sweeps": `out/<id>_<label>/frame_XX.png` + `sweep.json` (the format `dlsj.loop.sweep_test` saves);
+    layout "dataset": `out/{good,minor,bad}/<id>_f<k>.png` + `dataset.json` (Anomalib training / calibration)."""
+    rng = np.random.default_rng(seed)
+    angles = sweep_angles(frames, range_deg)
+    metas = []
+    for label, n in (("plain", n_plain), ("circle", n_circle), ("cross", n_cross)):
+        for i in range(n):
+            brick = _brick_params(rng)
+            brick["angle"] = 0.0
+            kind = {"plain": "none", "circle": "circle", "cross": "cross"}[label]
+            mark = _circle_params(rng, brick) if kind == "circle" else _cross_params(rng, brick) if kind == "cross" \
+                else None
+            face = str(rng.choice(list(mark_faces))) if mark is not None else ""
+            start = float(rng.uniform(-12, 12))  # how squarely the pick skill presented the brick
+            glare_at = int(rng.integers(frames)) if rng.random() < glare_prob else -1
+            bid = f"s{seed}{label[:2]}{i:04d}"
+            vis = []
+            imgs = []
+            for k, a in enumerate(angles):
+                vb = jitter_view(brick, rng)
+                theta = start + a
+                visible = bool(mark is not None and np.cos(np.deg2rad(FACES[face] + theta)) > 0.35)
+                vis.append(visible)
+                imgs.append(render_rotated(vb, theta, mark, kind, face, rng, glare=k == glare_at))
+            meta = {"brick": bid, "label": label, "colour": str(brick["colour"]), "mark_face": face or None,
+                    "start_offset_deg": round(start, 2), "glare_frame": glare_at if glare_at >= 0 else None,
+                    "mark_visible": vis, "n_visible": int(sum(vis))}
+            if layout == "dataset":
+                d = out / SWEEP_LABEL[label]
+                d.mkdir(parents=True, exist_ok=True)
+                for k, im in enumerate(imgs):
+                    write_rgb(d / f"{bid}_f{k}.png", im)
+            else:
+                d = out / f"{bid}_{label}"
+                d.mkdir(parents=True, exist_ok=True)
+                fr = []
+                for k, (im, a) in enumerate(zip(imgs, angles)):
+                    name = f"frame_{k:02d}.png"
+                    write_rgb(d / name, im)
+                    fr.append({"i": k, "file": name, "angle": round(a, 2), "target": round(a, 2), "settled": True,
+                               "mark_visible": vis[k]})
+                (d / "sweep.json").write_text(json.dumps(
+                    {"version": 1, "label": label, "source": "synthetic", "seed": seed, "camera": "inspect",
+                     "crop": list(ROI), "frames": fr, "synthetic": meta}, indent=1) + "\n")
+            metas.append(meta)
+    if layout == "dataset":
+        (out / "dataset.json").write_text(json.dumps(
+            {"source": "synthetic-sweeps", "seed": seed, "frame_size": [FRAME_W, FRAME_H], "crop": list(ROI),
+             "views_per_brick": frames, "angles": angles, "bricks": metas}, indent=1) + "\n")
+    log.info("wrote %d plain + %d circle + %d cross sweeps x %d frames (%s) to %s", n_plain, n_circle, n_cross, frames,
+             layout, out)
+    return metas
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--out", type=Path, required=True)
@@ -247,8 +415,17 @@ def main() -> None:
     ap.add_argument("--minor", type=int, default=0, help="circle-marked bricks (minor defect), in minor/")
     ap.add_argument("--views", type=int, default=3, help="frames per brick")
     ap.add_argument("--seed", type=int, default=0)
+    ap.add_argument("--sweeps", choices=["sweeps", "dataset"], default=None,
+                    help="spin-and-inspect data instead: --good/--minor/--bad bricks rolled through --views angles "
+                         "over --range degrees; 'sweeps' = sweep folders, 'dataset' = good/ minor/ bad/ frames")
+    ap.add_argument("--range", type=float, default=180.0, help="sweep range (deg)")
+    ap.add_argument("--glare-prob", type=float, default=0.4, help="sweeps: chance of one glare frame per brick")
     args = ap.parse_args()
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
+    if args.sweeps:
+        generate_sweeps(args.out.expanduser(), args.good, args.minor, args.bad, args.views, args.range, args.seed,
+                        args.sweeps, args.glare_prob)
+        return
     generate(args.out.expanduser(), args.good, args.bad, args.views, args.seed, args.minor)
 
 

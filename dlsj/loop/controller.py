@@ -4,7 +4,10 @@ Per task (brick) from the planner:
 
     PICK          run the task's pick skill (PICK_AND_SHOW) until the brick is held still at the inspect spot
     VERIFY_GRASP  gripper position (+ Present_Current if configured): EMPTY -> re-open and retry the pick
-    DETECT        hold until the arm is still, grab N fresh `inspect` frames, Inspector.inspect(frames)
+    DETECT        hold until the arm is still, then either grab N fresh `inspect` frames -> Inspector.inspect(frames)
+                  or (sweep enabled) spin the brick on wrist_roll through N angles (`dlsj.loop.sweep`), each frame's
+                  inference queued while the wrist moves on, aggregated per `aggregate` (topk / majority / max /
+                  median, `dlsj.inspect.aggregate`); a grasp lost during the sweep ends the brick ("dropped")
     REASON        decision tree (reasoner.decide): plain -> good plate, circle -> minor plate, cross -> defective
                   plate; uncertain at either stage -> re-inspect (RESHOW / re-grab); after `max_uncertain`
                   uncertain inspections -> DEFECTIVE (safe default), logged as forced
@@ -33,6 +36,7 @@ from dlsj.loop.planner import Task, TaskQueue
 from dlsj.loop.poses import GRIPPER
 from dlsj.loop.reasoner import Decision, ReasonConfig, decide, inspection_record
 from dlsj.loop.skills import Outcome
+from dlsj.loop.sweep import SweepConfig, Sweeper, grasp_state  # noqa: F401  (grasp_state re-exported)
 from dlsj.loop.telemetry import RunLog, Stopwatch
 
 log = logging.getLogger(__name__)
@@ -68,21 +72,15 @@ class ControllerConfig:
     go_home: bool = True  # ramp to the home pose at start and on shutdown (needs a saved home pose)
     home_between_bricks: bool = False
     reason: ReasonConfig = field(default_factory=ReasonConfig)
-
-
-def grasp_state(grip_pos: float, grip_cur: float | None, empty_pos: float, cur_min: float | None) -> str:
-    """PLAYBOOK 7.2: closed all the way with no resistance = EMPTY."""
-    if cur_min is not None and grip_cur is not None:
-        if grip_cur >= cur_min:
-            return "HOLDING"
-        return "EMPTY" if grip_pos <= empty_pos else "UNKNOWN"
-    return "EMPTY" if grip_pos <= empty_pos else "HOLDING"
+    sweep: SweepConfig | None = None  # None or frames == 0: the classic N-frame inspection
+    aggregate: str = "topk"  # sweep aggregation strategy (dlsj.inspect.aggregate.STRATEGIES)
+    sweep_async: bool = True  # infer each sweep frame while the wrist moves to the next stop
 
 
 @dataclass
 class BrickReport:
     task_id: int
-    status: str  # "placed" | "pick_failed" | "place_failed" | "aborted" | "error"
+    status: str  # "placed" | "pick_failed" | "dropped" (grasp lost in the sweep) | "place_failed" | "aborted" | "error"
     label: Label | None = None
     forced: bool = False
     place_skill: str | None = None
@@ -233,14 +231,28 @@ class Controller:
             with Stopwatch(self.log, "settle", task=task.id):
                 still = self.ex.hold_until_still(self.cfg.settle_still_ticks, self.cfg.settle_still_deg_s,
                                                  self.cfg.settle_timeout_s, self.abort_event)
+            sweep = self.cfg.sweep
             with Stopwatch(self.log, "detect", task=task.id, attempt=attempt):
-                frames = self.cameras.fresh(self.cfg.inspect_camera, self.cfg.inspect_frames)
-                result = self.inspector.inspect(frames)
+                if sweep is not None and sweep.frames > 0:
+                    frames, result, status = self._sweep_inspect(task, attempt)
+                    if status != "ok":
+                        if status == "grasp_lost":
+                            self.planner.fail(task, "brick dropped during the inspection sweep")
+                            return "dropped"
+                        if status == "aborted":
+                            return "aborted"
+                        self.log.event("error", stage="sweep", error=status)
+                        return "error"
+                else:
+                    frames = self.cameras.fresh(self.cfg.inspect_camera, self.cfg.inspect_frames)
+                    result = self.inspector.inspect(frames)
             self.log.timing("inspector", result.latency_ms, task=task.id, device=result.device)
             for stage, ms in result.stage_latency_ms.items():
                 dev = result.device if stage == "stage1" else result.mark_device
                 self.log.timing(f"inspector.{stage}", ms, task=task.id, device=dev)
-            self.last_result, self.last_inspect_frame = result, frames[len(frames) // 2]
+            best = result.summary.get("best_index") if result.frames else None
+            self.last_result = result
+            self.last_inspect_frame = frames[best] if best is not None else frames[len(frames) // 2]
             rec = inspection_record(result)
             rep.inspections.append(rec)
             self.log.event("inspection", task=task.id, attempt=attempt, settled=still, **rec)
@@ -270,7 +282,40 @@ class Controller:
                         return "error"
 
         rep.label, rep.forced, rep.place_skill = decision.label, decision.forced, decision.skill
+        return self._place(task, decision)
 
+    def _sweep_inspect(self, task: Task, attempt: int) -> tuple[list[np.ndarray], InspectionResult | None, str]:
+        """Spin the brick, inspect every angle. Returns (frames, result, sweep status)."""
+        cfg = self.cfg
+        insp = self.inspector
+        session = insp.start_sweep(cfg.aggregate) if cfg.sweep_async and hasattr(insp, "start_sweep") else None
+        sweeper = Sweeper(self.ex.robot, self.cameras, cfg.sweep, self.abort_event)
+        res = sweeper.run(self.ex.cmd, on_frame=session.add if session is not None else None)
+        if res.final_cmd is not None:
+            self.ex.cmd = res.final_cmd.copy()  # the executor continues from the restored start pose
+        for st in res.stops:
+            self.log.timing("sweep.stop", st.move_ms + st.settle_ms + st.grab_ms, task=task.id, i=st.index,
+                            move_ms=round(st.move_ms, 1), settle_ms=round(st.settle_ms, 1),
+                            grab_ms=round(st.grab_ms, 1), settled=st.settled, angle=round(st.angle_deg, 2))
+        self.log.timing("sweep", res.duration_ms, task=task.id, n=len(res.frames), status=res.status)
+        self.log.timing("sweep.return", res.return_ms, task=task.id)
+        self.log.event("sweep", task=task.id, attempt=attempt, **res.record())
+        if res.status != "ok" or not res.frames:
+            if session is not None:
+                session.cancel()
+            return res.frames, None, res.status if res.status != "ok" else "camera_error"
+        t0 = time.perf_counter()
+        if session is not None:
+            result = session.result()
+        elif hasattr(insp, "inspect_sweep"):
+            result = insp.inspect_sweep(res.frames, res.angles, cfg.aggregate)
+        else:
+            result = insp.inspect(res.frames)
+        self.log.timing("sweep.inference_tail", (time.perf_counter() - t0) * 1000.0, task=task.id,
+                        mode="async" if session is not None else "after")
+        return res.frames, result, "ok"
+
+    def _place(self, task: Task, decision: Decision) -> str:
         # ---------------- PLACE
         with Stopwatch(self.log, "place", task=task.id, skill=decision.skill):
             for attempt in range(1, self.cfg.max_place_attempts + 1):

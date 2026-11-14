@@ -130,7 +130,9 @@ class LeRobotArm:
 
 # ----------------------------------------------------------------------------- inspector
 def load_inspector(path: str | Path | None, **kwargs) -> Inspector:
-    """Load the Anomalib inspector from `dlsj.inspect` given its `manifest.json` (written by `dlsj.inspect.train`).
+    """Load the Anomalib inspector from `dlsj.inspect`: a `manifest.json` (from `dlsj.inspect.train` or
+    `dlsj.inspect.model_io calibrate`), or a standard Anomalib / Studio OpenVINO export folder or `.xml`
+    (`dlsj.inspect.model_io`; pass `crop=` then). Also implements the sweep API (`inspect_sweep`, `start_sweep`).
 
     `AnomalibInspector.from_manifest(path, device="NPU", batch=3)` applies the uncertainty band itself (label
     UNCERTAIN), returns `region` in inspect-frame pixels and a frame-aligned `heatmap`, and expects RGB frames.

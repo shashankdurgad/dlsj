@@ -290,3 +290,21 @@ def save_home(follower_id: str, pose: dict[str, float]) -> Path:
     p.parent.mkdir(parents=True, exist_ok=True)
     p.write_text(json.dumps({k: round(float(v), 2) for k, v in pose.items()}, indent=2) + "\n")
     return p
+
+
+# ----------------------------------------------------------------------------- joint limits in action units
+def raw_range_to_deg(range_min: int, range_max: int, resolution: int = 4096) -> tuple[float, float]:
+    """A joint's calibrated raw range in LeRobot's `use_degrees` units: (raw - mid) * 360 / (resolution - 1)."""
+    mid = (range_min + range_max) / 2
+    k = 360.0 / (resolution - 1)
+    return (range_min - mid) * k, (range_max - mid) * k
+
+
+def joint_limits_deg(follower_id: str = "follower", motor: str = "wrist_roll",
+                     cal_dir: Path | None = None) -> tuple[float, float] | None:
+    """(min, max) in degrees of `motor` from the follower's repo calibration, or None without a calibration."""
+    p = (cal_dir or FOLLOWER_CAL_DIR) / f"{follower_id}.json"
+    if not p.exists():
+        return None
+    c = json.loads(p.read_text()).get(motor)
+    return None if c is None else raw_range_to_deg(int(c["range_min"]), int(c["range_max"]))
