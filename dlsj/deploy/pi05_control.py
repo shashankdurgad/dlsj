@@ -55,8 +55,9 @@ class Controller:
 
     def __init__(self, arm, cameras: dict, policy, bowls=("yellow", "purple", "orange"), fps: int = 30,
                  max_step: float = DEFAULT_MAX_STEP, max_step_gripper: float = DEFAULT_MAX_STEP, replan: int = 50,
-                 blend: str = "ensemble", ensemble_k: float = 0.01, blend_steps: int = 10, sync: bool = False,
-                 crops: dict | None = None, ready: list[float] | None = None):
+                 blend: str = "none", ensemble_k: float = 0.01, blend_steps: int = 10, sync: bool = False,
+                 crops: dict | None = None, ready: list[float] | None = None, sync_band: float | None = 15.0,
+                 trace=None):
         if blend not in BLENDS:
             raise ValueError(f"blend must be one of {BLENDS}")
         self.arm, self.cameras, self.policy = arm, cameras, policy
@@ -79,6 +80,11 @@ class Controller:
         self.lat_ms: collections.deque = collections.deque(maxlen=30)
         self.last_chunk_t = 0.0
         self.sent = 0
+        # the command never leads the arm's measured position by more than this (None = no limit): a lagging
+        # joint can't wind the command up, and LeRobot's max_relative_target clamp stays out of the way
+        self.sync_band = sync_band
+        self.measured: np.ndarray | None = None
+        self.trace = trace  # file-like (JSON lines) or None
         self.lock = threading.RLock()  # re-entrant: Q and sync-mode inference take it from inside tick()
         self.commands: queue.Queue[str] = queue.Queue()
         self._stop = threading.Event()
@@ -113,7 +119,36 @@ class Controller:
         self.generation += 1
         self.chunks.clear()
 
+    def _log(self, kind: str, **fields) -> None:
+        """One JSON line per tick / inference / key in the trace file, if tracing."""
+        if self.trace is None:
+            return
+        rec = {"kind": kind, "wall": round(time.time(), 4), "t": self.t, "phase": self.phase, "stage": self.stage}
+        for k, v in fields.items():
+            rec[k] = np.round(np.asarray(v, dtype=float), 3).tolist() if isinstance(v, np.ndarray) else v
+        try:
+            self.trace.write(json.dumps(rec) + "\n")
+        except Exception:  # noqa: BLE001  tracing must never stop the arm
+            log.exception("trace write failed")
+
+    def _step(self, target: np.ndarray) -> np.ndarray:
+        """Move the command one rate-limited step towards `target`, kept within `sync_band` of the measured
+        position, and send it. Returns the measured position."""
+        measured = np.asarray(self.arm.read(), dtype=float)
+        self.measured = measured
+        base = measured if self.cmd is None else self.cmd
+        cmd = base + np.clip(target - base, -self.max_step, self.max_step)
+        if self.sync_band is not None:
+            cmd = np.clip(cmd, measured - self.sync_band, measured + self.sync_band)
+        self.cmd = cmd
+        self.arm.send(cmd)
+        self.sent += 1
+        self._log("tick", measured=measured, target=target, cmd=cmd, queued=self.remaining(),
+                  chunks=len(self.chunks), inflight=self.inflight, gen=self.generation)
+        return measured
+
     def _handle(self, c: str) -> None:
+        self._log("key", key=c, bowl=self.bowl)
         if c in ("q", "stop"):
             self._hold("Stopped: holding position. Space to start again")
             self.phase = "stopped"
@@ -204,7 +239,10 @@ class Controller:
             with self.lock:
                 self.inflight = False
                 self.lat_ms.append(dt * 1e3)
-                if gen != self.generation or self.phase != "running":
+                kept = gen == self.generation and self.phase == "running"
+                self._log("infer", t0=t0, stale=self.t - t0, latency_ms=round(dt * 1e3, 1), prompt=task, kept=kept,
+                          state=np.asarray(state, dtype=float), chunk_head=chunk[:10], chunk_end=chunk[-1])
+                if not kept:
                     return  # stopped, restarted or re-prompted meanwhile
                 self._add_chunk(t0, chunk)
                 self.last_chunk_t = time.perf_counter()
@@ -226,9 +264,8 @@ class Controller:
         with self.lock:
             try:
                 if self.phase == "readying":
-                    self.cmd = self.cmd + np.clip(self.ready - self.cmd, -self.max_step, self.max_step)
-                    self.arm.send(self.cmd)
-                    if np.abs(np.asarray(self.arm.read(), dtype=float) - self.ready).max() < 4.0:
+                    measured = self._step(self.ready)
+                    if np.abs(measured - self.ready).max() < 4.0:
                         self._replan_now()
                         self.phase, self.message = "running", ""
                     return
@@ -238,9 +275,7 @@ class Controller:
                     self._request()
                 target = self._planned(self.t)
                 if target is not None:
-                    self.cmd = self.cmd + np.clip(target - self.cmd, -self.max_step, self.max_step)
-                    self.arm.send(self.cmd)
-                    self.sent += 1
+                    self._step(target)
             finally:
                 self.t += 1
                 self.chunks = [(s, c) for s, c in self.chunks if s + len(c) > self.t]
@@ -277,7 +312,9 @@ class Controller:
                     "latency_median_ms": round(float(np.median(lat)), 1) if lat else None,
                     "chunk_age_s": round(time.perf_counter() - self.last_chunk_t, 2) if self.last_chunk_t else None,
                     "sent": self.sent, "max_step": np.round(self.max_step, 2).tolist(),
-                    "cmd": None if self.cmd is None else np.round(self.cmd, 1).tolist()}
+                    "cmd": None if self.cmd is None else np.round(self.cmd, 1).tolist(),
+                    "measured": None if self.measured is None else np.round(self.measured, 1).tolist(),
+                    "sync_band": self.sync_band, "tracing": self.trace is not None}
 
 
 # ----------------------------------------------------------------------------- real hardware
@@ -445,7 +482,12 @@ def main() -> None:
     p.add_argument("--max-step", type=float, default=DEFAULT_MAX_STEP,
                    help="joint target change per tick (calibrated units); demos move p99 5-8/tick. +/- keys tune it")
     p.add_argument("--max-step-gripper", type=float, default=DEFAULT_MAX_STEP)
-    p.add_argument("--blend", choices=BLENDS, default="ensemble", help="how consecutive chunks are combined")
+    p.add_argument("--blend", choices=BLENDS, default="none",
+                   help="how consecutive chunks are combined: none = the newest chunk replaces the plan (default)")
+    p.add_argument("--sync-band", type=float, default=15.0,
+                   help="keep the command within this of the measured joint position (0 = off)")
+    p.add_argument("--trace", default="~/desmond/pi05_traces",
+                   help="directory for a JSON-lines trace of every tick, inference and key ('' = off)")
     p.add_argument("--ensemble-k", type=float, default=0.01, help="ensemble weights exp(-k*i), i=0 the oldest chunk")
     p.add_argument("--blend-steps", type=int, default=10, help="crossfade length in ticks")
     p.add_argument("--max-relative-target", type=float, default=10.0, help="LeRobot's per-command safety clamp")
@@ -476,9 +518,20 @@ def main() -> None:
         port, _, _ = arms.find_ports()
     arm = FollowerArm(port, args.follower_id, args.max_relative_target)
     arm.connect()
+    trace = None
+    if args.trace:
+        from pathlib import Path
+
+        tdir = Path(args.trace).expanduser()
+        tdir.mkdir(parents=True, exist_ok=True)
+        tpath = tdir / time.strftime("pi05-%Y%m%d-%H%M%S.jsonl")
+        trace = open(tpath, "a", buffering=1)  # line-buffered: a crash loses at most the current line
+        trace.write(json.dumps({"kind": "run", "wall": time.time(), "args": vars(args)}) + "\n")
+        log.info("trace: %s", tpath)
     ctl = Controller(arm, streams, policy, args.bowls.split(","), args.fps, args.max_step, args.max_step_gripper,
                      args.replan, args.blend, args.ensemble_k, args.blend_steps, crops=crops,
-                     ready=[float(v) for v in args.ready.split(",")] if args.ready else None)
+                     ready=[float(v) for v in args.ready.split(",")] if args.ready else None,
+                     sync_band=args.sync_band or None, trace=trace)
     loop = threading.Thread(target=ctl.run, name="control", daemon=True)
     loop.start()
     teleop_web.install_stop_signals()
@@ -500,6 +553,8 @@ def main() -> None:
             arm.disconnect()
             for s in streams.values():
                 s.stop()
+            if trace is not None:
+                trace.close()
 
 
 if __name__ == "__main__":

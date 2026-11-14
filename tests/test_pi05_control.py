@@ -61,7 +61,9 @@ def run_ticks(ctl, n):
 
 
 def test_start_drives_the_arm_with_rate_limited_targets():
-    ctl = make(max_step=1.0, max_step_gripper=2.0)
+    # the fake chunk starts exactly at the present state, so replacing it every tick ("none") would never move;
+    # a real policy's chunk leads the arm and stale actions are skipped. Rate limiting is blend-independent.
+    ctl = make(max_step=1.0, max_step_gripper=2.0, blend="ensemble")
     run_ticks(ctl, 5)
     assert ctl.arm.sent == []  # idle: nothing sent before Space
     ctl.command("start")
@@ -269,3 +271,37 @@ def test_space_eases_to_the_ready_pose_before_the_policy_runs():
     assert np.abs(steps).max() <= ctl.max_step.max() + 1e-9  # rate-limited on the way
     run_ticks(ctl, 3)
     assert policy.calls >= 1
+
+
+class LaggyArm(FakeArm):
+    """Moves only a fraction of the way to each command, like a loaded joint."""
+
+    def send(self, target):
+        self.sent.append(np.asarray(target, float).copy())
+        self.pos = self.pos + 0.2 * (self.sent[-1] - self.pos)
+
+
+def test_default_blend_is_newest_chunk():
+    assert make().blend == "none"
+
+
+def test_command_stays_within_the_sync_band_of_the_measured_position():
+    import io
+
+    trace = io.StringIO()
+    policy = FakePolicy(target=100.0)
+    ctl = Controller(LaggyArm(), {c: FakeCam() for c in ("wrist", "top", "inspect")}, policy, sync=True,
+                     max_step=8.0, sync_band=5.0, trace=trace)
+    ctl.command("start")
+    for _ in range(30):
+        pos_before = ctl.arm.pos.copy()
+        ctl.tick()
+        if ctl.arm.sent:
+            assert np.abs(ctl.arm.sent[-1] - pos_before).max() <= 5.0 + 1e-9  # never more than the band ahead
+    recs = [json.loads(line) for line in trace.getvalue().splitlines()]
+    kinds = {r["kind"] for r in recs}
+    assert {"key", "infer", "tick"} <= kinds
+    tick = next(r for r in recs if r["kind"] == "tick")
+    assert {"measured", "target", "cmd", "queued", "gen"} <= set(tick) and len(tick["cmd"]) == 6
+    infer = next(r for r in recs if r["kind"] == "infer")
+    assert infer["kept"] and len(infer["chunk_head"]) == 10 and infer["prompt"]
