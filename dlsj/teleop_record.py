@@ -30,7 +30,7 @@ The chosen plate stays selected across takes and restarts until you change it.
 
 Pick-only mode (`--pick-only`) records just the pick stage, to add grasp data:
 1. space starts a take; pick the brick and bring it to the inspection camera;
-2. m marks the in-view moment. Recording continues for `--pick-hold-s` (default 0.5 s, the inspection pause),
+2. m marks the in-view moment. Recording continues for `--pick-hold-s` (default 0.3 s, the inspection pause),
    then the take stops by itself and waits for review;
 3. s saves, d discards. Every frame carries the pick instruction and no plate is needed. Takes don't chain:
    put the brick back while nothing is recorded, then press space for the next take.
@@ -73,7 +73,7 @@ class EpisodeRecorder:
                  inspect_camera: str | None = "inspect", detector: BrickInViewDetector | None = None,
                  record_depth: bool = True, auto_split: bool = False, continuous: bool = True,
                  streaming_encoding: bool = True, checkpoint_every: int = 10, pick_only: bool = False,
-                 pick_hold_s: float = 0.5):
+                 pick_hold_s: float = 0.3):
         self.teleop, self.streams = teleop, streams
         self.repo_id, self.fps = repo_id, fps
         self.root = Path(root) if root else Path("data") / repo_id.split("/")[-1]
@@ -708,7 +708,7 @@ def main() -> None:
                    help="seal the dataset every N saved takes so a crash can't lose more than that (0 = only at exit)")
     p.add_argument("--pick-only", action="store_true",
                    help="record only the pick stage: the take stops --pick-hold-s after the in-view mark (m)")
-    p.add_argument("--pick-hold-s", type=float, default=0.5, help="pick-only: seconds recorded after the mark")
+    p.add_argument("--pick-hold-s", type=float, default=0.3, help="pick-only: seconds recorded after the mark")
     p.add_argument("--auto-split", action="store_true",
                    help="let the classifier mark the in-view moment instead of the operator's space press")
     p.add_argument("--width", type=int, default=640)
