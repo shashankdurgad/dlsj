@@ -55,6 +55,7 @@ DP_ARGS = [
     "--policy.optimizer_lr=1e-4", "--policy.optimizer_weight_decay=1e-6",
     "--policy.scheduler_name=cosine", "--policy.scheduler_warmup_steps=500",
     "--ema.type=warmup",
+    "--accelerator.mixed_precision=bf16",  # ~2x faster than fp32 on H100; no loss scaling needed
     "--dataset.image_transforms.enable=true",
 ]
 
