@@ -142,6 +142,7 @@ def main() -> None:
         """Records every control tick's observation for the policy's 1/30 s history."""
 
         def _step(self, target):
+            self._filt = None  # no command smoothing: it is for the 5-step pi0.5 export's buzz and adds ~3 ticks lag
             measured = super()._step(target)
             p = holder.get("p")
             if p is not None and self.phase == "running":
