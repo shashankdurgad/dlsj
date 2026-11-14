@@ -39,6 +39,14 @@ Other research done in conversation (not separate reports):
 - **Sweep page** (`dlsj.inspect.sweep_live`, port 8012): leader teleop, hand posing (torque off / hold), save inspect pose, gripper open / close-on-brick, early stop; YOLO + detector on the NPU.
 - **Anomalib**: our pipeline supports PaDiM and PatchCore; PaDiM/PatchCore were trained on synthetic data on the XPS (pipeline tests). The real model is Tan's **PatchCore** (`brick-patchcore-geometry-v1`, WideResNet50-2, trained in Anomalib Studio): 15/16 plain accepted, 54/58 crosses and 50/55 circles flagged. Ensemble (detector + PatchCore + YOLO): 88 correct / 1 wrong / 27 uncertain of 116. **Decision: YOLO only in the live loop; PatchCore kept off (available as an option).**
 - Docs: `docs/sweep-live.md`, `docs/yolo-brick-classification.md`, `docs/brick-object-detection.md`.
+- **Automatic inspection in the VLA controller** (`deploy/smolvla/auto_control.py` + `auto_inspect.py`, 14 Nov): a
+  second controller next to the manual `smolvla_control.py` (unchanged: M + 1/2/3). Space = pick, M = bring, M at the
+  camera = policy paused, wrist spun by the same `Sweeper` (calibrated roll limits, grasp check, wrist returned),
+  YOLO v2 + detector on the NPU with early stop, then it places in the decided bowl by itself; uncertain → one
+  re-spin → purple; Q aborts and holds; dropped brick holds; 1/2/3 still override. On the XPS: both models on the
+  NPU, 1.5 s load, ~6 ms per frame. 10 unit tests (`tests/test_auto_control.py`, `tests/test_auto_inspect.py`).
+  The detector needs ultralytics, installed as an overlay (`~/inference/pydeps/ultra`, `--no-deps`) so Desmond's
+  `pi05rt` venv is unchanged. Arm test pending (supervised).
 
 ## 3. Policies
 ### π0.5
@@ -103,11 +111,13 @@ Other research done in conversation (not separate reports):
 ## 8. Decisions log
 - Policy cameras: wrist + top only (inspect camera dropped as noisy); top cropped 560x480 in training and deployment.
 - Inspection: YOLO v2 + detector on the NPU; PatchCore off.
+- Two controllers: manual `smolvla_control.py` (VLA testing) and `auto_control.py` (automatic spin-and-inspect + place).
 - Main policy track: MolmoAct2 LoRA SFT; prompts: 3-phase canonical, bowl as the only parameter; text length 128 trained in.
 - Deployment: OpenVINO on the Arc GPU, INT8 preferred on data (FP16 if accuracy concerns after fine-tune), RTC on.
 - RL: out of scope for deployment; demo video only, real policy as base, scripted fallback.
 
 ## 9. Open items
+- Supervised arm test of `auto_control.py` (spin, decision, automatic place).
 - Post-LoRA optimisation run (`optimize.py`) and new baseline rows.
 - RL demo: fallback video, real-policy run after the LoRA.
 - Pick-prompt mismatch between the two prepared datasets.
