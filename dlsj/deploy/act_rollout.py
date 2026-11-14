@@ -48,13 +48,22 @@ def parse_crop(spec: str) -> tuple[int, int, int, int] | None:
     return x, y, w, h
 
 
-def to_policy_image(bgr: np.ndarray, crop: tuple[int, int, int, int] | None) -> np.ndarray:
-    """Camera BGR frame -> contiguous HxWx3 uint8 RGB, cropped like the training data."""
+def to_policy_image(bgr: np.ndarray, crop: tuple[int, int, int, int] | None,
+                    pad_to: tuple[int, int] | None = None, resize: tuple[int, int] | None = None) -> np.ndarray:
+    """Camera BGR frame -> contiguous HxWx3 uint8 RGB, prepared exactly like the training data:
+    crop, then pad with black on the right/bottom to `pad_to` (W, H), then resize to `resize` (H, W) with INTER_AREA
+    (the order and interpolation of scripts/build_pick_set.py)."""
     if crop is not None:
         x, y, w, h = crop
         if y + h > bgr.shape[0] or x + w > bgr.shape[1]:
             raise ValueError(f"crop {crop} outside frame {bgr.shape[:2]}")
         bgr = bgr[y:y + h, x:x + w]
+    if pad_to is not None and bgr.shape[:2] != (pad_to[1], pad_to[0]):
+        padded = np.zeros((pad_to[1], pad_to[0], 3), dtype=bgr.dtype)
+        padded[: bgr.shape[0], : bgr.shape[1]] = bgr
+        bgr = padded
+    if resize is not None and bgr.shape[:2] != tuple(resize):
+        bgr = cv2.resize(bgr, (resize[1], resize[0]), interpolation=cv2.INTER_AREA)
     return np.ascontiguousarray(cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB))
 
 
@@ -72,16 +81,26 @@ def check_shapes(obs: dict[str, np.ndarray], expected: dict[str, tuple[int, ...]
 
 def main() -> int:
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    p.add_argument("--policy_path", required=True, help="LeRobot ACT checkpoint dir (model.safetensors + processors)")
+    p.add_argument("--policy_path", required=True,
+                   help="LeRobot checkpoint dir (model.safetensors + processors): ACT, Diffusion Policy or any policy type; "
+                        "for Diffusion Policy use the EMA weights (pretrained_model_ema)")
     p.add_argument("--device", default="xpu", help="torch device: xpu, cpu")
     p.add_argument("--cameras", default="", help="UVC cameras name=index_or_path,... (e.g. wrist=/dev/v4l/by-id/...)")
     p.add_argument("--realsense", default="", help="RealSense cameras name=serial,... (e.g. top=...,inspect=...)")
     p.add_argument("--top-crop", default="0,0,560,480", help="x,y,w,h crop for the top camera ('none' to disable)")
+    p.add_argument("--pad-to", default=None, help="W,H: pad cameras smaller than this with black (after the crop)")
+    p.add_argument("--resize", default=None, help="H,W: resize every camera to this (after crop and pad)")
     p.add_argument("--width", type=int, default=640)
     p.add_argument("--height", type=int, default=480)
     p.add_argument("--cam-fps", type=int, default=30)
     p.add_argument("--fps", type=int, default=30, help="control rate (training data: 30)")
     p.add_argument("--n-action-steps", type=int, help="override how many actions of each chunk are executed")
+    p.add_argument("--ov-export", default=None,
+                   help="OpenVINO ACT export dir (dlsj.deploy.act_export): predict chunks with it instead of PyTorch")
+    p.add_argument("--ov-device", default="GPU", help="OpenVINO device for --ov-export (GPU fp16 ~21 ms on the XPS)")
+    p.add_argument("--temporal-ensemble", type=float, default=None,
+                   help="ACT temporal ensembling coefficient (e.g. 0.01): re-plan every tick and average the overlapping "
+                        "chunks, as in the ACT paper. Forces n_action_steps=1.")
     p.add_argument("--max-speed", type=float, default=60.0, help="per-joint speed cap, deg/s (gripper units/s)")
     p.add_argument("--ramp-speed", type=float, default=30.0, help="deg/s when ramping to/from home")
     p.add_argument("--max-seconds", type=float, default=60.0)
@@ -98,27 +117,46 @@ def main() -> int:
 
     import torch
     from lerobot.common.control_utils import predict_action
-    from lerobot.policies.act.configuration_act import ACTConfig
-    from lerobot.policies.act.modeling_act import ACTPolicy
-    from lerobot.policies.factory import make_pre_post_processors
+    from lerobot.configs.policies import PreTrainedConfig
+    from lerobot.policies.factory import get_policy_class, make_pre_post_processors
     from lerobot.robots import make_robot_from_config
     from lerobot.robots.so_follower import SO101FollowerConfig
 
     from dlsj.realsense_stream import RealSenseStream
 
     top_crop = parse_crop(args.top_crop)
+    pad_to = tuple(int(v) for v in args.pad_to.split(",")) if args.pad_to else None
+    resize = tuple(int(v) for v in args.resize.split(",")) if args.resize else None
     device = torch.device(args.device)
 
-    cfg = ACTConfig.from_pretrained(args.policy_path)
+    cfg = PreTrainedConfig.from_pretrained(args.policy_path)
     cfg.device = args.device
+    policy_cls = get_policy_class(cfg.type)
+    if (args.temporal_ensemble is not None or args.ov_export) and cfg.type != "act":
+        p.error("--temporal-ensemble and --ov-export are ACT-only")
     if args.n_action_steps:
         cfg.n_action_steps = args.n_action_steps
-    policy = ACTPolicy.from_pretrained(args.policy_path, config=cfg).to(device).eval()
+    if args.temporal_ensemble is not None:
+        cfg.temporal_ensemble_coeff = args.temporal_ensemble
+        cfg.n_action_steps = 1
+    if args.ov_export:  # the PyTorch copy only supplies the config/processors; keep it off the GPU
+        cfg.device, device = "cpu", torch.device("cpu")
+    policy = policy_cls.from_pretrained(args.policy_path, config=cfg).to(device).eval()
+    ov_policy = ensembler = None
+    if args.ov_export:
+        from dlsj.deploy.act_export import OpenVINOACT
+        from lerobot.policies.act.modeling_act import ACTTemporalEnsembler
+        ov_policy = OpenVINOACT(args.ov_export, device=args.ov_device)
+        if args.temporal_ensemble is not None:
+            ensembler = ACTTemporalEnsembler(args.temporal_ensemble, cfg.chunk_size)
+        log.info("OpenVINO %s on %s; temporal ensemble %s", args.ov_export, args.ov_device, args.temporal_ensemble)
+    ov_queue: list = []
     pre, post = make_pre_post_processors(policy.config, pretrained_path=args.policy_path,
                                          preprocessor_overrides={"device_processor": {"device": args.device}})
     expected = {k: tuple(v.shape) for k, v in policy.config.input_features.items()}
-    log.info("ACT loaded on %s: chunk %d, executing %d per chunk; inputs %s", device, cfg.chunk_size,
-             cfg.n_action_steps, expected)
+    log.info("%s loaded on %s: chunk %s, executing %d per chunk, temporal ensemble %s; inputs %s", cfg.type, device,
+             getattr(cfg, "chunk_size", getattr(cfg, "horizon", None)), cfg.n_action_steps,
+             getattr(cfg, "temporal_ensemble_coeff", None), expected)
 
     uvc = teleop_web.parse_cameras(args.cameras, 8) if args.cameras else {}
     rs = dict(part.split("=", 1) for part in filter(None, (x.strip() for x in args.realsense.split(","))))
@@ -192,13 +230,24 @@ def main() -> int:
             state = read_state()
             obs = {"observation.state": state}
             for name, s in streams.items():
-                obs[f"observation.images.{name}"] = to_policy_image(s.frame, top_crop if name == "top" else None)
+                obs[f"observation.images.{name}"] = to_policy_image(s.frame, top_crop if name == "top" else None,
+                                                                     pad_to, resize)
             if tick == 0:
                 check_shapes(obs, expected)
             t_inf = time.perf_counter()
-            action = predict_action(obs, policy, device, pre, post, use_amp=False)
+            if ov_policy is not None:
+                imgs = {f"observation.images.{n}": cv2.cvtColor(s.frame, cv2.COLOR_BGR2RGB) for n, s in streams.items()}
+                if ensembler is not None:  # fresh chunk every tick, blended with earlier chunks (ACT paper)
+                    chunk = ov_policy(state, imgs)
+                    target = ensembler.update(torch.from_numpy(chunk)[None]).squeeze(0).numpy().astype(np.float32)
+                else:
+                    if not ov_queue:
+                        ov_queue = list(ov_policy(state, imgs)[: cfg.n_action_steps])
+                    target = np.asarray(ov_queue.pop(0), dtype=np.float32)
+            else:
+                action = predict_action(obs, policy, device, pre, post, use_amp=False)
+                target = action.squeeze(0).detach().cpu().numpy().astype(np.float32)
             lat.append((time.perf_counter() - t_inf) * 1e3)
-            target = action.squeeze(0).detach().cpu().numpy().astype(np.float32)
             cmd = teleop_web.step_toward(cmd if not args.dry_run else state, target, step_cap)
             send(cmd)
             if tick % args.fps == 0 and args.save_dir:
