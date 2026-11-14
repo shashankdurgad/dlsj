@@ -7,6 +7,7 @@ ACT ignores the text instruction. See docs/train_act_gcp.md for the full VM setu
     export HF_TOKEN=...                    # read access to the private dataset
     export WANDB_API_KEY=...               # optional; without it, metrics only go to the console
     python scripts/train_act.py --run act_417 --steps 20000
+    python scripts/train_act.py --run act_417_warp --steps 20000 --warp-weights warp/duplo417/warp_weights.parquet
 
 It downloads the dataset (default: akoniti/dlsj-duplo-417) to --data-dir, then runs
 `torchrun -m lerobot.scripts.lerobot_train` on all visible GPUs (DDP). `--batch-size` is per GPU.
@@ -20,6 +21,9 @@ import subprocess
 import sys
 import time
 from pathlib import Path
+
+REPO = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(REPO))  # for dlsj.warp when run as `python scripts/train_act.py`
 
 # LeRobot log line: "step:1K smpl:32K ep:150 epch:0.68 loss:0.412 grdn:12.3 lr:1.0e-05 updt_s:0.21 data_s:0.01"
 _KV = re.compile(r"(?:^|\s)([a-z_/]+):(-?[0-9.]+(?:e[-+]?\d+)?)([KMB]?)(?=\s|$)")
@@ -68,6 +72,8 @@ def main() -> None:
     ap.add_argument("--workers", type=int, default=6, help="dataloader workers per GPU")
     ap.add_argument("--wandb-project", default="dlsj-act")
     ap.add_argument("--resume", action="store_true", help="resume --run from its last checkpoint")
+    ap.add_argument("--warp-weights", type=Path, default=None,
+                    help="WARP-BC per-frame weights parquet (dlsj.warp.score); trains WARP ACT instead of plain ACT")
     ap.add_argument("extra", nargs="*", help="extra lerobot-train arguments, e.g. --policy.chunk_size=50")
     args = ap.parse_args()
 
@@ -79,17 +85,28 @@ def main() -> None:
     if out.exists() and not args.resume:
         sys.exit(f"{out} exists; pick another --run or pass --resume")
 
+    # WARP-BC: same trainer, run through dlsj.warp.train_policy, which adds the "warp" sample weighter and a
+    # per-sample ACT loss. The weights are looked up by global frame index, so check they match this dataset.
+    module, warp_args = "lerobot.scripts.lerobot_train", []
+    if args.warp_weights is not None:
+        from dlsj.warp.train_policy import check_alignment
+
+        print(f"WARP weights {args.warp_weights}: {check_alignment(str(args.warp_weights), str(root))}", flush=True)
+        module = "dlsj.warp.train_policy"
+        warp_args = ["--sample_weighting.type=warp",
+                     f"--sample_weighting.progress_path={args.warp_weights.resolve()}"]
+
     if args.resume:
-        cmd = ["torchrun", "--standalone", f"--nproc_per_node={gpus}", "-m", "lerobot.scripts.lerobot_train",
+        cmd = ["torchrun", "--standalone", f"--nproc_per_node={gpus}", "-m", module,
                f"--config_path={out}/checkpoints/last/pretrained_model/train_config.json", "--resume=true"]
     else:
         cmd = [
-            "torchrun", "--standalone", f"--nproc_per_node={gpus}", "-m", "lerobot.scripts.lerobot_train",
+            "torchrun", "--standalone", f"--nproc_per_node={gpus}", "-m", module,
             f"--dataset.repo_id=local/{root.name}", f"--dataset.root={root}", "--dataset.video_backend=pyav",
             "--policy.type=act", "--policy.device=cuda", "--policy.push_to_hub=false",
             f"--output_dir={out}", f"--job_name={args.run}", f"--batch_size={args.batch_size}",
             f"--steps={args.steps}", f"--save_freq={args.save_freq}", f"--log_freq={args.log_freq}",
-            f"--num_workers={args.workers}", *args.extra,
+            f"--num_workers={args.workers}", *warp_args, *args.extra,
         ]
     print(" ".join(cmd), flush=True)
 
@@ -100,12 +117,14 @@ def main() -> None:
 
             wb = wandb.init(project=args.wandb_project, name=args.run, config={
                 "dataset": args.dataset, "revision": args.revision, "steps": args.steps, "gpus": gpus,
-                "batch_size_per_gpu": args.batch_size, "global_batch": args.batch_size * gpus, "policy": "act"})
+                "batch_size_per_gpu": args.batch_size, "global_batch": args.batch_size * gpus, "policy": "act",
+                "warp_weights": str(args.warp_weights) if args.warp_weights else None})
         except Exception as e:  # noqa: BLE001  tracking must never stop training
             print(f"W&B disabled: {e}", flush=True)
 
     t0 = time.time()
-    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1)
+    env = {**os.environ, "PYTHONPATH": os.pathsep.join(filter(None, [str(REPO), os.environ.get("PYTHONPATH")]))}
+    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1, env=env)
     logged = 0
     try:
         for line in proc.stdout:

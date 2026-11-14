@@ -46,6 +46,29 @@ class WarpWeights(SampleWeighter):
         return {"dataset_kept_fraction": self.kept}
 
 
+def check_alignment(weights_path: str, dataset_root: str) -> dict:
+    """Fail loudly unless the weights file describes exactly this dataset's episodes and frames.
+
+    Weights are looked up by the global frame `index`, so a dataset with a different episode set, order or
+    length would silently get the wrong weights. Compares per-episode lengths and start indices.
+    """
+    import glob
+    from pathlib import Path
+
+    w = pd.read_parquet(Path(weights_path).expanduser(), columns=["index", "episode_index", "frame_index"])
+    wl = w.groupby("episode_index").agg(start=("index", "min"), length=("frame_index", "size"))
+    files = sorted(glob.glob(str(Path(dataset_root).expanduser() / "meta" / "episodes" / "**" / "*.parquet"),
+                             recursive=True))
+    eps = pd.concat(pd.read_parquet(f, columns=["episode_index", "length", "dataset_from_index"]) for f in files)
+    dl = eps.set_index("episode_index").rename(columns={"dataset_from_index": "start"})[["start", "length"]]
+    if len(wl) != len(dl):
+        raise SystemExit(f"WARP weights cover {len(wl)} episodes, dataset has {len(dl)}: rescore for this dataset")
+    bad = (wl.sort_index() != dl.sort_index()).any(axis=1)
+    if bad.any():
+        raise SystemExit(f"WARP weights don't match the dataset in episodes {list(bad[bad].index[:10])}")
+    return {"episodes": len(dl), "frames": int(dl["length"].sum())}
+
+
 _make = sw.make_sample_weighter
 
 

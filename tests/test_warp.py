@@ -224,3 +224,19 @@ def test_only_the_successful_grasp_and_the_release_are_protected():
     assert 85 <= grasp <= 100 and 185 <= release <= 200
     fr = weights.episode_frame_table(0, np.zeros(len(grip)), 150, grip, fps, cfg)
     assert not fr.loc[(fr.frame_index > 25) & (fr.frame_index < 70), "protected"].any()  # fumble not protected
+
+
+def test_check_alignment_accepts_matching_dataset_and_rejects_others(tmp_path):
+    from dlsj.warp.train_policy import check_alignment
+
+    ds = tmp_path / "ds" / "meta" / "episodes" / "chunk-000"
+    ds.mkdir(parents=True)
+    pd.DataFrame({"episode_index": [0, 1], "length": [3, 2], "dataset_from_index": [0, 3]}).to_parquet(
+        ds / "file-000.parquet")
+    w = pd.DataFrame({"index": range(5), "episode_index": [0, 0, 0, 1, 1], "frame_index": [0, 1, 2, 0, 1],
+                      "weight": 1.0})
+    w.to_parquet(tmp_path / "w.parquet")
+    assert check_alignment(str(tmp_path / "w.parquet"), str(tmp_path / "ds")) == {"episodes": 2, "frames": 5}
+    w.iloc[:4].assign(episode_index=[0, 0, 1, 1], frame_index=[0, 1, 0, 1]).to_parquet(tmp_path / "bad.parquet")
+    with pytest.raises(SystemExit):
+        check_alignment(str(tmp_path / "bad.parquet"), str(tmp_path / "ds"))
