@@ -177,7 +177,7 @@ def test_chunk_ending_in_place_is_judged_by_place_pace():
     v = np.r_[np.full(100, 0.5), np.full(100, 1.0)]
     fr = weights.episode_frame_table(0, v, 100, None, 30, cfg)
     df = weights.compute_weights(fr, {0: 0.4, 1: 2.0}, cfg)
-    late_pick = df[(df.frame_index >= 60) & (df.frame_index < 100)]  # chunks end in place: 1.0/2.0 = 0.5
+    late_pick = df[(df.frame_index >= 55) & (df.frame_index < 70)]  # end in place (1.0/2.0 = 0.5), before the hold window
     assert (late_pick.stage_end == 1).all() and (late_pick.weight == 0).all()
     early_pick = df[df.frame_index < 40]  # chunks end in pick: 0.5/0.4 = 1.25 > tau
     assert (early_pick.weight > 0).all()
