@@ -1,0 +1,97 @@
+{
+ "torch:cpu:bf16": {
+  "load_s": 17.7,
+  "median_ms": 10770.0,
+  "p90_ms": 11154.4,
+  "p99_ms": 11679.3,
+  "n": 30,
+  "load1_per_block": [
+   15.59,
+   15.93,
+   15.89
+  ],
+  "blocks_redone": 0,
+  "pkg_power_w": null,
+  "peak_rss_mb": 26824.3,
+  "gpu_resident_mb": 100.2,
+  "quality": {
+   "vs_ref_joints": 1.623,
+   "vs_ref_gripper": 0.827,
+   "demo_err_joints": 8.337,
+   "demo_err_ref_joints": 8.471
+  },
+  "label": "0 baseline: PyTorch CPU bf16"
+ },
+ "ov:/home/intel/inference/exports/molmoact2_so101_rtc_fp16": {
+  "load_s": 28.3,
+  "median_ms": 365.2,
+  "p90_ms": 367.7,
+  "p99_ms": 378.3,
+  "n": 30,
+  "load1_per_block": [
+   7.25,
+   6.74,
+   6.74
+  ],
+  "blocks_redone": 0,
+  "pkg_power_w": null,
+  "rtc": false,
+  "peak_rss_mb": 19994.5,
+  "gpu_resident_mb": 1952.9,
+  "quality": {
+   "vs_ref_joints": 0.0,
+   "vs_ref_gripper": 0.0,
+   "demo_err_joints": 8.471,
+   "demo_err_ref_joints": 8.471
+  },
+  "label": "1 OpenVINO GPU FP16"
+ },
+ "ov:/home/intel/inference/exports/molmoact2_so101_rtc_int8": {
+  "load_s": 11.3,
+  "median_ms": 538.2,
+  "p90_ms": 551.4,
+  "p99_ms": 558.8,
+  "n": 30,
+  "load1_per_block": [
+   4.52,
+   4.32,
+   4.05
+  ],
+  "blocks_redone": 0,
+  "pkg_power_w": null,
+  "rtc": false,
+  "peak_rss_mb": 5901.0,
+  "gpu_resident_mb": 1791.3,
+  "quality": {
+   "vs_ref_joints": 0.244,
+   "vs_ref_gripper": 0.108,
+   "demo_err_joints": 8.482,
+   "demo_err_ref_joints": 8.471
+  },
+  "label": "2 OpenVINO GPU INT8"
+ },
+ "ov:/home/intel/inference/exports/molmo_opt/zeroshot/rtc_int8": {
+  "load_s": 10.3,
+  "median_ms": 525.4,
+  "p90_ms": 530.8,
+  "p99_ms": 536.4,
+  "n": 30,
+  "load1_per_block": [
+   2.66,
+   2.61,
+   2.64
+  ],
+  "blocks_redone": 0,
+  "pkg_power_w": null,
+  "rtc": true,
+  "peak_rss_mb": 5904.5,
+  "gpu_resident_mb": 1790.2,
+  "quality": {
+   "vs_ref_joints": 1.986,
+   "vs_ref_gripper": 0.637,
+   "demo_err_joints": 8.434,
+   "demo_err_ref_joints": 8.471
+  },
+  "label": "3 OpenVINO GPU INT8 + RTC"
+ }
+}

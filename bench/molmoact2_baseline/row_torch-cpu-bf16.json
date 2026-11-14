@@ -1,0 +1,16 @@
+{
+ "load_s": 17.7,
+ "median_ms": 10770.0,
+ "p90_ms": 11154.4,
+ "p99_ms": 11679.3,
+ "n": 30,
+ "load1_per_block": [
+  15.59,
+  15.93,
+  15.89
+ ],
+ "blocks_redone": 0,
+ "pkg_power_w": null,
+ "peak_rss_mb": 26824.3,
+ "gpu_resident_mb": 100.2
+}
