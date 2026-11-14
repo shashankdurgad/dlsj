@@ -55,10 +55,13 @@ class Controller:
 
     def __init__(self, arm, cameras: dict, policy, bowls=("yellow", "purple", "orange"), fps: int = 30,
                  max_step: float = DEFAULT_MAX_STEP, max_step_gripper: float = DEFAULT_MAX_STEP, replan: int = 50,
-                 blend: str = "ensemble", ensemble_k: float = 0.01, blend_steps: int = 10, sync: bool = False):
+                 blend: str = "ensemble", ensemble_k: float = 0.01, blend_steps: int = 10, sync: bool = False,
+                 crops: dict | None = None):
         if blend not in BLENDS:
             raise ValueError(f"blend must be one of {BLENDS}")
         self.arm, self.cameras, self.policy = arm, cameras, policy
+        # training-time crops, {camera: (x, y, w, h)}: the policy must see what it was trained on
+        self.crops = dict(crops or {})
         self.bowls, self.fps, self.replan, self.sync = list(bowls), fps, replan, sync
         self.blend, self.ensemble_k, self.blend_steps = blend, ensemble_k, blend_steps
         self.max_step = np.array([max_step] * 5 + [max_step_gripper], dtype=float)
@@ -97,6 +100,9 @@ class Controller:
             frame = self.cameras[name].frame
             if frame is None:
                 raise RuntimeError(f"no frame from camera {name}")
+            if name in self.crops:
+                x, y, w, h = self.crops[name]
+                frame = frame[y:y + h, x:x + w]
             imgs[name] = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         return np.asarray(self.arm.read(), dtype=float), imgs
 
@@ -377,9 +383,20 @@ def make_handler(streams: dict, ctl: Controller):
     return Handler
 
 
-def warmup(policy, n: int = 2) -> None:
+def parse_crops(spec: str) -> dict[str, tuple[int, int, int, int]]:
+    """"top=0,0,560,480" (comma-separated pairs allowed with ';') -> {"top": (0, 0, 560, 480)}."""
+    out = {}
+    for item in filter(None, spec.split(";")):
+        name, box = item.split("=")
+        x, y, w, h = (int(v) for v in box.split(","))
+        out[name.strip()] = (x, y, w, h)
+    return out
+
+
+def warmup(policy, n: int = 2, crops: dict | None = None) -> None:
     """The first calls after compiling are slow (0.4-2.6 s); spend them before the arm is live."""
-    blank = {c: np.zeros((480, 640, 3), np.uint8) for c in CAMS}
+    crops = crops or {}
+    blank = {c: np.zeros((crops[c][3], crops[c][2], 3) if c in crops else (480, 640, 3), np.uint8) for c in CAMS}
     for _ in range(n):
         t = time.perf_counter()
         policy(np.zeros(6, np.float32), blank, PICK)
@@ -421,13 +438,16 @@ def main() -> None:
     p.add_argument("--max-relative-target", type=float, default=10.0, help="LeRobot's per-command safety clamp")
     p.add_argument("--replan", type=int, default=50,
                    help="request a new chunk when this few future actions remain (50 = back to back)")
+    p.add_argument("--crop", default="", help="training-time crop per camera, x,y,w,h; e.g. top=0,0,560,480 "
+                   "(models trained on the cropped dataset need it; ';' separates cameras)")
     p.add_argument("--host", default="0.0.0.0")
     p.add_argument("--port", type=int, default=8010)
     args = p.parse_args()
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 
+    crops = parse_crops(args.crop)
     policy = make_policy(args)  # compile first: slow, and the arm should not wait torqued meanwhile
-    warmup(policy)
+    warmup(policy, crops=crops)
     streams: dict = {}
     for name, dev in teleop_web.parse_cameras(args.cameras, 8).items() if args.cameras else []:
         streams[name] = teleop_web.CameraStream(name, dev, 640, 480, 30, 80).start()
@@ -442,7 +462,7 @@ def main() -> None:
     arm = FollowerArm(port, args.follower_id, args.max_relative_target)
     arm.connect()
     ctl = Controller(arm, streams, policy, args.bowls.split(","), args.fps, args.max_step, args.max_step_gripper,
-                     args.replan, args.blend, args.ensemble_k, args.blend_steps)
+                     args.replan, args.blend, args.ensemble_k, args.blend_steps, crops=crops)
     loop = threading.Thread(target=ctl.run, name="control", daemon=True)
     loop.start()
     teleop_web.install_stop_signals()

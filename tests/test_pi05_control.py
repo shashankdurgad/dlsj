@@ -223,3 +223,27 @@ def test_http_console():
             urllib.request.urlopen(urllib.request.Request(base + "/ctl/rm_rf", method="POST"))
     finally:
         srv.shutdown()
+
+
+class ShapePolicy(FakePolicy):
+    def __call__(self, state, images, task):
+        self.shapes = {k: v.shape for k, v in images.items()}
+        self.top_right_col = images["top"][:, -1].copy()
+        self.prompts.append(task)
+        return np.linspace(state, np.full(6, self.target), 50)
+
+
+def test_training_crop_is_applied_before_the_policy():
+    from dlsj.deploy.pi05_control import parse_crops
+
+    crops = parse_crops("top=0,0,560,480")
+    assert crops == {"top": (0, 0, 560, 480)}
+    policy = ShapePolicy()
+    ctl = make(policy, crops=crops)
+    top = ctl.cameras["top"].frame
+    top[:, 559] = 7  # last column kept by the crop
+    top[:, 560:] = 200  # dropped by the crop
+    ctl.command("start")
+    run_ticks(ctl, 2)
+    assert policy.shapes["top"] == (480, 560, 3) and policy.shapes["wrist"] == (480, 640, 3)
+    assert (policy.top_right_col == 7).all()
