@@ -42,7 +42,7 @@ sudo apt-get update && sudo apt-get install -y git ffmpeg libgl1
 curl -LsSf https://astral.sh/uv/install.sh | sh && source ~/.local/bin/env
 git clone https://github.com/shashankdurgad/dlsj.git && cd dlsj
 uv venv --python 3.12 .venv-train && source .venv-train/bin/activate
-uv pip install "lerobot[dataset,training]==0.7.0" wandb
+uv pip install "lerobot[dataset,training,multi_task_dit]==0.7.0" wandb   # multi_task_dit: for --policy dit
 python -c "import torch; print(torch.__version__, torch.cuda.device_count(), torch.cuda.get_device_name(0))"
 ```
 
@@ -68,6 +68,24 @@ python scripts/train_act.py --run act_417 --steps 20000
 
 Loss starts at about 13 and drops below 3 within a few hundred steps. Use the W&B curve, or the console lines,
 to see when it flattens.
+
+## 3c. Diffusion transformer (flow matching) instead of ACT
+
+`--policy dit` trains LeRobot's Multi-Task DiT: a diffusion transformer on CLIP image features **and the
+per-frame instruction text** ("pick up the brick…", "place the brick in the <colour> bowl"), trained with the
+flow-matching objective. Unlike ACT it samples one trajectory rather than averaging several, which addresses
+ACT's hovering/jittering over the bricks. It also reads which plate to use from the instruction.
+
+```bash
+python scripts/train_act.py --policy dit --run dit_517 --dataset <namespace>/dlsj-duplo-517
+```
+
+- Defaults for `dit`: flow matching, frames resized to 240x240 and then cropped to 224 (random crop in training,
+  centre crop at inference), 10 ODE steps at inference, 32-step action horizon with 24 executed per call,
+  batch 32 per GPU, 30k steps. Override any of them as extra arguments, e.g. `--policy.num_integration_steps=20`.
+- 214M trainable parameters: the CLIP encoders are fine-tuned at 0.1x the learning rate. Smoke-tested on a GB10
+  (~10 GB at batch 8, loss falling).
+- At deployment the policy needs the current instruction as `task`, alongside the cameras and state.
 
 ## 4. Bring the checkpoint back and export for the XPS
 
