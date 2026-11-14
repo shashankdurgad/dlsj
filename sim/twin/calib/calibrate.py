@@ -36,21 +36,22 @@ img = lambda cam, f: cv2.cvtColor(cv2.imread(str(cap / cam / f)), cv2.COLOR_BGR2
 res = {}
 
 # 1. wrist intrinsics
-views = [r for r in log.get("wrist", []) if r["phone"] >= 8]
+wb = max(boards, key=lambda b: sum(r[b] >= 8 for r in log.get("wrist", [])))  # whichever board the wrist saw
+views = [r for r in log.get("wrist", []) if r[wb] >= 8]
 views = views[:: max(1, len(views) // 60)]
 obj, imgp = [], []
 for r in views:
-    d = detect(img("wrist", r["file"]), boards["phone"], 8)
+    d = detect(img("wrist", r["file"]), boards[wb], 8)
     if d:
         obj.append(d[0].astype(np.float32)); imgp.append(d[1].astype(np.float32))
 if len(obj) >= 10:
     rms, K, dist, _, _ = cv2.calibrateCamera(obj, imgp, (640, 480), None, None)
     res["wrist"] = {"fx": K[0, 0], "fy": K[1, 1], "cx": K[0, 2], "cy": K[1, 2], "dist": dist.ravel().tolist(),
                     "rms_px": rms, "views": len(obj), "hfov_deg": float(np.degrees(2 * np.arctan(320 / K[0, 0])))}
-    print(f"wrist: {len(obj)} views, RMS {rms:.2f} px, fx {K[0, 0]:.1f} fy {K[1, 1]:.1f} c ({K[0, 2]:.1f}, {K[1, 2]:.1f}), "
+    print(f"wrist ({wb} board): {len(obj)} views, RMS {rms:.2f} px, fx {K[0, 0]:.1f} fy {K[1, 1]:.1f} c ({K[0, 2]:.1f}, {K[1, 2]:.1f}), "
           f"dist {np.round(dist.ravel(), 3).tolist()}", flush=True)
 else:
-    print(f"wrist: only {len(obj)} usable phone-board views (need >= 10)", flush=True)
+    print(f"wrist: only {len(obj)} usable views (need >= 10)", flush=True)
 
 # 2. inspect pose via the top camera, 3. top table check
 intr = json.loads(args.intrinsics.read_text())
