@@ -92,7 +92,9 @@ def classify_colour(bgr_patch: np.ndarray) -> tuple[str, float]:
         "blue": (hue >= 85) & (hue <= 130) & (sat >= 70),
         "yellow": (hue >= 18) & (hue <= 42) & (sat >= 90) & (val >= 100),
         "red": ((hue <= 8) | (hue >= 165)) & (sat >= 110) & (val >= 70),
-        "brown": (hue <= 22) & (sat >= 60) & (val < 140) & ~(((hue <= 8) | (hue >= 165)) & (sat >= 110) & (val >= 70)),
+        # dark, reddish, often low-saturation on this table (small brown brick: S 32-81, V ~104; large: H 9, S 130, V 68)
+        "brown": ((hue <= 25) | (hue >= 160)) & (sat >= 25) & (val < 125)
+                 & ~(((hue <= 8) | (hue >= 165)) & (sat >= 110) & (val >= 70)),
     }
     frac = {k: float(v.mean()) for k, v in votes.items()}
     best = max(frac, key=frac.get)
@@ -100,9 +102,12 @@ def classify_colour(bgr_patch: np.ndarray) -> tuple[str, float]:
 
 
 def split_bricks(dets, plates: list[Plate], bgr: np.ndarray, workspace=(0, 60, 560, 480),
-                 min_side: int = 18, max_side: int = 110, min_conf: float = 0.3) -> tuple[list[Brick], list[Brick]]:
+                 min_side: int = 18, max_side: int = 110, min_conf: float = 0.15,
+                 ignore=((330, 0, 470, 185),)) -> tuple[list[Brick], list[Brick]]:
     """Detector boxes -> (bricks on the table, bricks in a plate). Boxes off the work area, too small or too big
-    (the plate itself, clutter) are dropped. Duplicate boxes (one brick inside another box) keep the smaller."""
+    (the plate itself, clutter) are dropped, as are boxes centred in an `ignore` region (the arm's home footprint:
+    a brick still in the gripper at home is not on the table). Duplicate boxes keep the smaller.
+    min_conf 0.15: a brown brick on the wood table scores ~0.18 (0.3 missed it on 15 Nov)."""
     x0w, y0w, x1w, y1w = workspace
     cands = []
     for d in dets:
@@ -114,6 +119,8 @@ def split_bricks(dets, plates: list[Plate], bgr: np.ndarray, workspace=(0, 60, 5
         if conf < min_conf or not (min_side <= w <= max_side and min_side <= h <= max_side):
             continue
         if not (x0w <= cx < x1w and y0w <= cy < y1w):
+            continue
+        if any(ix0 <= cx <= ix1 and iy0 <= cy <= iy1 for ix0, iy0, ix1, iy1 in ignore):
             continue
         cands.append((box, conf))
     cands.sort(key=lambda bc: (bc[0][2] - bc[0][0]) * (bc[0][3] - bc[0][1]))
