@@ -438,3 +438,48 @@ def test_mode_toggles_only_between_takes(rec):
     rec.close()
     lab = json.loads((rec.sidecar / "labels.jsonl").read_text().splitlines()[0])
     assert lab["mode"] == "pick_only"
+
+
+def test_two_marks_records_the_pickup_then_the_in_view_split(tmp_path):
+    teleop = FakeTeleop()
+    streams = {"wrist": FakeStream("wrist"), "inspect": FakeStream("inspect")}
+    det = BrickInViewDetector(DetectorConfig(stable_frames=2, downscale=1))
+    r = EpisodeRecorder(teleop, streams, "local/test_marks", fps=30, root=tmp_path / "ds", episode_time_s=60,
+                        bowls=["red", "blue", "green"], detector=det, continuous=False)
+    r.open_dataset()
+    teleop.go_live()
+    press(r, "toggle_marks")
+    assert r.two_marks and r.snapshot()["two_marks"]
+    press(r, "bowl1", "space")
+    step(r, 4)  # reach and grasp
+    press(r, "inview")  # first M: pickup done
+    assert r.grasp_frame is not None and r.split_frame is None and r.stage == "pick"
+    grasp = r.grasp_frame
+    step(r, 4)  # carry to the camera
+    press(r, "inview")  # second M: in view, as before
+    assert r.split_frame is not None and r.split_frame > grasp and r.stage == "place"
+    split = r.split_frame
+    press(r, "inview")  # a third M changes nothing
+    assert (r.grasp_frame, r.split_frame) == (grasp, split)
+    step(r, 4)
+    press(r, "space")
+    press(r, "toggle_marks")  # can't switch mid-take
+    assert r.two_marks and "between takes" in r.message
+    press(r, "save")
+    r.close()
+    lab = json.loads((r.sidecar / "labels.jsonl").read_text().splitlines()[0])
+    assert lab["grasp_frame"] == grasp and lab["grasp_marked_by"] == "operator" and lab["inspection_frame"] == split
+    from lerobot.datasets import LeRobotDataset
+
+    ds = LeRobotDataset("local/test_marks", root=tmp_path / "ds")
+    tasks = [ds[i]["task"] for i in range(ds.num_frames)]
+    assert all(t == r.pick_task for t in tasks[:split]) and all("red" in t for t in tasks[split:])  # unchanged
+
+
+def test_one_mark_by_default_and_no_grasp_frame(tmp_path, rec):
+    rec.teleop.go_live()
+    assert not rec.two_marks
+    press(rec, "bowl1", "space")
+    step(rec, 2)
+    press(rec, "inview")
+    assert rec.split_frame is not None and rec.grasp_frame is None
