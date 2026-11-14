@@ -15,8 +15,15 @@ JOINTS = [f"{name}.pos" for name in (
 )]
 
 
-def inspect_dataset(root):
-    """Reject incomplete/mixed-success recordings without changing the dataset."""
+DEFAULT_CAMERAS = ("wrist", "top", "inspect")
+
+
+def inspect_dataset(root, cameras=DEFAULT_CAMERAS):
+    """Reject incomplete/mixed-success recordings without changing the dataset.
+
+    ``cameras`` is the exact set of ``observation.images.*`` features required;
+    the default keeps the original three-camera check for existing runs.
+    """
     info_bytes = (root / "meta/info.json").read_bytes()
     labels_bytes = (root / "meta/dlsj/labels.jsonl").read_bytes()
     info = json.loads(info_bytes)
@@ -25,9 +32,9 @@ def inspect_dataset(root):
     if info.get("fps") != 30:
         raise ValueError("Expected recordings at 30 fps")
     features = info["features"]
-    cameras = {key for key in features if key.startswith("observation.images.")}
-    if cameras != {f"observation.images.{name}" for name in ("wrist", "top", "inspect")}:
-        raise ValueError(f"Expected wrist, top, inspect camera features; found {sorted(cameras)}")
+    cameras_found = {key for key in features if key.startswith("observation.images.")}
+    if cameras_found != {f"observation.images.{name}" for name in cameras}:
+        raise ValueError(f"Expected {', '.join(cameras)} camera features; found {sorted(cameras_found)}")
     for name in ("observation.state", "action"):
         feature = features[name]
         if feature["shape"] != [6] or feature.get("names") != JOINTS:
@@ -39,12 +46,56 @@ def inspect_dataset(root):
         raise ValueError("Need at least two finalized episodes, each with exactly one label")
     if any(label.get("success") is not True for label in labels):
         raise ValueError("Dataset includes failure/unlabelled episodes. Prepare a success-only copy first")
-    if any(not isinstance(label.get("task"), str) or not label["task"].strip() for label in labels):
-        raise ValueError("Every demonstration needs a nonempty task instruction")
+    three_stage = all("pick_task" in label and "inspect_task" in label and "place_task" in label for label in labels)
+    dual_task = all("pick_task" in label and "place_task" in label for label in labels)
+    task_keys = ("pick_task", "inspect_task", "place_task") if three_stage else (("pick_task", "place_task") if dual_task else ("task",))
+    if any(not isinstance(label.get(key), str) or not label[key].strip()
+           for label in labels for key in task_keys):
+        raise ValueError("Every demonstration needs nonempty task instructions")
     if any(not isinstance(label.get("n_frames"), int) or label["n_frames"] <= 0 for label in labels):
         raise ValueError("Invalid episode frame counts")
     if sum(label["n_frames"] for label in labels) != info["total_frames"]:
         raise ValueError("Label frame counts disagree with info.json; finalize and copy the dataset first")
+    if dual_task:
+        # The live recorder changes the language instruction at the phase
+        # boundaries. Preserve and validate those frame-level tasks, rather than
+        # replacing a whole episode with one instruction.
+        import pyarrow.parquet as pq
+        t_table = pq.read_table(root / "meta/tasks.parquet")
+        if "task" in t_table.column_names:
+            tasks = {row["task_index"]: row["task"] for row in t_table.to_pylist()}
+        else:
+            df_t = t_table.to_pandas()
+            tasks = {int(row["task_index"]): str(idx) for idx, row in df_t.iterrows()}
+        by_id = {label["episode_index"]: label for label in labels}
+        seen = {i: set() for i in by_id}
+        for path in sorted((root / "data").rglob("*.parquet")):
+            table = pq.read_table(path, columns=["episode_index", "frame_index", "task_index"])
+            for row in table.to_pylist():
+                label = by_id[row["episode_index"]]
+                split = label.get("inspection_frame")
+                if not isinstance(split, int) or not 0 < split < label["n_frames"]:
+                    raise ValueError("Invalid pick/place inspection boundary")
+                frame = row["frame_index"]
+                if three_stage:
+                    grasp = label.get("grasp_frame")
+                    if not isinstance(grasp, int) or not 0 <= grasp < split:
+                        raise ValueError("Invalid grasp boundary")
+                    if frame < grasp:
+                        expected_task = label["pick_task"]
+                    elif frame < split:
+                        expected_task = label["inspect_task"]
+                    else:
+                        expected_task = label["place_task"]
+                else:
+                    expected_task = label["pick_task"] if frame < split else label["place_task"]
+                if tasks.get(row["task_index"]) != expected_task:
+                    raise ValueError("Frame task disagrees with recorded pick/place instruction")
+                if frame in seen[label["episode_index"]]:
+                    raise ValueError("Duplicate episode frame")
+                seen[label["episode_index"]].add(frame)
+        if any(seen[i] != set(range(label["n_frames"])) for i, label in by_id.items()):
+            raise ValueError("Missing or invalid episode frames")
     return info, sorted(labels, key=lambda x: x["episode_index"]), hashlib.sha256(info_bytes + labels_bytes).hexdigest()
 
 
@@ -86,7 +137,8 @@ def main():
         p.error(str(exc))
     plan.update({"dataset_metadata_sha256": digest, "total_frames": info["total_frames"],
                  "pretrained_model": args.pretrained_model,
-                 "instructions": sorted({label["task"] for label in labels})})
+                 "instructions": sorted({label[key] for label in labels
+                                         for key in ("task", "pick_task", "place_task") if key in label})})
     print(json.dumps(plan, indent=2), flush=True)
     if args.plan_only:
         return

@@ -130,6 +130,29 @@ first GPU smoke run must exercise the actual loader and model.
 
 ## Plan, smoke-test, train, resume
 
+### One-hour action-expert run
+
+For the Junction time budget, `one_hour.py` retains Pi0.5 but freezes the
+vision-language backbone and trains the action expert. It uses four GPUs,
+per-GPU batch 8, a 50-minute Lightning timer and at most 3,000 optimizer steps.
+Validate the actual loader with `--smoke` first, using a separate output folder:
+
+```bash
+training/pi05/.studio/library/.venv/bin/python training/pi05/one_hour.py \
+  /data/duplo_teleop_rgb --pretrained-model /models/pi05_base \
+  --output /checkpoints/pi05-hour
+```
+
+The timer leaves time for final checkpoint writing; the cloud wrapper also
+enforces a one-hour process deadline. This is a bounded adaptation run, not a
+promise of convergence or physical success. `progress.json` reports measured
+throughput, loss, parameter counts and rank-zero GPU memory. Recovery checkpoints
+are saved every 100 updates and `final.ckpt` is written when training ends.
+The preflight supports recorder episodes with separate `pick_task`/`place_task`
+labels and checks every frame's task against `inspection_frame`. Copy the matching
+original label sidecar into the RGB derivative's `meta/dlsj/` folder; do not
+replace the per-frame task indices with one instruction per episode.
+
 All commands below run on the training VM, from the repository root:
 
 ```bash
@@ -199,6 +222,14 @@ PRO 6000, batch 8 and BF16 mixed precision, 20 post-warmup intervals averaged
 See [the recorded configuration, results and limitations](validation/2026-11-13/REPORT.md).
 Four-GPU Spot allocations were unavailable/preempted, so multi-GPU operation is
 still unverified. No real-data quality, export, or robot success is claimed.
+
+On 2026-11-14, a `g4-standard-192` Spot VM in `europe-west4-b` passed a
+four-GPU action-expert-only training/validation smoke test using the frozen
+212-episode, 47,079-frame RGB snapshot. All 64 training-input files passed SHA-256
+checks. The one-hour adaptation process was launched at 00:47 UTC; its checkpoint
+and physical robot performance are not yet verified. Run artifacts are under
+`gs://onflow-30k-pi05-artifacts/runs/pi05-four-20261114/`.
+This smoke test does not validate four-GPU full-parameter fine-tuning.
 
 Sources: [GCP G4 specifications and P2P settings](https://docs.cloud.google.com/compute/docs/accelerator-optimized-machines),
 [pinned Studio SO-101 recipe](https://github.com/open-edge-platform/physical-ai-studio/blob/8f1324161ece2b24f2d38765b6e943ed1961258c/library/configs/physicalai/pi05/so101/snapflow.yaml),
