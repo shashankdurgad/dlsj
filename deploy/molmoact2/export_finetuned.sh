@@ -12,7 +12,12 @@
 set -euo pipefail
 CKPT=${1:-$(ls -t ~/Downloads/*.ckpt ~/Downloads/*/*.ckpt 2>/dev/null | head -1 || true)}
 [ -n "$CKPT" ] || { echo "no checkpoint given and no *.ckpt in ~/Downloads"; exit 1; }
-echo "checkpoint: $CKPT ($(du -h "$CKPT" | cut -f1))"
+prev=-1  # a checkpoint still downloading into ~/Downloads keeps growing: wait until it has been stable for 30 s
+while cur=$(stat -c %s "$CKPT") && [ "$cur" != "$prev" ]; do
+  [ "$prev" -ge 0 ] && echo "waiting for $CKPT to finish downloading ($((cur / 1000000)) MB so far)"
+  prev=$cur; sleep 30
+done
+echo "checkpoint: $CKPT ($(du -h "$CKPT" | cut -f1)), complete"
 NAME=${2:-ft_cal2_456}
 VARIANTS=${3:-fp16_ref,int8_sym,rtc_int8}
 D=~/inference/deploy/molmoact2
