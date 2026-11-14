@@ -1,0 +1,16 @@
+{
+  "_doc": "Follower joint offsets between calibrations, in degrees: offset = reading under the current calibration minus the reading under the calibration the data was recorded with, for the same physical pose. Rollout: act_rollout --joint-offset <name> (policy sees state - offset, actions are sent as action + offset). Datasets: subtract the offset from observation.state and action to bring new-calibration data into the old frame.",
+  "recal_2026-11-14": {
+    "old_calibration": "calibration/ as of commit cab4ab0 (used for duplo_teleop 0-516, duplo_pick, and every policy trained before 2026-11-14 01:00 XPS time)",
+    "new_calibration": "calibration/ after the 2026-11-14 01:00 recalibration (wrist_roll and gripper horns reseated); used by duplo_teleop_cal2",
+    "offset_deg": {
+      "shoulder_pan": 20.35,
+      "shoulder_lift": -7.96,
+      "elbow_flex": 0.18,
+      "wrist_flex": 0.04,
+      "wrist_roll": 0.0,
+      "gripper": 0.0
+    },
+    "evidence": "pan/lift/elbow/wrist_flex: encoders read the same raw value at rest in both calibrations (mounting unchanged), so the offset is exact from homing_offset and range midpoints. wrist_roll: reseated, so taken from the pose at the inspection mark (fixed camera) in 517 old vs 100 new full demos: +1.1 (IQR 18), i.e. ~0. gripper: 5.7 when holding a brick at inspection in both."
+  }
+}

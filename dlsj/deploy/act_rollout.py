@@ -99,8 +99,9 @@ def main() -> int:
                    help="Diffusion Policy: DDIM denoising steps per chunk (trained with 16; fewer is faster)")
     p.add_argument("--amp", action="store_true", help="mixed precision (autocast) for the policy forward pass")
     p.add_argument("--joint-offset", default="",
-                   help="calibration drift since the training data, as joint=deg pairs (current reading minus what the "
-                        "training-time calibration read for the same pose), e.g. shoulder_pan=22.1,shoulder_lift=-10.4. "
+                   help="calibration drift since the training data: a name from configs/joint_offsets.json "
+                        "(e.g. recal_2026-11-14), or joint=deg pairs (current reading minus what the training-time "
+                        "calibration read for the same pose), e.g. shoulder_pan=20.35,shoulder_lift=-7.96. "
                         "The policy sees state - offset; its actions are sent as action + offset.")
     p.add_argument("--async-chunks", action="store_true",
                    help="Diffusion Policy: predict chunks in a background thread from the latest 30 Hz observations while "
@@ -201,7 +202,15 @@ def main() -> int:
     joints = list(robot.action_features)  # recorder order: shoulder_pan.pos ... gripper.pos
     home = arms.load_home(args.follower_id)
     off = np.zeros(len(joints), dtype=np.float32)
-    for kv in filter(None, args.joint_offset.split(",")):
+    spec = args.joint_offset
+    if spec and "=" not in spec:  # a named entry in configs/joint_offsets.json
+        from pathlib import Path
+
+        table = json.loads((Path(__file__).resolve().parents[2] / "configs" / "joint_offsets.json").read_text())
+        if spec not in table or spec.startswith("_"):
+            p.error(f"--joint-offset: no entry {spec!r} in configs/joint_offsets.json ({[k for k in table if not k.startswith('_')]})")
+        spec = ",".join(f"{k}={v}" for k, v in table[spec]["offset_deg"].items())
+    for kv in filter(None, spec.split(",")):
         k, v = kv.split("=")
         name = k if k.endswith(".pos") else f"{k}.pos"
         if name not in joints:
