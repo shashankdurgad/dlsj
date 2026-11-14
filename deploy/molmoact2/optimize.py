@@ -56,7 +56,7 @@ def mem_available_gb() -> float:
 
 def arm_busy() -> list[str]:
     """Live robot controllers (pause GPU work while the arm is driven)."""
-    pat = re.compile(r"(pi05_control|rtc_control|smolvla_control|teleop_record|sweep_live|act_rollout)")
+    pat = re.compile(r"(pi05_control|rtc_control|smolvla_control|auto_control|teleop_record|sweep_live|act_rollout)")
     busy = []
     for p in Path("/proc").glob("[0-9]*"):
         try:
