@@ -62,6 +62,23 @@ class TestConversions(unittest.TestCase):
         np.testing.assert_allclose(m.from_ckpt(ck), x, atol=1e-4)
 
 
+class TestFrameOffset(unittest.TestCase):
+    def test_round_trip_with_offset(self):
+        rng = np.random.default_rng(2)
+        x = rng.uniform(-150, 150, (500, 6)).astype(np.float32)
+        for name, d in m.FRAME_OFFSETS.items():
+            y = m.apply_frame_offset(x, d)
+            self.assertTrue(np.all(y[:, m.ROLL] >= -180) and np.all(y[:, m.ROLL] < 180), name)
+            np.testing.assert_allclose(m.remove_frame_offset(y, d), m._wrap_roll(x), atol=1e-3, err_msg=name)
+
+    def test_offset_values(self):
+        d = m.MolmoAct2Client._delta("old_cal")
+        np.testing.assert_allclose(m.apply_frame_offset(np.zeros(6), d)[:4], [-20.35, 7.95, -0.18, -0.04], atol=1e-5)
+        np.testing.assert_allclose(m.apply_frame_offset([0, 0, 0, 0, 10, 0], d)[m.ROLL], -171.0, atol=1e-4)
+        np.testing.assert_allclose(m.MolmoAct2Client._delta([1, 2, 3, 4, 5]), [1, 2, 3, 4, 5, 0])
+        np.testing.assert_array_equal(m.apply_frame_offset(np.arange(6), m.FRAME_OFFSETS["none"]), np.arange(6))
+
+
 class TestClientPieces(unittest.TestCase):
     def test_ipc_round_trip(self):
         buf = io.BytesIO()

@@ -90,6 +90,35 @@ def from_ckpt(ckpt) -> np.ndarray:
     return S * (np.asarray(ckpt, np.float32) - O)
 
 
+ROLL = JOINTS.index("wrist_roll")
+
+
+def _wrap_roll(x: np.ndarray) -> np.ndarray:
+    x = np.array(x, np.float32, copy=True)
+    x[..., ROLL] = (x[..., ROLL] + 180.0) % 360.0 - 180.0
+    return x
+
+
+def apply_frame_offset(runtime, delta) -> np.ndarray:
+    """Runtime (cal2) units -> the frame the model is fed: runtime + delta (wrist_roll wrapped to [-180, 180))."""
+    return _wrap_roll(np.asarray(runtime, np.float32) + np.asarray(delta, np.float32))
+
+
+def remove_frame_offset(model_frame, delta) -> np.ndarray:
+    """Inverse of `apply_frame_offset` (actions the model predicts -> runtime units)."""
+    return _wrap_roll(np.asarray(model_frame, np.float32) - np.asarray(delta, np.float32))
+
+
+# Reference joint frames, as runtime(cal2) -> other-frame offsets in degrees (pan, lift, elbow, wflex, roll, gripper).
+FRAME_OFFSETS = {
+    "none": (0.0, 0.0, 0.0, 0.0, 0.0, 0.0),
+    # old follower calibration: degrees_old = degrees_cal2 + d (homing/range difference of the two calibration files)
+    "old_cal": (-20.35, 7.95, -0.18, -0.04, 179.0, 0.0),
+    # URDF frame from Joe's cal2 fit: q_urdf_deg = degrees_cal2 + d
+    "urdf": (0.0, -3.0, -1.3, -4.2, -103.4, 0.0),
+}
+
+
 # ----------------------------------------------------------------------------- IPC
 def _send(f, obj) -> None:
     b = pickle.dumps(obj, protocol=pickle.HIGHEST_PROTOCOL)
@@ -132,6 +161,8 @@ class MolmoAct2Client:
             re-plans after 15). noise: "random" (deployed, seeded with `seed`) or "zeros" (deterministic).
         crops: {cam: (x, y, w, h)} applied before the model (fine-tune: {"top": (0, 0, 560, 480)}).
         rtc_horizon / rtc_guidance: RTC settings used when act() gets `prev_chunk` (deployed 15 / 3).
+        frame_offset_deg: per-joint delta (6,) or a FRAME_OFFSETS name. The model sees state + delta (and an RTC tail
+            + delta); its actions are mapped back with - delta (wrist_roll wrapped). Default none = the robot.
         python: interpreter for the worker (default: this one; env MOLMOACT2_PYTHON overrides).
         hf_home: HF cache for the worker (default env HF_HOME, else sim/twin/data/hf).
     """
@@ -141,6 +172,7 @@ class MolmoAct2Client:
                  noise: str = DEPLOY["noise"], seed: int = 0, dtype: str = "bfloat16", keep_order: bool = False,
                  crops: dict | None = None, rtc_horizon: int = DEPLOY["rtc_horizon"],
                  rtc_guidance: float = DEPLOY["rtc_guidance"], text_len: int | None = None,
+                 frame_offset_deg=None,
                  python: str | None = None, hf_home: str | None = None, offline: bool | None = None,
                  load_timeout_s: float = 1800.0, verbose: bool = True):
         if not 1 <= horizon <= CHUNK:
@@ -150,6 +182,7 @@ class MolmoAct2Client:
         self.cams = self._order(cams, keep_order)
         self.keep_order = keep_order
         self.instruction, self.horizon, self.crops = instruction, int(horizon), dict(crops or {})
+        self.frame_offset_deg = self._delta(frame_offset_deg)
         self.last_latency_s: float | None = None
         self.last_info: dict = {}
         self._closed = False
@@ -172,6 +205,19 @@ class MolmoAct2Client:
         t = time.monotonic()
         msg = self._reply(timeout=load_timeout_s)
         self.info = msg | {"spawn_to_ready_s": round(time.monotonic() - t, 1)}
+
+    @staticmethod
+    def _delta(d) -> np.ndarray:
+        if d is None:
+            d = "none"
+        if isinstance(d, str):
+            d = FRAME_OFFSETS[d]
+        d = np.asarray(d, np.float32).reshape(-1)
+        if d.size == 5:
+            d = np.append(d, 0.0).astype(np.float32)
+        if d.size != 6:
+            raise ValueError("frame offset must have 5 or 6 values")
+        return d
 
     @staticmethod
     def _order(cams, keep_order: bool) -> tuple[str, ...]:
@@ -206,12 +252,13 @@ class MolmoAct2Client:
 
     def act(self, obs: dict, *, prev_chunk: np.ndarray | None = None, inference_delay: int = 0,
             cams=None, task: str | None = None, noise: str | None = None, steps: int | None = None,
-            timeout: float = 120.0) -> np.ndarray:
+            seed: int | None = None, frame_offset_deg=None, timeout: float = 120.0) -> np.ndarray:
         """obs = {"images": {cam: uint8 (H, W, 3)}, "state": (6,) runtime units, "task": str}.
 
         prev_chunk: the not-yet-executed tail of the current plan (n, 6) runtime units -> RTC-guided chunk
         (the deployed controller's hand-off); inference_delay = actions that pass during this inference.
-        cams / task / noise / steps: per-call overrides (diagnostics, sweeps). Returns (horizon, 6) float32 runtime units."""
+        cams / task / noise / steps / frame_offset_deg: per-call overrides (diagnostics, sweeps); seed: re-seed the
+        flow's start noise for this call (common random numbers across variants). Returns (horizon, 6) float32 runtime units."""
         if self._closed:
             raise RuntimeError("MolmoAct2Client is closed")
         cams = self._order(cams, self.keep_order) if cams is not None else self.cams
@@ -224,11 +271,13 @@ class MolmoAct2Client:
                 x, y, w, h = self.crops[c]
                 im = im[y:y + h, x:x + w]
             imgs[c] = np.ascontiguousarray(im)
-        state = np.asarray(obs["state"], np.float32).reshape(6)
+        delta = self.frame_offset_deg if frame_offset_deg is None else self._delta(frame_offset_deg)
+        state = apply_frame_offset(np.asarray(obs["state"], np.float32).reshape(6), delta)
         text = task or self.instruction or obs.get("task") or DEPLOY["pick_prompt"]
-        req = {"images": imgs, "cams": list(cams), "state": state, "task": str(text), "noise": noise, "steps": steps}
+        req = {"images": imgs, "cams": list(cams), "state": state, "task": str(text), "noise": noise, "steps": steps,
+               "seed": seed}
         if prev_chunk is not None and len(prev_chunk):
-            req["prev_chunk"] = np.asarray(prev_chunk, np.float32).reshape(-1, 6)[:CHUNK]
+            req["prev_chunk"] = apply_frame_offset(np.asarray(prev_chunk, np.float32).reshape(-1, 6)[:CHUNK], delta)
             req["inference_delay"] = int(inference_delay)
         t = time.perf_counter()
         with self._lock:
@@ -236,7 +285,7 @@ class MolmoAct2Client:
             r = self._reply(timeout)
         self.last_latency_s = float(r["latency_s"])  # model time in the worker (pre + flow + post)
         self.last_info = {k: v for k, v in r.items() if k != "actions"} | {"roundtrip_s": time.perf_counter() - t}
-        return np.asarray(r["actions"], np.float32)[: self.horizon]
+        return remove_frame_offset(np.asarray(r["actions"], np.float32), delta)[: self.horizon]
 
     def close(self) -> None:
         if self._closed:
@@ -351,6 +400,8 @@ class _Worker:
         noise, steps = req.get("noise") or self.noise, int(req.get("steps") or self.steps)
         self.policy.model._use_random_input_noise = noise == "random"
         self.policy.model.backbone.model.flow_matching_num_steps = steps
+        if req.get("seed") is not None:
+            torch.manual_seed(int(req["seed"]))
         batch = {"state": torch.as_tensor(req["state"])[None].to(self.dev), "task": [req["task"]],
                  "images": {c: torch.from_numpy(req["images"][c]).permute(2, 0, 1)[None].to(self.dev) for c in cams}}
         if self.dev.type == "cuda":

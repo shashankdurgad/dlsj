@@ -53,11 +53,17 @@ VARIANTS = {  # name: (prompt kind, cams in model order, noise, steps)
 }
 
 
-def load_points(root: str, n_eps: int, seed: int) -> list[dict]:
+def pick_episodes(root: str, n_eps: int, seed: int, exclude=()) -> list[int]:
     labs = F.labels(root)
     rng = np.random.default_rng(seed)
-    eps = sorted(int(e) for e in rng.choice(sorted(e for e, l in labs.items() if l.get("success", True)
-                                                   and l.get("inspection_frame")), n_eps, replace=False))
+    pool = sorted(e for e, l in labs.items() if l.get("success", True) and l.get("inspection_frame")
+                  and e not in set(exclude))
+    return sorted(int(e) for e in rng.choice(pool, n_eps, replace=False))
+
+
+def load_points(root: str, n_eps: int = 4, seed: int = 0, eps=None) -> list[dict]:
+    labs = F.labels(root)
+    eps = list(eps) if eps is not None else pick_episodes(root, n_eps, seed)
     tab = F.frames_table(root)
     pts = []
     for e in eps:
