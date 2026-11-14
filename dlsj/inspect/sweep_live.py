@@ -55,7 +55,16 @@ BOWL = {MarkType.NONE: "yellow", MarkType.CIRCLE: "orange", MarkType.CROSS: "pur
 CLASS_BGR = {"plain": (40, 210, 240), "circle": (40, 140, 255), "cross": (200, 80, 160), None: (200, 200, 200)}
 MAX_SPEED_HARD = 120.0  # deg/s, whatever the page asks
 DEFAULTS = {"frames": 12, "range_deg": 180.0, "settle_ms": 150.0, "speed": 60.0, "device": "NPU",
-            "strategy": "yolo_topk", "dry_run": True, "grasp_check": True}
+            "strategy": "yolo_topk", "dry_run": True, "grasp_check": True, "early_stop": True}
+
+
+TELEOP_MAX_STEP = 10.0  # units per tick while following the leader (demos move p99 5-8)
+DEFAULT_CLASSIFIER = str(Path("~/inference/models/brick-yolo-classifier-v2").expanduser())
+DEFAULT_DETECTOR = str(Path("~/inference/models/brick-detector-v1").expanduser())
+GRIP_OPEN = 35.0  # gripper units (0 closed .. 100 open), wide enough for a 2x2 Duplo
+GRIP_SPEED = 15.0  # units/s while opening/closing
+GRIP_CONTACT_LAG = 4.0  # measured position this far behind the command = the jaw is stopped by the brick
+GRIP_SQUEEZE = 4.0  # hold this far past the contact point
 
 
 def bowl_for(outcome: MarkType) -> str:
@@ -155,6 +164,13 @@ class SimArm:
     def goal(self) -> np.ndarray:
         return self.cmd.copy()
 
+    def release(self) -> None:  # posing by hand: nothing to do in simulation
+        pass
+
+    def hold(self) -> np.ndarray:
+        self.cmd = self.state.copy()
+        return self.cmd.copy()
+
 
 def serial_ports_in_use() -> dict[str, str]:
     """{port: pids} for /dev/ttyACM* / ttyUSB* held by another process (`fuser`; empty when fuser is missing)."""
@@ -211,8 +227,54 @@ class RealArm:
             log.warning("Goal_Position read failed (%s); using the measured pose", e)
             return self.read_state()
 
+    ARM_MOTORS = ["shoulder_pan", "shoulder_lift", "elbow_flex", "wrist_flex", "wrist_roll"]  # not the gripper
+
+    def release(self) -> None:
+        """Torque off on the five arm joints so a person can pose it by hand; the gripper keeps holding."""
+        self.arm.robot.bus.disable_torque(self.ARM_MOTORS)
+
+    def hold(self) -> np.ndarray:
+        """Goal := present position on the arm joints (gripper keeps its goal, so it keeps squeezing), then torque on.
+        No lunge: the goal is written before the torque comes back."""
+        present = self.read_state()
+        cmd = present.copy()
+        cmd[GRIPPER] = self.goal()[GRIPPER]
+        bus = self.arm.robot.bus
+        bus.sync_write("Goal_Position", {m: float(present[i]) for i, m in enumerate(self.ARM_MOTORS)})
+        bus.enable_torque(self.ARM_MOTORS)
+        return cmd
+
     def disconnect(self) -> None:
         self.arm.disconnect()
+
+
+class RealLeader:
+    """SO-101 leader arm (torque off, read only) with the repo calibration and the teleop page's align offsets,
+    so `read()` is in the follower's units exactly as in `dlsj.teleop_web` (and as the data was recorded)."""
+
+    def __init__(self, port: str = "auto", leader_id: str = "leader"):
+        from lerobot.teleoperators import make_teleoperator_from_config
+        from lerobot.teleoperators.so_leader import SO101LeaderConfig
+
+        from dlsj import arms
+
+        if port == "auto":
+            _, port, volts = arms.find_ports()
+            if port is None:
+                raise RuntimeError(f"no leader arm found (servo supply voltages: {volts})")
+        self.dev = make_teleoperator_from_config(
+            SO101LeaderConfig(port=port, id=leader_id, calibration_dir=arms.LEADER_CAL_DIR))
+        arms.ensure_calibrated(self.dev, "leader")
+        align = arms.load_align(leader_id)
+        self.align = np.array([float(align[k]) for k in JOINT_KEYS]) if align else np.zeros(len(JOINT_KEYS))
+        self.port = port
+
+    def read(self) -> np.ndarray:
+        a = self.dev.get_action()
+        return np.array([float(a[k]) for k in JOINT_KEYS], np.float32) + self.align.astype(np.float32)
+
+    def disconnect(self) -> None:
+        self.dev.disconnect()
 
 
 # ----------------------------------------------------------------------------- overlay
@@ -256,13 +318,19 @@ def _jpeg(bgr: np.ndarray, q: int = 80) -> bytes:
 class App:
     def __init__(self, cams, inspector, out_root: str | Path = "outputs/sweeps", arm=None, follower_id="follower",
                  follower_port="auto", allow_connect: bool = True, ramp_speed: float = 20.0, fps: float = 30.0,
-                 live_hz: float = 8.0, arm_factory=None, pose_loader=None, limits_loader=None):
+                 live_hz: float = 8.0, arm_factory=None, pose_loader=None, limits_loader=None, pose_saver=None,
+                 leader_factory=None):
         self.cams, self.insp = cams, inspector
         self.out_root = Path(out_root).expanduser()
         self.arm, self.follower_id, self.follower_port = arm, follower_id, follower_port
         self.allow_connect, self.ramp_speed, self.fps, self.live_hz = allow_connect, ramp_speed, fps, live_hz
         self.arm_factory = arm_factory or (lambda: RealArm(self.follower_port, self.follower_id))
         self.pose_loader = pose_loader or self._load_pose
+        self.pose_saver = pose_saver or (lambda fid, pose: __import__("dlsj.loop.poses", fromlist=["save_pose"])
+                                         .save_pose(fid, "inspect", pose))
+        self.posing = False  # torque off on the arm joints (hand posing)
+        self.leader = None
+        self.leader_factory = leader_factory or (lambda: RealLeader("auto"))
         self.limits_loader = limits_loader or self._load_limits
         self.settings = dict(DEFAULTS, device=inspector.device,
                              roi=list(inspector.roi) if inspector.roi else None)
@@ -389,7 +457,7 @@ class App:
                 raise RuntimeError("can't change the ROI during a sweep")
             self.insp.roi = roi
             self.live_window.clear()
-        for b in ("dry_run", "grasp_check"):
+        for b in ("dry_run", "grasp_check", "early_stop"):
             if b in s:
                 out[b] = bool(s[b])
         if "device" in s and str(s["device"]).upper() != self.insp.device:
@@ -419,7 +487,7 @@ class App:
 
     def arm_state(self) -> dict:
         d = {"connected": self.arm is not None, "error": self.arm_error, "allow_connect": self.allow_connect,
-             "has_inspect_pose": self.pose_loader(self.follower_id) is not None}
+             "has_inspect_pose": self.pose_loader(self.follower_id) is not None, "posing": self.posing}
         if self.arm is not None and self.motion_lock.acquire(blocking=False):  # never block on a running job
             try:
                 d["state"] = [round(float(v), 2) for v in self.arm.read_state()]
@@ -438,6 +506,8 @@ class App:
         s = dict(self.settings)
         if not s["dry_run"] and self.arm is None:
             raise RuntimeError("no arm connected: tick Dry run, or Connect arm first")
+        if not s["dry_run"] and self.posing:
+            raise RuntimeError("torque is off (posing by hand): press Hold first")
         if not self.motion_lock.acquire(blocking=False):
             raise RuntimeError("busy: another sweep or move is running")
         try:
@@ -497,8 +567,18 @@ class App:
             def on_frame(frame, angle):
                 futures.append(pool.submit(infer, frame, len(futures), angle))
 
+            def should_stop() -> bool:
+                # inference is ~1-2 ms; wait for every queued frame so the check sees the frame just taken
+                done = [f.result(timeout=5.0) for f in futures]
+                verdict = agg_mod.early_stop(done, self.insp.agg)
+                if verdict:
+                    job["early_stop"] = {"after": len(done), "verdict": verdict}
+                    job["message"] = f"early stop after {len(done)} stops: {verdict}"
+                return verdict is not None
+
             sweeper = Sweeper(robot, self.cams, cfg, self.abort)
-            sres = sweeper.run(start_cmd, on_frame=on_frame)
+            sres = sweeper.run(start_cmd, on_frame=on_frame,
+                               should_stop=should_stop if s.get("early_stop") and s["strategy"] == "yolo_topk" else None)
             job["sweep"] = sres.record()
             if not sres.returned:  # aborted (Sweeper skips the return on abort) or the return timed out
                 job["state"] = "returning"
@@ -557,6 +637,8 @@ class App:
     def goto_inspect(self) -> dict:
         if self.arm is None:
             raise RuntimeError("no arm connected")
+        if self.posing:
+            raise RuntimeError("press Hold first (torque is off)")
         pose = self.pose_loader(self.follower_id)
         if pose is None:
             raise RuntimeError("no saved inspect pose (python -m dlsj.loop.run --save-pose inspect)")
@@ -568,6 +650,133 @@ class App:
                     "started": time.time()}
         threading.Thread(target=self._pose_job, args=(self.job, np.asarray(pose, np.float32)), daemon=True).start()
         return {"ok": True}
+
+    def _need_idle_arm(self):
+        if self.arm is None:
+            raise RuntimeError("no arm connected")
+        if not self.motion_lock.acquire(blocking=False):
+            raise RuntimeError("busy")
+
+    def release_arm(self) -> dict:
+        """Hand posing: torque off on the arm joints (the gripper keeps holding). Sweeps are refused until Hold."""
+        self._need_idle_arm()
+        try:
+            self.arm.release()
+            self.posing = True
+        finally:
+            self.motion_lock.release()
+        return {"ok": True, "message": "torque OFF on the arm joints: support the arm and pose it by hand, then Hold"}
+
+    def hold_arm(self) -> dict:
+        self._need_idle_arm()
+        try:
+            cmd = self.arm.hold()
+            self.posing = False
+        finally:
+            self.motion_lock.release()
+        return {"ok": True, "message": "holding here (torque on)", "pose": [round(float(v), 1) for v in cmd]}
+
+    def save_inspect_pose(self) -> dict:
+        from dlsj.loop.poses import save_pose
+
+        if self.posing:
+            raise RuntimeError("press Hold first (torque is off)")
+        self._need_idle_arm()
+        try:
+            pose = np.asarray(self.arm.read_state(), np.float32)
+        finally:
+            self.motion_lock.release()
+        path = self.pose_saver(self.follower_id, pose)
+        return {"ok": True, "message": f"inspect pose saved ({path})", "pose": [round(float(v), 1) for v in pose]}
+
+    def gripper(self, action: str) -> dict:
+        """open: ramp to `GRIP_OPEN`. close: ramp shut until the jaw stalls on the brick (the measured position lags
+        the command by > `GRIP_CONTACT_LAG`), then hold `GRIP_SQUEEZE` past the contact point."""
+        if action not in ("open", "close"):
+            raise ValueError("action must be open or close")
+        if self.posing:
+            raise RuntimeError("press Hold first (torque is off)")
+        self._need_idle_arm()
+        self.abort.clear()
+        self.job = {"id": datetime.now().strftime("%Y%m%d-%H%M%S") + "_grip", "kind": "grip", "state": "moving",
+                    "message": f"gripper {action}", "frames": [], "started": time.time()}
+        threading.Thread(target=self._grip_job, args=(self.job, action), daemon=True).start()
+        return {"ok": True}
+
+    def _grip_job(self, job, action) -> None:
+        try:
+            cmd = self.arm.goal()
+            target = GRIP_OPEN if action == "open" else 0.0
+            step = GRIP_SPEED / self.fps
+            t_end = time.perf_counter() + 8.0
+            while not self.abort.is_set() and time.perf_counter() < t_end:
+                t0 = time.perf_counter()
+                cmd[GRIPPER] = cmd[GRIPPER] + float(np.clip(target - cmd[GRIPPER], -step, step))
+                self.arm.send(cmd.copy())
+                meas = float(self.arm.read_state()[GRIPPER])
+                if action == "close" and meas - cmd[GRIPPER] > GRIP_CONTACT_LAG:
+                    cmd[GRIPPER] = max(0.0, meas - GRIP_SQUEEZE)
+                    self.arm.send(cmd.copy())
+                    job["message"] = f"gripping: contact at {meas:.1f}, holding {cmd[GRIPPER]:.1f}"
+                    break
+                if abs(cmd[GRIPPER] - target) < 0.5:
+                    job["message"] = "gripper open" if action == "open" else "gripper closed on nothing (no contact)"
+                    break
+                time.sleep(max(0.0, 1.0 / self.fps - (time.perf_counter() - t0)))
+            job["state"] = "aborted" if self.abort.is_set() else "done"
+        except Exception as e:  # noqa: BLE001
+            log.exception("gripper failed")
+            job["state"], job["message"] = "error", f"{type(e).__name__}: {e}"
+        finally:
+            job["finished"] = time.time()
+            self.motion_lock.release()
+
+    def teleop(self) -> dict:
+        """Follow the leader arm: ramp onto its pose at `ramp_speed`, then track it (gripper included). Stop (the
+        page's Stop / Q) ends it and the follower holds where it is, gripper still squeezing."""
+        if self.posing:
+            raise RuntimeError("press Hold first (torque is off)")
+        self._need_idle_arm()
+        try:
+            if self.leader is None:
+                self.leader = self.leader_factory()
+        except Exception:
+            self.motion_lock.release()
+            raise
+        self.abort.clear()
+        self.job = {"id": datetime.now().strftime("%Y%m%d-%H%M%S") + "_teleop", "kind": "teleop", "state": "moving",
+                    "message": "engaging: ramping onto the leader", "frames": [], "started": time.time()}
+        threading.Thread(target=self._teleop_job, args=(self.job,), daemon=True).start()
+        return {"ok": True, "message": "teleop: ramping onto the leader, then following it. Stop to hold."}
+
+    def _teleop_job(self, job) -> None:
+        from dlsj.teleop_web import step_toward
+
+        try:
+            cmd = self.arm.goal().astype(float)
+            ramp = self.ramp_speed / self.fps
+            live = False
+            while not self.abort.is_set() and not self.closing.is_set():
+                t0 = time.perf_counter()
+                lead = self.leader.read().astype(float)
+                if not live:
+                    cmd = step_toward(cmd, lead, ramp)
+                    if float(np.max(np.abs(cmd - lead))) < 1.0:
+                        live = True
+                        job["message"] = "live: following the leader (Stop to hold here)"
+                else:
+                    cmd = step_toward(cmd, lead, TELEOP_MAX_STEP)  # safety clamp per tick
+                self.arm.send(cmd.astype(np.float32))
+                job["leader"] = [round(float(v), 1) for v in lead]
+                time.sleep(max(0.0, 1.0 / self.fps - (time.perf_counter() - t0)))
+            job["state"] = "done"
+            job["message"] = "teleop stopped: holding here (gripper keeps its command)"
+        except Exception as e:  # noqa: BLE001
+            log.exception("teleop failed")
+            job["state"], job["message"] = "error", f"{type(e).__name__}: {e}"
+        finally:
+            job["finished"] = time.time()
+            self.motion_lock.release()
 
     def _pose_job(self, job, pose) -> None:
         from dlsj.teleop_web import step_toward
@@ -634,6 +843,11 @@ class App:
                 self.arm.disconnect()  # torque stays on (disable_torque_on_disconnect = False)
             except Exception as e:  # noqa: BLE001
                 log.warning("disconnect: %s", e)
+        if self.leader is not None:
+            try:
+                self.leader.disconnect()
+            except Exception as e:  # noqa: BLE001
+                log.warning("leader disconnect: %s", e)
 
 
 def agg_plan(start_cmd, cfg: SweepConfig) -> list[float]:
@@ -683,6 +897,16 @@ def make_handler(app: App):
                     return self._json(app.goto_inspect())
                 if p == "/api/arm/connect":
                     return self._json(app.connect_arm())
+                if p == "/api/arm/release":
+                    return self._json(app.release_arm())
+                if p == "/api/arm/hold":
+                    return self._json(app.hold_arm())
+                if p == "/api/pose/save":
+                    return self._json(app.save_inspect_pose())
+                if p == "/api/teleop":
+                    return self._json(app.teleop())
+                if p == "/api/gripper":
+                    return self._json(app.gripper(str(body.get("action", ""))))
                 return self._json({"error": "not found"}, 404)
             except Exception as e:  # noqa: BLE001
                 return self._json({"error": f"{e}"}, 409 if isinstance(e, RuntimeError) else 400)
@@ -822,6 +1046,12 @@ h2{font-size:14px;margin:4px 0 8px}.row{display:flex;gap:12px;align-items:center
    <button id="bStop" class="stop">Stop</button>
    <button id="bPose">Go to inspect pose</button>
    <button id="bArm">Connect arm</button>
+   <button id="bTeleop" title="follower ramps onto the leader arm, then follows it; Stop holds">Teleop (leader)</button>
+   <button id="bRelease" title="torque off on the 5 arm joints (gripper keeps holding): support the arm!">Pose by hand</button>
+   <button id="bHold" title="torque back on at the current position">Hold here</button>
+   <button id="bSavePose" title="save the current position as the inspect pose">Save as inspect pose</button>
+   <button id="bGripOpen">Open gripper</button>
+   <button id="bGripClose" title="closes until it meets the brick, then squeezes a little">Close on brick</button>
   </div>
   <div class="grid">
    <label>Frames<input id="frames" type="number" min="1" max="60"></label>
@@ -833,7 +1063,8 @@ h2{font-size:14px;margin:4px 0 8px}.row{display:flex;gap:12px;align-items:center
    <label>Crop ROI x0,y0,x1,y1<input id="roi" placeholder="auto (centre)" title="fixed inspect crop in 640x480 pixels; empty = centred square"></label>
   </div>
   <div class="row" style="margin-top:8px"><label class="chk"><input id="dry_run" type="checkbox"> Dry run (simulated wrist, no arm motion)</label>
-  <label class="chk"><input id="grasp_check" type="checkbox"> Grasp check</label></div>
+  <label class="chk"><input id="grasp_check" type="checkbox"> Grasp check</label>
+  <label class="chk" title="end the sweep once 3 frames agree on a mark, or 6 are plain with none marked"><input id="early_stop" type="checkbox"> Early stop</label></div>
   <div id="status" class="status muted" role="status" style="margin-top:8px"></div>
  </div>
  <div class="panel" style="margin-top:14px"><h2>Sweep</h2>
@@ -855,13 +1086,19 @@ let S=null,settingsLoaded=false,lastJob=null;
 async function api(path,body){const r=await fetch(path,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body||{})});
  const j=await r.json();if(!r.ok)throw Error(j.error||r.status);return j;}
 function settings(){return{frames:+$('frames').value,range_deg:+$('range_deg').value,settle_ms:+$('settle_ms').value,speed:+$('speed').value,
- device:$('device').value,strategy:$('strategy').value,roi:$('roi').value.trim(),dry_run:$('dry_run').checked,grasp_check:$('grasp_check').checked};}
+ device:$('device').value,strategy:$('strategy').value,roi:$('roi').value.trim(),dry_run:$('dry_run').checked,grasp_check:$('grasp_check').checked,early_stop:$('early_stop').checked};}
 function msg(t,err){$('status').textContent=t;$('status').style.color=err?'var(--danger)':'';}
 async function act(fn){try{const r=await fn();if(r&&r.message)msg(r.message);}catch(e){msg(e.message,true);}refresh();}
 $('bLive').onclick=()=>act(()=>api('/api/live',{on:!S.live_on}));
 $('bSweep').onclick=()=>{const s=settings();if(!s.dry_run&&!confirm('The arm will roll the wrist through '+s.range_deg+'° ('+s.frames+' stops, ≤'+s.speed+'°/s). Brick held, area clear?'))return;act(()=>api('/api/sweep',s));};
 $('bStop').onclick=()=>act(()=>api('/api/stop'));
 $('bPose').onclick=()=>{if(confirm('Ramp the arm slowly to the saved inspect pose?'))act(()=>api('/api/pose/inspect'));};
+$('bTeleop').onclick=()=>{if(confirm('Follower ramps slowly onto the LEADER arm pose, then follows it. Hold the leader where you want to start. Continue?'))act(()=>api('/api/teleop'));};
+$('bRelease').onclick=()=>{if(confirm('Torque OFF on the arm joints: the arm will sag under gravity. Hold it first. Continue?'))act(()=>api('/api/arm/release'));};
+$('bHold').onclick=()=>act(()=>api('/api/arm/hold'));
+$('bSavePose').onclick=()=>{if(confirm('Save the current arm position as the inspect pose?'))act(()=>api('/api/pose/save'));};
+$('bGripOpen').onclick=()=>{if(confirm('Open the gripper? A held brick will drop.'))act(()=>api('/api/gripper',{action:'open'}));};
+$('bGripClose').onclick=()=>act(()=>api('/api/gripper',{action:'close'}));
 $('bArm').onclick=()=>{if(confirm('Connect the follower? Torque turns on and it holds its current pose (no motion).'))act(()=>api('/api/arm/connect'));};
 for(const id of ['device','strategy','roi'])$(id).onchange=()=>act(()=>api('/api/settings',settings()));
 function bars(p){return '<div class="bar">'+['plain','circle','cross'].map(c=>`<span style="width:${(p[c]*100).toFixed(1)}%;background:${COL[c]}" title="${c} ${p[c].toFixed(3)}"></span>`).join('')+'</div>';}
@@ -890,7 +1127,7 @@ function showJob(job){if(!job||job.kind!=='sweep'){if(job)$('status').textConten
 async function refresh(){try{S=await (await fetch('/api/state')).json();}catch(e){msg('server unreachable',true);return;}
  const m=S.model;$('model').textContent=`YOLO26n · ${m.device} (${m.precision})${m.requested_device!==m.device?' · fell back from '+m.requested_device:''} · gate ≥${m.min_confidence} / margin ≥${m.min_margin} · ROI ${m.roi?m.roi.join(','):'auto'}`;
  if(!settingsLoaded){const st=S.settings;$('strategy').innerHTML=S.strategies.map(s=>`<option>${s}</option>`).join('');
-  for(const k of ['frames','range_deg','settle_ms','speed','device','strategy'])$(k).value=st[k];$('dry_run').checked=st.dry_run;$('grasp_check').checked=st.grasp_check;$('roi').value=st.roi?st.roi.join(','):'';settingsLoaded=true;}
+  for(const k of ['frames','range_deg','settle_ms','speed','device','strategy'])$(k).value=st[k];$('dry_run').checked=st.dry_run;$('grasp_check').checked=st.grasp_check;$('early_stop').checked=!!st.early_stop;$('roi').value=st.roi?st.roi.join(','):'';settingsLoaded=true;}
  $('device').value=S.settings.device;
  $('bLive').classList.toggle('on',S.live_on);$('bLive').textContent=S.live_on?'Classify live: on':'Classify live';
  const L=S.live;if(S.live_on&&L){$('livecrop').src='data:image/jpeg;base64,'+L.crop_jpeg;$('livetxt').innerHTML=`<b style="color:${L.confident?COL[L.confident]:'inherit'}">${L.confident||'unsure ('+L.top+')'}</b> conf ${L.conf.toFixed(2)} margin ${L.margin.toFixed(2)} · ${L.ms.toFixed(1)} ms on ${L.device} (${L.source})<br><span class="mono">${fmtP(L.probs)}</span>`;$('livebars').innerHTML=bars(L.probs);
@@ -900,8 +1137,9 @@ async function refresh(){try{S=await (await fetch('/api/state')).json();}catch(e
  const busy=S.job&&['running','returning','moving'].includes(S.job.state);$('bSweep').disabled=busy;$('bPose').disabled=busy;
  if(S.job)showJob(S.job);if(S.message&&!S.job)msg(S.message,true);
  if(S.job&&S.job.state!==lastJob){lastJob=S.job.state;history();arm();}}
-async function arm(){try{const a=await (await fetch('/api/arm')).json();$('bArm').disabled=a.connected||!a.allow_connect;$('bPose').disabled=!a.connected||!a.has_inspect_pose;
- $('armline').textContent=a.connected?`arm connected · wrist_roll ${a.state?a.state[4].toFixed(1)+'°':'?'} · limits ${a.wrist_roll_limits||'?'}`:`arm not connected${a.error?' · '+a.error:''} (dry run only)`;}catch(e){}}
+async function arm(){try{const a=await (await fetch('/api/arm')).json();$('bArm').disabled=a.connected||!a.allow_connect;$('bPose').disabled=!a.connected||!a.has_inspect_pose||a.posing;
+ for(const b of ['bTeleop','bRelease','bSavePose','bGripOpen','bGripClose'])$(b).disabled=!a.connected||a.posing;$('bHold').disabled=!a.connected||!a.posing;
+ $('armline').textContent=a.connected?`${a.posing?'⚠ TORQUE OFF (posing) · ':''}arm connected · inspect pose ${a.has_inspect_pose?'saved':'NOT saved'} · wrist_roll ${a.state?a.state[4].toFixed(1)+'°':'?'} · limits ${a.wrist_roll_limits||'?'}`:`arm not connected${a.error?' · '+a.error:''} (dry run only)`;}catch(e){}}
 async function history(){try{const h=await (await fetch('/api/history')).json();$('hist').innerHTML='<tr><th>sweep</th><th>frames</th><th>status</th><th>decision</th><th>release rule</th></tr>'+
  h.map(r=>`<tr><td class="mono">${r.id}</td><td>${r.n}</td><td>${r.status||''}</td><td>${r.outcome?r.outcome+' → '+r.bowl:'—'}</td><td>${r.naive||'—'}</td></tr>`).join('');}catch(e){}}
 for(const n of ['inspect','wrist','top'])$(n).src='/stream/'+n;
@@ -912,12 +1150,17 @@ setInterval(refresh,400);setInterval(arm,3000);refresh();arm();history();
 # ----------------------------------------------------------------------------- main
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--model-dir", required=True, help="unpacked brick-yolo-classifier-v1 (classifier.json, best.xml)")
+    ap.add_argument("--model-dir", default=DEFAULT_CLASSIFIER,
+                    help="YOLO classifier dir (classifier.json, best.xml); default: the brick-auto-ensemble-v1 release's "
+                         "detected-brick classifier (v2), trained on detector crops")
     ap.add_argument("--device", default="NPU", help="NPU (default), GPU or CPU; falls back NPU -> GPU -> CPU")
     ap.add_argument("--roi", default=None, help="x0,y0,x1,y1 fixed inspect crop (default: centred square, 60%% of height)")
-    ap.add_argument("--padding", type=float, default=0.0, help="crop padding (fraction of the box; detector crops used 0.05)")
+    ap.add_argument("--padding", type=float, default=0.05, help="crop padding, fraction of the box (the v2 classifier "
+                    "was trained on 5%% padded detector crops; v1 used 0)")
     ap.add_argument("--jpeg-quality", type=int, default=95, help="JPEG round trip of the crop like the live tester (0 = off)")
-    ap.add_argument("--detector-weights", default=None, help="one-class brick detector (if released); crops inside --roi")
+    ap.add_argument("--detector-weights", default=DEFAULT_DETECTOR,
+                    help="one-class brick detector (OpenVINO dir); the crop follows the brick inside --roi. 'none' = fixed ROI")
+    ap.add_argument("--detector-device", default="NPU", help="NPU (default), GPU or CPU; 'ultralytics' = CPU via ultralytics")
     ap.add_argument("--realsense", default="inspect=243722062690,top=346422061366", help="name=serial,...")
     ap.add_argument("--realsense-depth", action="store_true", help="also stream depth (heavier; off by default)")
     ap.add_argument("--cameras", default="wrist=/dev/v4l/by-id/usb-Sonix_Technology_Co.__Ltd._USB2.0_CAM1_USB2.0_CAM1-video-index0",
@@ -937,7 +1180,12 @@ def main(argv=None) -> int:
     from dlsj.inspect.yolo_inspector import YoloInspector
 
     insp = YoloInspector(args.model_dir, args.device, roi=parse_box(args.roi), padding=args.padding,
-                         jpeg_quality=args.jpeg_quality, detector_weights=args.detector_weights)
+                         jpeg_quality=args.jpeg_quality,
+                         detector_weights=None if str(args.detector_weights).lower() == "none" or not
+                         Path(args.detector_weights).expanduser().exists() else args.detector_weights,
+                         detector_device=args.detector_device)
+    log.info("brick detector: %s", f"{insp.detector.device} ({args.detector_weights})" if insp.detector
+             else "off (fixed ROI)")
     log.info("YOLO classifier on %s (%s)%s", insp.device, getattr(insp.classifier, "precision", "?"),
              f"; notes: {insp.notes}" if insp.notes else "")
     cams = Cams.open(args.cameras, args.realsense, depth=args.realsense_depth)

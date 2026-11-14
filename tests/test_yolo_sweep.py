@@ -37,20 +37,28 @@ def outcome(seq, strategy="yolo_topk", cfg=AggregateConfig()):
 
 
 # ----------------------------------------------------------------------------- aggregation
-def test_one_face_mark_is_found_by_yolo_topk_but_missed_by_the_release_mean():
-    seq = [PLAIN] * 9 + [CROSS, CROSS, WEAK_CROSS]  # the mark faces the camera on 3 of 12 angles
+def test_mark_on_most_sides_is_found_by_yolo_topk_but_missed_by_the_release_mean():
+    # real marked bricks carry the mark on every side: most angles show it, edge-on angles are unsure
+    seq = [CROSS] * 4 + [UNSURE] * 4 + [CROSS, CROSS, WEAK_CROSS, PLAIN]
     assert outcome(seq) is MarkType.CROSS
-    # the mean of all frames is dominated by the plain angles: never cross (here: too weak -> uncertain)
+    # the mean of all frames is diluted by the unsure angles (here: too weak -> uncertain)
     assert outcome(seq, "yolo_mean") is MarkType.UNKNOWN
     assert outcome([PLAIN] * 11 + [CROSS], "yolo_mean") is MarkType.NONE  # one marked angle: plain wins the mean
     a = aggregate(yframes(seq), 0.5, 0.2, 0.8, AggregateConfig(), "yolo_topk")
-    assert a.summary["mark_frames"] == [9, 10] and a.summary["n_cross"] == 2
-    assert len(a.summary["distribution"]) == 12 and a.summary["distribution"][9]["confident"] == "cross"
+    assert a.summary["mark_frames"] == [0, 1, 2, 3, 8, 9] and a.summary["n_cross"] == 6
+    assert len(a.summary["distribution"]) == 12 and a.summary["distribution"][8]["confident"] == "cross"
 
 
-def test_single_glare_frame_does_not_flip_a_plain_brick():
+def test_a_mark_seen_on_only_two_angles_is_re_inspected_not_trusted():
+    # with all-sided marks, two marked frames out of twelve is too little to call it, and too much to call it plain
+    assert outcome([PLAIN] * 9 + [CROSS, CROSS, WEAK_CROSS]) is MarkType.UNKNOWN
+
+
+def test_one_glare_frame_does_not_flip_a_plain_brick_and_edge_on_frames_do_not_matter():
     assert outcome([PLAIN] * 11 + [CROSS]) is MarkType.NONE
     assert outcome([PLAIN] * 10 + [UNSURE, PLAIN]) is MarkType.NONE
+    assert outcome([PLAIN] * 6 + [UNSURE] * 5 + [CROSS]) is MarkType.NONE  # 6/12 plain is enough (>= 50 %)
+    assert outcome([PLAIN] * 10 + [CROSS, CIRCLE]) is MarkType.UNKNOWN  # two marked frames: re-inspect
 
 
 def test_all_plain_is_plain_for_both_rules():
@@ -72,7 +80,23 @@ def test_clear_majority_circle_wins_and_two_to_one_is_unknown():
 
 def test_mostly_unsure_is_uncertain_and_one_marked_frame_is_not_enough():
     assert outcome([UNSURE] * 8 + [PLAIN] * 4) is MarkType.UNKNOWN
-    assert outcome([PLAIN] * 7 + [UNSURE] * 4 + [CROSS]) is MarkType.UNKNOWN  # 7/12 plain < 80 %
+    assert outcome([PLAIN] * 5 + [UNSURE] * 6 + [CROSS]) is MarkType.UNKNOWN  # 5/12 plain < 50 %
+
+
+def test_early_stop_needs_agreement_and_no_contradiction():
+    cfg = AggregateConfig()
+    assert A.early_stop(yframes([CROSS, UNSURE, CROSS]), cfg) is None
+    assert A.early_stop(yframes([CROSS, UNSURE, CROSS, CROSS]), cfg) == "cross"
+    assert A.early_stop(yframes([CIRCLE] * 3), cfg) == "circle"
+    assert A.early_stop(yframes([CIRCLE, CIRCLE, CROSS, CIRCLE, CIRCLE]), cfg) is None  # conflict: keep sweeping
+    assert A.early_stop(yframes([PLAIN] * 5 + [UNSURE]), cfg) is None
+    assert A.early_stop(yframes([PLAIN] * 6), cfg) == "plain"
+    assert A.early_stop(yframes([PLAIN] * 8 + [CROSS]), cfg) is None  # any marked frame: keep sweeping
+    assert A.early_stop(yframes([PLAIN] * 6), AggregateConfig(yolo_stop_plain=0)) is None
+    # every early verdict is also what the full rule concludes from those frames
+    for seq, want in (([CROSS, UNSURE, CROSS, CROSS], MarkType.CROSS), ([CIRCLE] * 3, MarkType.CIRCLE),
+                      ([PLAIN] * 6, MarkType.NONE)):
+        assert outcome(seq) is want
 
 
 def test_release_mean_rule_marks_a_brick_shown_mostly_marked():
@@ -220,6 +244,8 @@ class FakeArm:
         self.sim = SimArm(np.array([0, -40, 50, 0, 0, 30], np.float32))
         self.sends = 0
         self.lock = threading.Lock()
+        self.torque = True
+        self.brick_at = 12.0  # a brick between the jaws stops the gripper here
 
     def read_state(self):
         with self.lock:
@@ -229,6 +255,19 @@ class FakeArm:
         with self.lock:
             self.sends += 1
             self.sim.send(t)
+            self.sim.state[5] = max(self.sim.state[5], self.brick_at)
+
+    def release(self):
+        with self.lock:
+            self.torque = False
+
+    def hold(self):
+        with self.lock:
+            self.torque = True
+            cmd = self.sim.state.copy()
+            cmd[5] = self.sim.cmd[5]
+            self.sim.cmd = cmd
+            return cmd.copy()
 
     def read_gripper_current(self):
         return None
@@ -236,6 +275,17 @@ class FakeArm:
     def goal(self):
         with self.lock:
             return self.sim.goal()
+
+
+class FakeLeader:
+    def __init__(self):
+        self.pose = np.array([10, -30, 40, 60, 20, 15], np.float32)
+
+    def read(self):
+        return self.pose.copy()
+
+    def disconnect(self):
+        pass
 
 
 @pytest.fixture
@@ -254,7 +304,9 @@ def web(tmp_path):
         return ref["arm"]
 
     app = App(cams, insp, tmp_path / "sweeps", arm=None, fps=200.0, live_hz=50.0, arm_factory=factory,
-              pose_loader=lambda fid: poses["inspect"], limits_loader=lambda fid: (-150.0, 150.0))
+              pose_loader=lambda fid: poses.get("inspect"), limits_loader=lambda fid: (-150.0, 150.0),
+              pose_saver=lambda fid, pose: poses.__setitem__("saved", np.asarray(pose).copy()) or "mem",
+              leader_factory=lambda: ref.setdefault("leader", FakeLeader()))
     srv = ThreadingHTTPServer(("127.0.0.1", 0), make_handler(app))
     srv.daemon_threads = True
     threading.Thread(target=srv.serve_forever, daemon=True).start()
@@ -328,19 +380,29 @@ def test_dry_run_sweep_without_an_arm_saves_and_decides(web):
     assert code == 200
     st = wait_job(base)
     job = st["job"]
-    assert job["state"] == "done" and len(job["frames"]) == 8
+    # all 6 frames so far plain, none marked -> early stop after 6 of the 8 planned stops
+    assert job["state"] == "done" and len(job["frames"]) == 6 and len(job["plan"]) == 8
+    assert job["early_stop"] == {"after": 6, "verdict": "plain"} and job["sweep"]["stopped_early"]
     assert job["decision"]["outcome"] == "none" and job["decision"]["bowl"] == "yellow"
     assert job["decision"]["naive"]["outcome"] == "none"
     d = out / job["id"]
     doc = json.loads((d / "sweep.json").read_text())
-    assert doc["source"].startswith("sweep_live") and len(doc["frames"]) == 8
-    assert (d / "frame_00.png").exists() and (d / "crop_07.jpg").exists()
+    assert doc["source"].startswith("sweep_live") and len(doc["frames"]) == 6
+    assert (d / "frame_00.png").exists() and (d / "crop_05.jpg").exists()
     assert doc["inspection"]["per_frame"][0]["probs"]["plain"] > 0.9
     assert "yolo_topk" in doc["inspection"]["strategies"]
     hist = json.loads(get(base + "/api/history")[2])
     assert hist[0]["id"] == job["id"] and hist[0]["outcome"] == "none"
     assert get(base + f"/thumb/{job['id']}/3.jpg")[2][:2] == b"\xff\xd8"
     assert json.loads(get(base + f"/api/history/{job['id']}")[2])["decision"]["bowl"] == "yellow"
+
+
+def test_dry_run_sweep_with_early_stop_off_takes_every_stop(web):
+    app, base, _, _ = web
+    assert post(base + "/api/sweep", {**FAST, "dry_run": True, "early_stop": False})[0] == 200
+    job = wait_job(base)["job"]
+    assert job["state"] == "done" and len(job["frames"]) == 8 and "early_stop" not in job
+    assert not job["sweep"]["stopped_early"] and job["decision"]["outcome"] == "none"
 
 
 def test_real_sweep_needs_an_arm_then_finds_a_one_face_mark_and_returns(web):
@@ -410,3 +472,66 @@ def test_goto_inspect_pose_ramps_and_keeps_the_gripper(web):
     assert st["job"]["state"] == "done"
     g = arm.goal()
     assert abs(g[0] - 5) < 0.6 and abs(g[5] - 30) < 1e-3  # pan reached; gripper command unchanged
+
+
+def test_hand_posing_hold_and_save_the_inspect_pose(web):
+    app, base, ref, _ = web
+    assert post(base + "/api/arm/release")[0] == 409  # no arm yet
+    post(base + "/api/arm/connect")
+    arm = ref["arm"]
+    assert post(base + "/api/arm/release")[0] == 200 and not arm.torque
+    a = json.loads(get(base + "/api/arm")[2])
+    assert a["posing"]
+    # while the torque is off: no sweep, no pose ramp, no saving, no gripper
+    assert post(base + "/api/sweep", {**FAST, "dry_run": False})[0] == 409
+    assert post(base + "/api/pose/inspect")[0] == 409
+    assert post(base + "/api/pose/save")[0] == 409
+    assert post(base + "/api/gripper", {"action": "close"})[0] == 409
+    arm.sim.state[:5] = [7, -30, 40, 60, 10]  # moved by hand
+    code, r = post(base + "/api/arm/hold")
+    assert code == 200 and arm.torque and r["pose"][:5] == [7, -30, 40, 60, 10]
+    assert arm.sim.goal()[5] == pytest.approx(30)  # the gripper keeps its command (keeps squeezing)
+    code, r = post(base + "/api/pose/save")
+    assert code == 200 and r["pose"][:5] == [7, -30, 40, 60, 10]
+    assert not json.loads(get(base + "/api/arm")[2])["posing"]
+
+
+def test_gripper_closes_until_it_meets_the_brick_then_squeezes(web):
+    app, base, ref, _ = web
+    assert post(base + "/api/gripper", {"action": "close"})[0] == 409  # no arm
+    post(base + "/api/arm/connect")
+    arm = ref["arm"]
+    assert post(base + "/api/gripper", {"action": "nope"})[0] == 400
+    assert post(base + "/api/gripper", {"action": "open"})[0] == 200
+    st = wait_job(base)
+    assert st["job"]["state"] == "done" and arm.goal()[5] == pytest.approx(35.0, abs=0.6)
+    assert post(base + "/api/gripper", {"action": "close"})[0] == 200
+    st = wait_job(base)
+    assert st["job"]["state"] == "done" and "contact" in st["job"]["message"]
+    g = float(arm.goal()[5])
+    assert arm.brick_at - 6 <= g < arm.brick_at  # held a little past the contact point, not slammed to 0
+
+
+def test_teleop_ramps_onto_the_leader_follows_it_and_holds_on_stop(web):
+    app, base, ref, _ = web
+    assert post(base + "/api/teleop")[0] == 409  # no arm
+    post(base + "/api/arm/connect")
+    arm = ref["arm"]
+    app.ramp_speed = 600.0
+    assert post(base + "/api/teleop")[0] == 200
+    leader = ref["leader"]
+    t_end = time.time() + 10
+    while time.time() < t_end and "live" not in json.loads(get(base + "/api/state")[2])["job"]["message"]:
+        time.sleep(0.02)
+    assert np.allclose(arm.goal(), leader.pose, atol=1.0)
+    assert post(base + "/api/sweep", {**FAST, "dry_run": False})[0] == 409  # busy while following
+    leader.pose = leader.pose + np.array([0, 0, 0, 0, 5, -3], np.float32)  # roll the wrist, squeeze the trigger
+    time.sleep(0.3)
+    assert np.allclose(arm.goal(), leader.pose, atol=0.5)
+    assert post(base + "/api/stop")[0] == 200
+    st = wait_job(base)
+    assert st["job"]["state"] == "done" and "holding" in st["job"]["message"]
+    held = arm.goal().copy()
+    leader.pose = leader.pose + 20
+    time.sleep(0.2)
+    assert np.allclose(arm.goal(), held)  # no longer following

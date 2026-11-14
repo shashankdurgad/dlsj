@@ -123,7 +123,7 @@ class YoloInspector(SweepInspectorMixin):
 
     def __init__(self, model_dir: str | Path | None = None, device: str = "NPU", roi: Box | None = None,
                  padding: float = 0.0, jpeg_quality: int = 95, detector_weights: str | None = None,
-                 detector_device: str = "cpu", agg: AggregateConfig | None = None, fallback: bool = True,
+                 detector_device: str = "NPU", agg: AggregateConfig | None = None, fallback: bool = True,
                  classifier=None):
         self.model_dir = Path(model_dir).expanduser() if model_dir else None
         self.roi, self.padding, self.jpeg_quality, self.fallback = roi, float(padding), int(jpeg_quality), fallback
@@ -141,9 +141,9 @@ class YoloInspector(SweepInspectorMixin):
         self.detector = None
         self._prev_box = None
         if detector_weights:
-            from dlsj.inspect.brick_detector import BrickDetector
+            from dlsj.inspect.brick_detector import make_brick_detector
 
-            self.detector = BrickDetector(detector_weights, detector_device)
+            self.detector = make_brick_detector(detector_weights, detector_device)
         self.min_conf = float(getattr(self.classifier, "config", {}).get("min_confidence", self.agg.yolo_min_conf))
         self.min_margin = float(getattr(self.classifier, "config", {}).get("min_margin", self.agg.yolo_min_margin))
 

@@ -101,13 +101,14 @@ class SweepResult:
     duration_ms: float = 0.0
     return_ms: float = 0.0
     returned: bool = False
+    stopped_early: bool = False  # `should_stop` ended the sweep before the last planned stop
     error: str = ""
 
     def record(self) -> dict:
         """JSON-friendly summary (no images)."""
         return {"status": self.status, "n": len(self.frames), "plan": [round(a, 2) for a in self.plan],
                 "angles": [round(a, 2) for a in self.angles], "start_roll": round(self.start_roll, 2),
-                "final_roll": round(self.final_roll, 2), "returned": self.returned,
+                "final_roll": round(self.final_roll, 2), "returned": self.returned, "stopped_early": self.stopped_early,
                 "duration_ms": round(self.duration_ms, 1), "return_ms": round(self.return_ms, 1), "error": self.error,
                 "stops": [{k: (round(v, 2) if isinstance(v, float) else v) for k, v in asdict(s).items()}
                           for s in self.stops]}
@@ -140,6 +141,7 @@ class Sweeper:
         self.abort = abort or threading.Event()
         self.period = 1.0 / cfg.fps
         self.step = cfg.max_speed_deg_s / cfg.fps
+        self._should_stop: Callable[[], bool] | None = None
 
     # ------------------------------------------------------------------ low-level
     def _tick(self, cmd: np.ndarray, t0: float) -> None:
@@ -205,9 +207,12 @@ class Sweeper:
         return frame, (s0 + s1) / 2, s1
 
     # ------------------------------------------------------------------ public
-    def run(self, cmd: np.ndarray | None = None, on_frame: Callable[[np.ndarray, float], None] | None = None
-            ) -> SweepResult:
+    def run(self, cmd: np.ndarray | None = None, on_frame: Callable[[np.ndarray, float], None] | None = None,
+            should_stop: Callable[[], bool] | None = None) -> SweepResult:
+        """`should_stop()` is asked after every kept frame (after `on_frame`); True ends the sweep early with status
+        "ok" (e.g. `dlsj.inspect.aggregate.early_stop` already has a decisive answer)."""
         cfg = self.cfg
+        self._should_stop = should_stop
         t_start = time.perf_counter()
         state = np.asarray(self.robot.read_state(), np.float32)
         start_cmd = (state if cmd is None else np.asarray(cmd, np.float32)).copy()
@@ -244,11 +249,17 @@ class Sweeper:
                  res.return_ms)
         return res
 
-    def _accept(self, res: SweepResult, frame, angle, on_frame) -> None:
+    def _accept(self, res: SweepResult, frame, angle, on_frame) -> bool:
+        """Keep the frame; True = stop sweeping now (early stop)."""
         res.frames.append(frame)
         res.angles.append(angle)
         if on_frame is not None:
             on_frame(frame, angle)
+        stop = self._should_stop
+        if stop is not None and len(res.frames) < len(res.plan) and stop():
+            res.stopped_early = True
+            return True
+        return False
 
     def _run_stepped(self, cmd: np.ndarray, res: SweepResult, on_frame) -> None:
         cfg = self.cfg
@@ -271,7 +282,8 @@ class Sweeper:
             t3 = time.perf_counter()
             res.stops.append(SweepStop(i, float(target), angle, (t1 - t0) * 1e3, (t2 - t1) * 1e3, (t3 - t2) * 1e3,
                                        settled, float(state[GRIPPER]), cur))
-            self._accept(res, frame, angle, on_frame)
+            if self._accept(res, frame, angle, on_frame):
+                return
 
     def _run_continuous(self, cmd: np.ndarray, res: SweepResult, on_frame) -> None:
         cfg = self.cfg
@@ -302,7 +314,8 @@ class Sweeper:
                 t1 = time.perf_counter()
                 res.stops.append(SweepStop(nxt, res.plan[nxt], angle, (t0 - t_last) * 1e3, 0.0, (t1 - t0) * 1e3,
                                            False, float(s[GRIPPER])))
-                self._accept(res, frame, angle, on_frame)
+                if self._accept(res, frame, angle, on_frame):
+                    return
                 nxt, t_last = nxt + 1, t1
                 continue
             cmd[ROLL] = cmd[ROLL] + float(np.clip(res.plan[-1] - cmd[ROLL], -step, step))

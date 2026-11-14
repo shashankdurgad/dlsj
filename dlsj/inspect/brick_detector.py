@@ -98,3 +98,95 @@ class BrickDetector:
             if coords[2]-coords[0] >= 12 and coords[3]-coords[1] >= 12:
                 detections.append(Detection(coords, float(confidence)))
         return detections
+
+
+def letterbox(frame, size=640, pad=114):
+    """Ultralytics' LetterBox (auto=False, centre): resize keeping aspect, pad to size x size with grey 114.
+    Returns (image, scale, (left, top))."""
+    h, w = frame.shape[:2]
+    r = min(size / h, size / w)
+    nw, nh = int(round(w * r)), int(round(h * r))
+    dw, dh = (size - nw) / 2, (size - nh) / 2
+    img = cv2.resize(frame, (nw, nh), interpolation=cv2.INTER_LINEAR) if (nw, nh) != (w, h) else frame
+    top, bottom = int(round(dh - .1)), int(round(dh + .1))
+    left, right = int(round(dw - .1)), int(round(dw + .1))
+    img = cv2.copyMakeBorder(img, top, bottom, left, right, cv2.BORDER_CONSTANT, value=(pad, pad, pad))
+    return img, r, (left, top)
+
+
+def decode_yolo(out, scale, offset, frame_hw, confidence=.5, iou_threshold=.7, min_side=12):
+    """(1, 5, N) raw one-class YOLO head [cx, cy, w, h, score] in letterboxed pixels -> NMS'd `Detection`s in
+    source-frame pixels, highest confidence first (ultralytics' non_max_suppression for one class)."""
+    p = np.asarray(out, np.float32).reshape(5, -1).T
+    p = p[p[:, 4] >= confidence]
+    if not len(p):
+        return []
+    xyxy = np.stack([p[:, 0] - p[:, 2] / 2, p[:, 1] - p[:, 3] / 2, p[:, 0] + p[:, 2] / 2, p[:, 1] + p[:, 3] / 2], 1)
+    order = np.argsort(-p[:, 4])
+    keep = []
+    while len(order):
+        i = order[0]
+        keep.append(i)
+        if len(order) == 1:
+            break
+        rest = order[1:]
+        x0 = np.maximum(xyxy[i, 0], xyxy[rest, 0]); y0 = np.maximum(xyxy[i, 1], xyxy[rest, 1])
+        x1 = np.minimum(xyxy[i, 2], xyxy[rest, 2]); y1 = np.minimum(xyxy[i, 3], xyxy[rest, 3])
+        inter = np.clip(x1 - x0, 0, None) * np.clip(y1 - y0, 0, None)
+        area = lambda b: (b[..., 2] - b[..., 0]) * (b[..., 3] - b[..., 1])  # noqa: E731
+        ious = inter / (area(xyxy[i]) + area(xyxy[rest]) - inter + 1e-9)
+        order = rest[ious <= iou_threshold]
+    h, w = frame_hw
+    dets = []
+    for i in keep:
+        bx = (xyxy[i] - [offset[0], offset[1], offset[0], offset[1]]) / scale
+        coords = (max(0, int(bx[0])), max(0, int(bx[1])), min(w, math.ceil(bx[2])), min(h, math.ceil(bx[3])))
+        if coords[2] - coords[0] >= min_side and coords[3] - coords[1] >= min_side:
+            dets.append(Detection(coords, float(p[i, 4])))
+    return dets
+
+
+class OVBrickDetector:
+    """The released one-class detector run with plain OpenVINO (no ultralytics): same letterbox, decode and NMS as
+    `BrickDetector`, on CPU, GPU or NPU (static 640x640 input). Frames are BGR, like `BrickDetector.detect`."""
+
+    def __init__(self, weights, device='NPU', confidence=.5, iou_threshold=.7):
+        import openvino as ov
+
+        path = Path(weights).expanduser()
+        xml = next(path.glob('*.xml')) if path.is_dir() else path
+        core = ov.Core()
+        cfg = {'PERFORMANCE_HINT': 'LATENCY'}
+        if str(device).upper() == 'CPU':
+            cfg['INFERENCE_PRECISION_HINT'] = 'f32'
+        self.compiled = core.compile_model(str(xml), str(device).upper(), cfg)
+        self.request = self.compiled.create_infer_request()
+        self.size = int(self.compiled.inputs[0].get_partial_shape()[2].get_length())
+        meta = path / 'metadata.yaml' if path.is_dir() else path.with_name('metadata.yaml')
+        if meta.exists() and "0: brick" not in meta.read_text():
+            raise ValueError('Expected a custom one-class brick detector, not generic COCO weights')
+        self.device, self.confidence, self.iou_threshold = str(device).upper(), confidence, iou_threshold
+        self.lock = threading.Lock()
+
+    def detect(self, frame):
+        img, r, off = letterbox(frame, self.size)
+        x = np.ascontiguousarray(img[..., ::-1].transpose(2, 0, 1)[None], dtype=np.float32) / 255.0
+        with self.lock:
+            out = self.request.infer({0: x})[self.compiled.outputs[0]]
+        return decode_yolo(out, r, off, frame.shape[:2], self.confidence, self.iou_threshold)
+
+
+def make_brick_detector(weights, device='NPU', confidence=.5):
+    """OpenVINO detector on `device` (NPU -> GPU -> CPU fallback); ultralytics' `BrickDetector` only for .pt
+    weights or when asked for with device='ultralytics'."""
+    path = Path(weights).expanduser()
+    if str(device).lower() == 'ultralytics' or path.suffix == '.pt':
+        return BrickDetector(path, 'cpu', confidence)
+    chain = {'NPU': ['NPU', 'GPU', 'CPU'], 'GPU': ['GPU', 'NPU', 'CPU']}.get(str(device).upper(), [str(device).upper()])
+    err = None
+    for dev in chain:
+        try:
+            return OVBrickDetector(path, dev, confidence)
+        except Exception as e:  # noqa: BLE001
+            err = e
+    raise RuntimeError(f'brick detector failed on {chain}: {err}')

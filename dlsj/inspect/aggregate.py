@@ -27,12 +27,16 @@ Strategies for a 3-class classifier (frames carry `FrameInspection.probs`, e.g. 
 `dlsj.inspect.yolo_inspector`). A frame is *confident* when its top probability >= `yolo_min_conf` (0.8) and its
 top-2 margin >= `yolo_min_margin` (0.2), the release's own gate applied per frame:
 
-* `yolo_topk` (evidence-aware, default for YOLO sweeps)
-    MARKED  if >= `yolo_min_marked_frames` (2) frames are confidently circle or cross (a mark may show on a few
-            angles only; one glare frame can't flip a plain brick);
-    PLAIN   if at most `yolo_max_outlier_frames` (1) frame is confidently marked and >= `yolo_plain_frac` (80 %)
+* `yolo_topk` (evidence-aware, default for YOLO sweeps). Real marked bricks carry their mark on (nearly) every
+  side, so a marked brick shows it on most angles and a plain brick looks plain on most angles; edge-on angles are
+  often unsure either way and count for neither side.
+    MARKED  if >= `yolo_min_marked_frames` (3) frames are confidently circle or cross (one or two glare frames
+            can't flip a plain brick);
+    PLAIN   if at most `yolo_max_outlier_frames` (1) frame is confidently marked and >= `yolo_plain_frac` (50 %)
             of the frames are confidently plain;
-    otherwise UNCERTAIN.
+    otherwise UNCERTAIN (re-inspect, then the purple bowl).
+    Early stop (`early_stop`): a sweep may end as soon as `yolo_stop_marked` (3) frames agree on one mark class
+    with none for the other, or `yolo_stop_plain` (6) frames are confidently plain with none marked.
     circle vs cross: confidence-weighted vote over the confidently-marked frames (each votes its class with
     weight = its top probability); the winner's share minus the loser's must be >= `yolo_mark_min_margin` (0.4,
     i.e. a 70/30 split), else UNKNOWN (re-inspect, then the purple bowl).
@@ -75,9 +79,11 @@ class AggregateConfig:
     # 3-class (YOLO) strategies
     yolo_min_conf: float = 0.8  # per frame: top probability (release gate)
     yolo_min_margin: float = 0.2  # per frame: top-2 margin (release gate)
-    yolo_min_marked_frames: int = 2  # confidently circle/cross frames needed to call the brick marked
+    yolo_min_marked_frames: int = 3  # confidently circle/cross frames needed to call the brick marked
     yolo_max_outlier_frames: int = 1  # confidently marked frames a plain brick may still have
-    yolo_plain_frac: float = 0.8  # fraction of frames confidently plain needed to call the brick plain
+    yolo_plain_frac: float = 0.5  # fraction of frames confidently plain needed to call the brick plain
+    yolo_stop_marked: int = 3  # early stop: this many confident frames of one mark class (none of the other)
+    yolo_stop_plain: int = 6  # early stop: this many confidently plain frames and none marked
     yolo_mark_min_margin: float = 0.4  # circle-vs-cross weighted vote: winner share - loser share
 
     def __post_init__(self):
@@ -295,6 +301,26 @@ def _yolo(strategy: str, frames: Sequence[FrameInspection], cfg: AggregateConfig
     summary["mark_reason"] = (f"{win}: weighted vote {share[win]:.2f} vs {1 - share[win]:.2f} over "
                               f"{len(marked_idx)} marked frames (margin {margin:.2f})")
     return Aggregate(strategy, label, topk_mean, MarkType(win), share[win], frames[best].index, summary)
+
+
+def early_stop(frames: Sequence[FrameInspection], cfg: AggregateConfig) -> str | None:
+    """While a YOLO sweep is running: "circle" / "cross" / "plain" once the evidence is already decisive, else None.
+
+    Marked: >= `yolo_stop_marked` confident frames of one mark class and none of the other. Plain: >=
+    `yolo_stop_plain` confidently plain frames and no confidently marked frame. Anything else keeps sweeping, and
+    the final decision is still `aggregate(...)` over the frames taken (the stop thresholds satisfy its rules)."""
+    if not frames or not has_probs(frames):
+        return None
+    conf = [gate(frame_probs(f), cfg.yolo_min_conf, cfg.yolo_min_margin)[0] for f in frames]
+    n_circle, n_cross, n_plain = conf.count("circle"), conf.count("cross"), conf.count("plain")
+    if cfg.yolo_stop_marked > 0:
+        if n_cross >= cfg.yolo_stop_marked and n_circle == 0:
+            return "cross"
+        if n_circle >= cfg.yolo_stop_marked and n_cross == 0:
+            return "circle"
+    if cfg.yolo_stop_plain > 0 and n_plain >= cfg.yolo_stop_plain and n_circle + n_cross == 0:
+        return "plain"
+    return None
 
 
 def has_probs(frames: Sequence[FrameInspection]) -> bool:

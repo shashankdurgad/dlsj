@@ -8,14 +8,24 @@ from the whole sweep. Anomalib is not used. Everything streams to a browser.
 ## Launch (XPS)
 
 ```sh
-# once: release -> ~/inference/models/brick-yolo-classifier-v1 (verify SHA256SUMS + files.json hashes)
+# once: models from the brick-auto-ensemble-v1 release (verify SHA256SUMS), at stable paths
+#   classifier/              -> ~/inference/models/brick-yolo-classifier-v2  (YOLO26n detected-brick classifier)
+#   detector_openvino_model/ -> ~/inference/models/brick-detector-v1         (one-class YOLO26n brick detector)
 cd ~/inference/dlsj-sweeplive          # rsync of the repo (dlsj/, calibration/)
 free -g                                # need >= 10 GB available
-fuser /dev/ttyACM* /dev/video*         # nothing else may hold the cameras / arm
-setsid nohup ~/desmond/venvs/teleop/bin/python -m dlsj.inspect.sweep_live \
-    --model-dir ~/inference/models/brick-yolo-classifier-v1 --device NPU --port 8012 \
+fuser /dev/ttyACM* /dev/video*         # nothing else may hold the cameras / arm (recorder, pi05 controller)
+setsid nohup ~/desmond/venvs/teleop/bin/python -m dlsj.inspect.sweep_live --port 8012 \
     >> ~/inference/logs/sweep_live.log 2>&1 < /dev/null &
 ```
+
+Model defaults (14 Nov): `--model-dir ~/inference/models/brick-yolo-classifier-v2`, `--detector-weights
+~/inference/models/brick-detector-v1` on `--detector-device NPU` (plain OpenVINO, no ultralytics; ~4 ms/frame),
+`--padding 0.05` (the v2 classifier was trained on 5 % padded detector crops). The detector box is used when exactly
+one brick is found inside the ROI, otherwise the fixed ROI. For the old setup: `--model-dir
+~/inference/models/brick-yolo-classifier-v1 --padding 0 --detector-weights none`.
+
+On the three real sweeps saved on 14 Nov (cross, plain, circle) v1 and v2 both decide correctly; v2 is confident on
+every plain frame (0.92-1.00) where v1 was unsure on 2 of 8.
 
 Open <http://100.77.191.42:8012> over Tailscale. The defaults are:
 
@@ -76,13 +86,22 @@ and kills that shell. Stopping it this way keeps torque on.
 A frame is **confident** when its top probability is ≥ 0.8 and its top-2 margin is
 ≥ 0.2. This is the release's own gate, applied per frame.
 
-The `yolo_topk` strategy is the default (`dlsj/inspect/aggregate.py`):
+The `yolo_topk` strategy is the default (`dlsj/inspect/aggregate.py`). Real marked
+bricks carry their mark on (nearly) every side, so a marked brick shows it on most
+angles and a plain brick looks plain on most angles. Edge-on angles are often unsure
+either way and count for neither side.
 
 | Result | Condition |
 |---|---|
-| **marked** | ≥ 2 frames confidently circle or cross |
-| **plain** | ≤ 1 confidently-marked frame (a glare outlier) and ≥ 80% of frames confidently plain |
-| **uncertain** | anything else |
+| **marked** | ≥ 3 frames confidently circle or cross |
+| **plain** | ≤ 1 confidently-marked frame (a glare outlier) and ≥ 50% of frames confidently plain |
+| **uncertain** | anything else (for example, a mark on only 2 of 12 angles) |
+
+**Early stop** (on by default; the *Early stop* checkbox): the sweep ends as soon as
+3 frames agree on one mark class with none for the other, or 6 frames are
+confidently plain with none marked. The wrist then returns to its start angle. A
+clear brick is decided in 3–6 of the 12 stops. Any contradicting frame keeps the
+sweep going to the end.
 
 For a marked brick, circle vs cross is a confidence-weighted vote over the
 confidently-marked frames: each frame votes its class with weight equal to its
@@ -142,5 +161,6 @@ Notes on these numbers:
 - With no brick in view, the background is classified plain at P ≈ 0.83–0.95.
   That is not a meaningful result.
 - No sweep with a real brick or real arm motion has been run yet.
-- The 2-frame and 80% thresholds are reasoned defaults, not calibrated values.
+- The 3-frame and 50% thresholds were checked only on simulated sweeps (Isaac Sim,
+  `sim/isaac_sweep/`), not calibrated on real bricks.
   Check them with `python -m dlsj.loop.sweep_test eval` on saved, labelled sweeps.

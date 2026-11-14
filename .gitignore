@@ -8,3 +8,6 @@ outputs/
 data/
 models/downloads/
 **/runtime-cache/
+
+# regenerable frame dumps from the sim realism fits
+sim/realism/jofit/
