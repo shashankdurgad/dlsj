@@ -7,6 +7,7 @@ ACT ignores the text instruction. See docs/train_act_gcp.md for the full VM setu
     export HF_TOKEN=...                    # read access to the private dataset
     export WANDB_API_KEY=...               # optional; without it, metrics only go to the console
     python scripts/train_act.py --run act_417 --steps 20000
+    python scripts/train_act.py --policy dit --run dit_517 --dataset <namespace>/dlsj-duplo-517
 
 It downloads the dataset (default: akoniti/dlsj-duplo-417) to --data-dir, then runs
 `torchrun -m lerobot.scripts.lerobot_train` on all visible GPUs (DDP). `--batch-size` is per GPU.
@@ -34,6 +35,20 @@ def parse_log_line(line: str) -> dict[str, float] | None:
     return out if "step" in out and "loss" in out else None
 
 
+# Per-policy lerobot-train arguments and defaults. `dit` is LeRobot's Multi-Task DiT: a diffusion transformer on
+# CLIP image + text features, trained here with the flow-matching objective, so it conditions on the per-frame
+# instruction (pick / place on the <colour> plate) and samples one trajectory instead of averaging modes.
+POLICIES = {
+    "act": {"args": ["--policy.type=act"], "batch_size": 16, "steps": 20_000},
+    "dit": {"args": [
+        "--policy.type=multi_task_dit",
+        "--policy.objective=flow_matching",
+        "--policy.image_resize_shape=[240,240]",  # whole view, then the default 224x224 (random) crop
+        "--policy.num_integration_steps=10",  # inference ODE steps; the default 100 is too slow for the XPS
+    ], "batch_size": 32, "steps": 30_000},
+}
+
+
 def gpu_count() -> int:
     try:
         out = subprocess.run(["nvidia-smi", "-L"], capture_output=True, text=True, check=True).stdout
@@ -55,21 +70,28 @@ def fetch_dataset(repo: str, dest: Path, revision: str | None) -> Path:
 
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("--policy", choices=sorted(POLICIES), default="act",
+                    help="act = LeRobot ACT; dit = Multi-Task DiT (flow matching, text-conditioned)")
     ap.add_argument("--run", default="act_417", help="run name (output folder and W&B run)")
     ap.add_argument("--dataset", default="akoniti/dlsj-duplo-417", help="HF dataset repo")
     ap.add_argument("--revision", default=None, help="dataset revision (branch, tag or commit)")
-    ap.add_argument("--data-dir", type=Path, default=Path("data/dlsj-duplo-417"))
+    ap.add_argument("--data-dir", type=Path, default=None, help="default: data/<dataset name>")
     ap.add_argument("--output-dir", type=Path, default=Path("outputs"))
     ap.add_argument("--gpus", type=int, default=0, help="0 = all visible GPUs")
-    ap.add_argument("--steps", type=int, default=20_000)
-    ap.add_argument("--batch-size", type=int, default=16, help="per GPU")
+    ap.add_argument("--steps", type=int, default=None, help="default: 20000 for act, 30000 for dit")
+    ap.add_argument("--batch-size", type=int, default=None, help="per GPU; default 16 for act, 32 for dit")
     ap.add_argument("--save-freq", type=int, default=2_000)
     ap.add_argument("--log-freq", type=int, default=50)
     ap.add_argument("--workers", type=int, default=6, help="dataloader workers per GPU")
-    ap.add_argument("--wandb-project", default="dlsj-act")
+    ap.add_argument("--wandb-project", default=None, help="default: dlsj-<policy>")
     ap.add_argument("--resume", action="store_true", help="resume --run from its last checkpoint")
     ap.add_argument("extra", nargs="*", help="extra lerobot-train arguments, e.g. --policy.chunk_size=50")
     args = ap.parse_args()
+    pol = POLICIES[args.policy]
+    args.steps = args.steps or pol["steps"]
+    args.batch_size = args.batch_size or pol["batch_size"]
+    args.data_dir = args.data_dir or Path("data") / args.dataset.split("/")[-1]
+    args.wandb_project = args.wandb_project or f"dlsj-{args.policy}"
 
     gpus = args.gpus or gpu_count()
     if gpus < 1:
@@ -86,7 +108,7 @@ def main() -> None:
         cmd = [
             "torchrun", "--standalone", f"--nproc_per_node={gpus}", "-m", "lerobot.scripts.lerobot_train",
             f"--dataset.repo_id=local/{root.name}", f"--dataset.root={root}", "--dataset.video_backend=pyav",
-            "--policy.type=act", "--policy.device=cuda", "--policy.push_to_hub=false",
+            *pol["args"], "--policy.device=cuda", "--policy.push_to_hub=false",
             f"--output_dir={out}", f"--job_name={args.run}", f"--batch_size={args.batch_size}",
             f"--steps={args.steps}", f"--save_freq={args.save_freq}", f"--log_freq={args.log_freq}",
             f"--num_workers={args.workers}", *args.extra,
@@ -100,7 +122,7 @@ def main() -> None:
 
             wb = wandb.init(project=args.wandb_project, name=args.run, config={
                 "dataset": args.dataset, "revision": args.revision, "steps": args.steps, "gpus": gpus,
-                "batch_size_per_gpu": args.batch_size, "global_batch": args.batch_size * gpus, "policy": "act"})
+                "batch_size_per_gpu": args.batch_size, "global_batch": args.batch_size * gpus, "policy": args.policy})
         except Exception as e:  # noqa: BLE001  tracking must never stop training
             print(f"W&B disabled: {e}", flush=True)
 

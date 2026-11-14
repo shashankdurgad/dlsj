@@ -77,7 +77,9 @@ def _step(pipeline, cls):
 def load_act(policy_path: str | Path) -> tuple[ACTPolicy, ACTEndToEnd]:
     policy = ACTPolicy.from_pretrained(str(policy_path))
     policy.to("cpu").eval()
-    pre, post = make_pre_post_processors(policy.config, pretrained_path=str(policy_path))
+    # checkpoints trained on CUDA save device_processor(device="cuda"), which fails to load on the laptop
+    pre, post = make_pre_post_processors(policy.config, pretrained_path=str(policy_path),
+                                         preprocessor_overrides={"device_processor": {"device": "cpu"}})
     norm, unnorm = _step(pre, NormalizerProcessorStep), _step(post, UnnormalizerProcessorStep)
     for step in (norm, unnorm):  # make sure stats live on CPU/float32 before tracing
         step.to(device="cpu", dtype=torch.float32)

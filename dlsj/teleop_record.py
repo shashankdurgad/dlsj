@@ -27,6 +27,14 @@ Keys while the page is focused:
   d         discard                                f   save as failed          1 2 3   choose the plate
   e         engage or hold the arm                 v   one or two camera views x       detector view
 The chosen plate stays selected across takes and restarts until you change it.
+
+Pick-only mode (`--pick-only`) records just the pick stage, to add grasp data:
+1. space starts a take; pick the brick and bring it to the inspection camera;
+2. m marks the in-view moment. Recording continues for `--pick-hold-s` (default 0.3 s, the inspection pause),
+   then the take stops by itself and waits for review;
+3. s saves, d discards. Every frame carries the pick instruction and no plate is needed. Takes don't chain:
+   put the brick back while nothing is recorded, then press space for the next take.
+Labels record `"mode": "pick_only"` with the in-view frame, so training can tell these from full demos.
 """
 
 import argparse
@@ -64,7 +72,8 @@ class EpisodeRecorder:
                  bowls: list[str] | None = None, pick_task: str = PICK_TASK, place_task: str = PLACE_TASK,
                  inspect_camera: str | None = "inspect", detector: BrickInViewDetector | None = None,
                  record_depth: bool = True, auto_split: bool = False, continuous: bool = True,
-                 streaming_encoding: bool = True, checkpoint_every: int = 10):
+                 streaming_encoding: bool = True, checkpoint_every: int = 10, pick_only: bool = False,
+                 pick_hold_s: float = 0.3):
         self.teleop, self.streams = teleop, streams
         self.repo_id, self.fps = repo_id, fps
         self.root = Path(root) if root else Path("data") / repo_id.split("/")[-1]
@@ -77,6 +86,8 @@ class EpisodeRecorder:
         self.detector = detector or BrickInViewDetector()
         # By default the operator marks the in-view moment (space). With auto_split the classifier does.
         self.auto_split = auto_split
+        # pick_only: the take ends `pick_hold_s` after the in-view mark; no place stage, no plate, no chaining
+        self.pick_only, self.pick_hold_frames = pick_only, max(0, int(round(pick_hold_s * fps)))
         # continuous: saving a take immediately starts the next one, so takes chain without pausing
         self.continuous, self.streaming_encoding = continuous, streaming_encoding
         # LeRobot keeps the frame table (state, action, task) in one open parquet file that only gets its
@@ -112,6 +123,7 @@ class EpisodeRecorder:
         self.stage = "pick"
         self.split_frame: int | None = None
         self.split_auto = False
+        self._hold_end: int | None = None  # pick-only: frame count at which the take stops itself
         self.classifier_frame: int | None = None  # first frame the classifier said "in view", for comparison
 
     # ------------------------------------------------------------------ dataset
@@ -210,6 +222,11 @@ class EpisodeRecorder:
         return self.place_task.format(colour=self.bowl or "?")
 
     def _split(self, auto: bool) -> None:
+        if self.pick_only:  # stay in the pick stage: hold in front of the camera, then stop
+            self.split_frame, self.split_auto = self._frames, auto
+            self._hold_end = self._frames + self.pick_hold_frames
+            self.message = "Hold it there"
+            return
         self.split_frame, self.split_auto, self.stage = self._frames, auto, "place"
         self.message = ""  # the stage track and the chime show it
 
@@ -220,6 +237,14 @@ class EpisodeRecorder:
             c = {"idle": "start", "recording": "stop"}.get(self.phase, "")
         if c == "save":
             c = "accept" if self.phase in ("recording", "review") else ""
+        if c == "toggle_pick":  # P / the mode button: switch between pick-only and full demos, between takes
+            if self.phase == "idle":
+                self.pick_only = not self.pick_only
+                self.message = ("Pick only: M ends the take after a short hold" if self.pick_only
+                                else "Full demo: pick, M at the camera, then place")
+            else:
+                self.message = "Switch mode between takes"
+            return
         if c.startswith("bowl") and c[4:].isdigit():
             i = int(c[4:]) - 1
             if 0 <= i < len(self.bowls) and self.phase != "saving":
@@ -230,7 +255,7 @@ class EpisodeRecorder:
                     self.bowl, self.next_bowl = choice, None
                     self._store_bowl()
             return
-        if c == "inview" and self.phase == "recording" and self.stage == "pick":
+        if c == "inview" and self.phase == "recording" and self.stage == "pick" and self.split_frame is None:
             self._split(auto=False)
         elif c == "start" and self.phase == "idle":
             if not self._teleop_live():
@@ -249,12 +274,12 @@ class EpisodeRecorder:
             if success and self.split_frame is None:
                 self.message = "Mark the in-view moment first (m), or save as failed (f)"
                 return
-            if success and self.bowl is None:
+            if success and self.bowl is None and not self.pick_only:
                 self.message = "Choose a plate (1–3)"
                 return
             self._save(success=success)
             self._apply_next_bowl()
-            if self.continuous and c != "accept_pause" and self.phase == "idle":
+            if self.continuous and not self.pick_only and c != "accept_pause" and self.phase == "idle":
                 self._handle("start")  # chain straight into the next take
         elif c == "discard" and self.phase in ("recording", "review"):
             self.dataset.clear_episode_buffer()
@@ -278,7 +303,7 @@ class EpisodeRecorder:
             self._reset_take()
             return
         self.phase, self.message = "saving", "Saving"
-        place = self.place_task.format(colour=self.bowl) if self.bowl else None
+        place = self.place_task.format(colour=self.bowl) if self.bowl and not self.pick_only else None
         if self.split_frame is not None and place:
             tasks = self.dataset.writer.episode_buffer["task"]
             for i in range(self.split_frame, len(tasks)):
@@ -290,7 +315,8 @@ class EpisodeRecorder:
             "n_frames": self._frames, "paused_ticks": self._paused_ticks, "method": "teleop",
             "inspection_frame": self.split_frame, "inspection_auto": self.split_auto,
             "inspection_marked_by": None if self.split_frame is None else ("classifier" if self.split_auto else "operator"),
-            "classifier_inview_frame": self.classifier_frame, "bowl": self.bowl,
+            "classifier_inview_frame": self.classifier_frame, "bowl": None if self.pick_only else self.bowl,
+            "mode": "pick_only" if self.pick_only else "full",
             "pick_task": self.pick_task, "place_task": place, "operator": self.operator,
             "recorded_at": datetime.now().isoformat(timespec="seconds"),
         }
@@ -356,7 +382,7 @@ class EpisodeRecorder:
                 return
             if self.detector.last.in_view and self.classifier_frame is None:
                 self.classifier_frame = self._frames
-            if self.auto_split and self.stage == "pick" and self.detector.last.in_view:
+            if self.auto_split and self.stage == "pick" and self.split_frame is None and self.detector.last.in_view:
                 self._split(auto=True)
             frame = self._frame()
             if frame is None:
@@ -364,6 +390,10 @@ class EpisodeRecorder:
             else:
                 self.dataset.add_frame(frame)
                 self._frames += 1
+            if self.pick_only and self._hold_end is not None and self._frames >= self._hold_end:
+                self._to_review()
+                self.message = "Pick recorded: s to save, d to discard"
+                return
             if time.perf_counter() - self._take_start >= self.episode_time_s:
                 self._to_review()
                 self.message = "Time limit"
@@ -415,6 +445,7 @@ class EpisodeRecorder:
                 "threshold": getattr(self.detector, "threshold", None),
                 "guide": "square" if hasattr(self.detector, "prob") else list(self.detector.cfg.roi),
                 "depth_cams": self.depth_cams, "auto_split": self.auto_split, "continuous": self.continuous,
+                "pick_only": self.pick_only,
                 "unsealed": self._since_checkpoint, "checkpoints": self.checkpoints,
                 "teleop_live": self._teleop_live(), "root": str(self.root),
                 "task": self._current_task() if self.phase == "recording" else None,
@@ -495,6 +526,9 @@ body{background:var(--bg);color:var(--fg);font:400 15px/1.35 Barlow,ui-sans-seri
 .bowl.sel{opacity:1;transform:scale(1);box-shadow:0 0 0 3px var(--bg),0 0 0 5px var(--fg)}
 .bowl.next{opacity:.8;transform:scale(.94);outline:2px dashed var(--fg);outline-offset:4px}
 .bowl kbd{position:absolute;right:-6px;bottom:-6px;background:var(--panel);color:var(--fg);border:1px solid var(--line);border-radius:6px;padding:1px 6px;font:500 12px Barlow,sans-serif}
+.mode{display:flex;justify-content:center}.mode button{font:600 14px Barlow,sans-serif;letter-spacing:.08em;text-transform:uppercase;color:var(--fg);background:var(--panel);border:1px solid var(--line);border-radius:999px;padding:7px 16px;cursor:pointer}
+.mode button.pick{background:var(--fg);color:var(--bg);border-color:var(--fg)}.mode kbd{margin-left:8px;font-weight:500;opacity:.7}
+.stages.pickonly{grid-template-columns:auto 1fr auto}.stages.pickonly .place,.stages.pickonly #s2{display:none}
 .platesel{text-align:center;color:var(--mute);font-size:14px;margin-top:-18px}.platesel b{color:var(--fg);font-weight:500}
 .bowl:focus-visible{box-shadow:0 0 0 3px var(--bg),0 0 0 5px var(--glow)}
 .msg{min-height:22px;text-align:center;color:var(--mute);font-size:15px;transition:color .2s}
@@ -530,14 +564,15 @@ body{background:var(--bg);color:var(--fg);font:400 15px/1.35 Barlow,ui-sans-seri
  <div class="state" id="state"><span><span class="dot"></span><b id="arm">Connecting</b></span><span id="eps"></span></div>
  <div class="gauge"><svg viewBox="0 0 300 300"><circle class="ring" cx="150" cy="150" r="140"/><circle class="arc" id="arc" cx="150" cy="150" r="140" stroke-dasharray="0 880"/></svg>
   <div class="time"><span class="n" id="t">0.0</span><span class="u" id="unit">Ready</span></div></div>
- <div class="stages"><span class="node"><i></i>Pick</span><span class="seg" id="s1"></span><span class="node"><i></i>In view</span><span class="seg" id="s2"></span><span class="node"><i></i>Place</span></div>
+ <div class="mode"><button id="modebtn" type="button">Full demo<kbd>P</kbd></button></div>
+ <div class="stages"><span class="node"><i></i>Pick</span><span class="seg" id="s1"></span><span class="node"><i></i>In view</span><span class="seg" id="s2"></span><span class="node place"><i></i>Place</span></div>
  <div class="bowls" id="bowls"></div>
  <div class="platesel" id="platesel"></div>
  <div class="meter" id="meter"><span>Inspection</span><div class="mbar"><i id="mfill"></i><b id="mthr"></b></div></div>
  <div class="msg" id="msg"></div>
  <div class="tally"><span><b id="ok">0</b>Saved</span><span><b id="bad">0</b>Failed</span><span><b id="med">–</b>Median time</span></div>
 </aside>
-<footer class="keys"><span><kbd>Space</kbd><span id="kspace">Start</span></span><span><kbd>M</kbd>Mark in view</span><span><kbd>S</kbd><span id="ksave">Save</span></span><span><kbd>D</kbd>Discard</span><span><kbd>F</kbd>Failed</span><span><kbd>1–3</kbd>Plate</span><span class="grow"></span><span><kbd>E</kbd><span id="keng">Engage</span></span><span><kbd>V</kbd>Views</span><span><kbd>X</kbd>Detector</span></footer>
+<footer class="keys"><span><kbd>Space</kbd><span id="kspace">Start</span></span><span><kbd>M</kbd>Mark in view</span><span><kbd>S</kbd><span id="ksave">Save</span></span><span><kbd>D</kbd>Discard</span><span><kbd>F</kbd>Failed</span><span><kbd>1–3</kbd>Plate</span><span><kbd>P</kbd>Pick only</span><span class="grow"></span><span><kbd>E</kbd><span id="keng">Engage</span></span><span><kbd>V</kbd>Views</span><span><kbd>X</kbd>Detector</span></footer>
 </div>
 <script>
 const TARGET=__TARGET__,C=2*Math.PI*140,SW={red:'#e0393e',blue:'#2f6fe0',green:'#2fb36b',yellow:'#f5c518',orange:'#f2711c',white:'#e8e8e8',black:'#2a2a2a',purple:'#8e44d9',pink:'#e86aa6',grey:'#8d939b',gray:'#8d939b'};
@@ -556,7 +591,7 @@ function show(i,n){panes[i]=n;const d=pane(i),ic=last.inspect_camera;
 function pick(n){if(visible().includes(n))return;show(split?1:0,n)}
 setInterval(()=>{if(debug)visible().forEach((n,i)=>{if(n&&n===last.inspect_camera)pane(i).querySelector('img').src='/rec/inspect.jpg?'+Date.now()})},120);
 document.addEventListener('keydown',e=>{if(e.repeat||e.metaKey||e.ctrlKey||e.altKey)return;const k=e.key.toLowerCase();
- if(k===' '){e.preventDefault();rec('space')}else if(k.length===1&&'123'.includes(k))rec('bowl'+k);else if(k==='m')rec('inview');
+ if(k===' '){e.preventDefault();rec('space')}else if(k.length===1&&'123'.includes(k))rec('bowl'+k);else if(k==='m')rec('inview');else if(k==='p')rec('toggle_pick');
  else if(k==='s')rec('save');else if(k==='d')rec('discard');else if(k==='f')rec('fail');
  else if(k==='enter'){e.preventDefault();rec('enter')}else if(k==='e')tele(teleLive?'hold':'engage');
  else if(k==='x'){debug=!debug;panes.forEach((n,i)=>{if(n)show(i,n)})}
@@ -593,6 +628,8 @@ async function tick(){try{
  document.querySelectorAll('.node').forEach((n,i)=>{n.classList.toggle('on',active&&i<=now);n.classList.toggle('now',active&&i===now)});
  $('s1').classList.toggle('on',active&&now>=1);$('s2').classList.toggle('on',active&&now>=2);
  if(r.inspect_camera&&thumbs[r.inspect_camera])thumbs[r.inspect_camera].classList.toggle('seen',r.in_view);
+ const po=!!r.pick_only;$('modebtn').classList.toggle('pick',po);$('modebtn').innerHTML=(po?'Pick only':'Full demo')+'<kbd>P</kbd>';
+ document.querySelector('.stages').classList.toggle('pickonly',po);$('bowls').style.display=po?'none':'';$('platesel').style.display=po?'none':'';
  bowls(r);guides(r);$('platesel').innerHTML=(r.bowl?'Plate <b>'+r.bowl+'</b>':'No plate chosen')+(r.next_bowl?' · next take <b>'+r.next_bowl+'</b>':'');
  $('meter').style.display=(r.inspect_camera&&r.threshold)?'':'none';$('meter').classList.toggle('inview',r.in_view);app.classList.toggle('iv',!!r.in_view);
  $('mfill').style.width=Math.min(100,100*(r.prob||0))+'%';$('mthr').style.left=r.threshold?(100*r.threshold)+'%':'-9px';
@@ -602,6 +639,7 @@ async function tick(){try{
  $('ok').textContent=r.saved.success;$('bad').textContent=r.saved.failure;$('med').textContent=r.median_s===null?'–':r.median_s+'s';
  last=r;
 }catch(e){$('arm').textContent='Disconnected'}}
+$('modebtn').onclick=()=>rec('toggle_pick');
 setInterval(tick,100);tick();
 </script></body></html>"""
 
@@ -609,7 +647,8 @@ setInterval(tick,100);tick();
 def make_handler(streams: dict, teleop, recorder: EpisodeRecorder, target_s: float | None):
     base = teleop_web.make_handler(streams, teleop)
     page = PAGE.replace("__TARGET__", json.dumps(target_s)).encode()
-    commands = ({"space", "enter", "save", "start", "stop", "accept", "accept_pause", "fail", "discard", "inview"}
+    commands = ({"space", "enter", "save", "start", "stop", "accept", "accept_pause", "fail", "discard", "inview",
+                 "toggle_pick"}
                 | {f"bowl{i}" for i in range(1, 10)})
 
     class Handler(base):
@@ -683,6 +722,9 @@ def main() -> None:
                    help="encode videos when a take is saved instead of while recording (slower saves)")
     p.add_argument("--checkpoint-every", type=int, default=10,
                    help="seal the dataset every N saved takes so a crash can't lose more than that (0 = only at exit)")
+    p.add_argument("--pick-only", action="store_true",
+                   help="record only the pick stage: the take stops --pick-hold-s after the in-view mark (m)")
+    p.add_argument("--pick-hold-s", type=float, default=0.3, help="pick-only: seconds recorded after the mark")
     p.add_argument("--auto-split", action="store_true",
                    help="let the classifier mark the in-view moment instead of the operator's space press")
     p.add_argument("--width", type=int, default=640)
@@ -723,7 +765,8 @@ def main() -> None:
                                args.pick_task, args.place_task, args.inspect_camera, detector,
                                record_depth=not args.no_depth, auto_split=args.auto_split,
                                continuous=not args.no_continuous, streaming_encoding=not args.no_streaming,
-                               checkpoint_every=args.checkpoint_every)
+                               checkpoint_every=args.checkpoint_every, pick_only=args.pick_only,
+                               pick_hold_s=args.pick_hold_s)
     server = None
     worker = rec_thread = None
     try:
