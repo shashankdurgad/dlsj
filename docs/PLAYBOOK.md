@@ -375,7 +375,8 @@ physicalai fit --config configs/physicalai/act/pusht/xpu.yaml \
   --trainer.fast_dev_run=true
 # Then drop --trainer.fast_dev_run for the real run
 ```
-- ⚠️ **Unverified:** `--data.val_gym null` parsing and `bf16-mixed` with `xpu_single`. If either fails, fall back to the shipped `precision: 32`.
+- ⚠️ **Measured on the XPS (Lightning 2.6.6, Studio 8f13241): `--trainer.precision bf16-mixed` silently trains in fp32 on XPU.** Lightning only autocasts on CUDA (warning: "CUDA is not available ... Disabling autocast"). Pass the plugin explicitly instead: `trainer.plugins: [MixedPrecision("bf16-mixed", "xpu")]`. `training/xpu/` does this. Don't use `16-mixed` (GradScaler is CUDA-only).
+- **Intel XPU training scripts:** `training/xpu/` (π0.5, SmolVLA, Anomalib, classifier); see its README for what has been validated. The deployed π0.5 was trained on cloud GPUs.
 - **Gotcha:** the other configs (SmolVLA, `lerobot/act.yaml`) default to `accelerator: gpu`. Add `--trainer.accelerator xpu --trainer.strategy xpu_single`.
 - **SmolVLA:** `physicalai fit --config configs/physicalai/smolvla/pusht/default.yaml --trainer.accelerator xpu --trainer.strategy xpu_single --data.repo_id ...`. Change the default `num_cameras: 0` and the PushT `val_gym` for SO-101.
 - **π0.5:** an SO-101 recipe exists at `configs/physicalai/pi05/so101/snapflow.yaml` (bf16, `compile_model: true`, distilled to 1 denoising step; ~2.98× faster chunks reported on H100, not XPU).
