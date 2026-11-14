@@ -6,6 +6,10 @@ For the trained **PatchCore brick anomaly model and live camera tester**, see
 [download and setup](models/brick_patchcore_geometry/README.md). This standalone
 tester reports marked versus unmarked; it does not run the robot or stage-2 classifier.
 
+The optional [trained YOLO classifier](models/brick_yolo_classifier/README.md)
+adds plain/cross/circle labels and an uncertain/reinspect result to that camera
+tester while retaining Anomalib's anomaly score and heatmap.
+
 The full plan, commands, code snippets and sources are in **[docs/PLAYBOOK.md](docs/PLAYBOOK.md)**.
 
 ## The loop

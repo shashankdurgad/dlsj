@@ -1,0 +1,17 @@
+{
+  "validation": {
+    "frames": 132,
+    "maximum_probability_difference": 7.68899917602539e-06,
+    "frame_label_changes": 0
+  },
+  "test": {
+    "frames": 387,
+    "maximum_probability_difference": 5.0067901611328125e-06,
+    "frame_label_changes": 0
+  },
+  "export_sha256": {
+    "best.xml": "987c21391f44435477a73552603960a1539f20b497e0dbc361daeb450e427219",
+    "best.bin": "59af0e169d57343b30e1fd4037355eae9e4cac6f530d845613458348f1bb7b4e"
+  },
+  "status": "passed"
+}

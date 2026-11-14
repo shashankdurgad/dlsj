@@ -34,8 +34,11 @@ The launcher reads `../anomaly-training/live_model_run.txt` to select the saved
 model/calibration pair. It currently points to
 `../anomaly-training/augmentation-20261114T031256/geometry`.
 
-The cleaned-data held-out results were 15/16 plain accepted, 54/58 crosses
-and 50/55 circles detected as anomalous. This tester reports marked versus
-unmarked; the separate supervised cross/circle classifier is not connected yet.
+The cleaned-data held-out PatchCore results were 15/16 plain accepted, 54/58 crosses
+and 50/55 circles detected as anomalous. The Mac launcher now also loads the
+[trained YOLO classifier](yolo-brick-classification.md), showing plain, cross,
+circle or uncertain/reinspect. It averages three YOLO probability vectors and
+requires agreement with the Anomalib decision. The local classifier selection is
+stored in `../anomaly-training/live_classifier_dir.txt`.
 Empty crops, obscured marks, or different camera
 conditions are not validated uses. This is an interactive evaluation tool.

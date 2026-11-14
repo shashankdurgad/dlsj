@@ -1,0 +1,14 @@
+{
+  "best.xml": {
+    "sha256": "987c21391f44435477a73552603960a1539f20b497e0dbc361daeb450e427219",
+    "bytes": 134505
+  },
+  "best.bin": {
+    "sha256": "59af0e169d57343b30e1fd4037355eae9e4cac6f530d845613458348f1bb7b4e",
+    "bytes": 6119640
+  },
+  "best.pt": {
+    "sha256": "88260728934b2bcfefa4961ce3d37e1c2d32cf210c4db7cc6daa21c040a2e448",
+    "bytes": 3226956
+  }
+}

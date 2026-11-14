@@ -1,0 +1,51 @@
+{
+  "validation": {
+    "captures": 44,
+    "decided": 31,
+    "uncertain": 13,
+    "correct": 31,
+    "coverage": 0.7045454545454546,
+    "accuracy_among_decided": 1.0,
+    "correct_fraction_of_all_captures": 0.7045454545454546,
+    "per_actual_class": {
+      "circle": {
+        "uncertain": 5,
+        "circle": 10
+      },
+      "cross": {
+        "cross": 11,
+        "uncertain": 4
+      },
+      "plain": {
+        "plain": 10,
+        "uncertain": 4
+      }
+    }
+  },
+  "test": {
+    "captures": 129,
+    "decided": 107,
+    "uncertain": 22,
+    "correct": 104,
+    "coverage": 0.8294573643410853,
+    "accuracy_among_decided": 0.9719626168224299,
+    "correct_fraction_of_all_captures": 0.8062015503875969,
+    "per_actual_class": {
+      "circle": {
+        "circle": 43,
+        "uncertain": 11,
+        "cross": 1
+      },
+      "cross": {
+        "cross": 47,
+        "uncertain": 9,
+        "circle": 1,
+        "plain": 1
+      },
+      "plain": {
+        "plain": 14,
+        "uncertain": 2
+      }
+    }
+  }
+}

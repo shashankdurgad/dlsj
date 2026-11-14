@@ -1,0 +1,14 @@
+{
+  "seconds": 66.05782812499092,
+  "epochs_requested": 100,
+  "device": "mps",
+  "seed": 2026,
+  "versions": {
+    "ultralytics": "8.4.212",
+    "torch": "2.14.1",
+    "torchvision": "0.29.1",
+    "albumentations": "2.0.8",
+    "openvino": "2026.4.1",
+    "numpy": "2.3.5"
+  }
+}

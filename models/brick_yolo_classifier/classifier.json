@@ -1,0 +1,16 @@
+{
+  "backend": "yolo_classification",
+  "model": "best.xml",
+  "classes": [
+    "circle",
+    "cross",
+    "plain"
+  ],
+  "input_size": 320,
+  "input_format": "RGB float32 NCHW /255",
+  "aggregation": "mean of three probability vectors",
+  "min_confidence": 0.8,
+  "min_margin": 0.2,
+  "target_met": false,
+  "basis": "validation only; mean probabilities across three frames"
+}

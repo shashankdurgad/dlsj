@@ -103,7 +103,8 @@ ID is `c01c0cdc-80b5-44b4-a8ab-bdbc5db6eb52`. The previously deployed model acce
 the new candidate therefore represents a different false-reject/missed-mark
 tradeoff. The small normal test group and unknown physical identities limit the
 conclusion. The geometry candidate is now loaded for interactive live testing;
-the separate supervised classifier has not been connected to that tester.
+the original frozen-feature classifier remains an offline probe. A later
+[YOLO classifier](yolo-brick-classification.md) is now connected to the tester.
 
 Calibration limitation observed in the controlled baseline: 27/42 normal,
 173/177 cross and 177/180 circle validation frame scores were clipped to 1.0.
