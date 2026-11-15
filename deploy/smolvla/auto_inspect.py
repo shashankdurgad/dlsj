@@ -357,6 +357,10 @@ HELD_CUBE_WEIGHTS = {
     "held_cube": "held-cube-yolo26n-v4/held_cube_symbols_cross_v4_epoch4_openvino_model",  # v4 epoch 4 (default)
     "held_cube_v2": "held-cube-yolo26n-v2/held_cube_symbols_held_only_openvino_model",
 }
+# Joe's held-brick detector v1 (release held-brick-detector-v1-20261115): a later v4 checkpoint used detector-only
+# (any symbol channel = held brick, confidence 0.2 chosen on validation; its wrapper merges overlapping boxes, so the
+# best box is simply the highest-confidence one). Stage 1 of the held-crop pipeline.
+HELD_BRICK_WEIGHTS, HELD_BRICK_CONF = "held-brick-detector-v1/held_brick_backbone_openvino_model", 0.2
 
 
 def make_auto_inspector(cameras, follower_id: str = "follower", device: str = "NPU", roi=None,
@@ -371,14 +375,14 @@ def make_auto_inspector(cameras, follower_id: str = "follower", device: str = "N
         from dlsj.inspect.brick_detector import BrickDetector
 
         top_det = BrickDetector(str(_ov_dir(models / "brick-detector-v1")), device.lower())
-        insp = HeldCropInspector(models / HELD_CUBE_WEIGHTS["held_cube"], models / "brick-yolo-classifier-v2", device,
-                                 detector=top_det)
+        insp = HeldCropInspector(models / HELD_BRICK_WEIGHTS, models / "brick-yolo-classifier-v2", device,
+                                 held_conf=HELD_BRICK_CONF, detector=top_det)
         try:
             limits = arms.joint_limits_deg(follower_id, "wrist_roll")
         except Exception as e:  # noqa: BLE001
             log.warning("no calibrated wrist_roll limits (%s); sweeping without clipping", e)
             limits = None
-        log.info("auto-inspect: held_crop (held-cube v4 box -> YOLO v2 classifier) on %s, wrist_roll limits %s",
+        log.info("auto-inspect: held_crop (held-brick detector v1 box -> YOLO v2 classifier) on %s, wrist_roll limits %s",
                  device, limits)
         return AutoInspector(cameras, insp, limits, **kw)
     if kind in HELD_CUBE_WEIGHTS:

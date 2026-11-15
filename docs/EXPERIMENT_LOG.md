@@ -65,6 +65,10 @@ Other research done in conversation (not separate reports):
   empty-table test on the real camera (false positives there would block "done"); the gripper fingertips scored
   0.23–0.35 on older-setup frames when just outside the home ignore box.
 
+- **Held-brick detector v1 (release `held-brick-detector-v1-20261115`) as stage 1 of held-crop** (`--inspector
+  held_crop`, confidence 0.2): identical rig result to the v4-box version, **31 / 2 / 5** of 38 (3 circles passed as
+  plain by the v2 classifier); the backbone alone gives exactly v4 epoch 4's answers (33 / 4 / 1). The detector is
+  fine; the v2 classifier is the limit on circles. v4 alone stays live. `bench/held_brick_v1/`.
 - **Two-stage held-crop tried (15 Nov)**: held-cube v4 draws the box, the YOLO v2 classifier classifies only that crop
   (`--inspector held_crop`). Real decision rule, 38 rig spins: v2 on a centre/detector crop 27 right / 3 uncertain /
   8 wrong (7 circles passed as plain); held-crop 31 / 2 / 5 (3 circles as plain); **v4 alone 33 / 4 / 1** (15/15

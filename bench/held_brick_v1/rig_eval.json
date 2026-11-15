@@ -1,0 +1,234 @@
+{
+ "held_crop (held-brick v1 box -> v2)": {
+  "spins": {
+   "correct": 31,
+   "uncertain": 2,
+   "wrong": 5
+  },
+  "frames": {
+   "frames": 456,
+   "confident": 398,
+   "correct": 314
+  },
+  "ms_median": 11.0,
+  "confusion": {
+   "plain->plain": 8,
+   "plain->cross": 1,
+   "cross->cross": 14,
+   "circle->circle": 9,
+   "circle->uncertain": 2,
+   "circle->plain": 3,
+   "circle->cross": 1
+  },
+  "misses": [
+   [
+    "232c447e14",
+    "plain",
+    "cross"
+   ],
+   [
+    "d036e6b7e6",
+    "circle",
+    "uncertain"
+   ],
+   [
+    "546f7a60ff",
+    "circle",
+    "plain"
+   ],
+   [
+    "f649fc10f7",
+    "circle",
+    "cross"
+   ],
+   [
+    "2328c65f69",
+    "circle",
+    "uncertain"
+   ],
+   [
+    "46f075033a",
+    "circle",
+    "plain"
+   ],
+   [
+    "48db0cbac4",
+    "circle",
+    "plain"
+   ]
+  ]
+ },
+ "held-brick backbone alone (symbols)": {
+  "spins": {
+   "correct": 33,
+   "uncertain": 4,
+   "wrong": 1
+  },
+  "frames": {
+   "frames": 456,
+   "confident": 450,
+   "correct": 429
+  },
+  "ms_median": 9.5,
+  "confusion": {
+   "plain->uncertain": 4,
+   "plain->plain": 4,
+   "plain->cross": 1,
+   "cross->cross": 14,
+   "circle->circle": 15
+  },
+  "misses": [
+   [
+    "6f6c25d99c",
+    "plain",
+    "uncertain"
+   ],
+   [
+    "631b6914e7",
+    "plain",
+    "uncertain"
+   ],
+   [
+    "d5a8eeb40b",
+    "plain",
+    "uncertain"
+   ],
+   [
+    "82f61efbd3",
+    "plain",
+    "uncertain"
+   ],
+   [
+    "232c447e14",
+    "plain",
+    "cross"
+   ]
+  ]
+ },
+ "held_cube v4 alone": {
+  "spins": {
+   "correct": 33,
+   "uncertain": 4,
+   "wrong": 1
+  },
+  "frames": {
+   "frames": 456,
+   "confident": 450,
+   "correct": 429
+  },
+  "ms_median": 15.3,
+  "confusion": {
+   "plain->uncertain": 4,
+   "plain->plain": 4,
+   "plain->cross": 1,
+   "cross->cross": 14,
+   "circle->circle": 15
+  },
+  "misses": [
+   [
+    "6f6c25d99c",
+    "plain",
+    "uncertain"
+   ],
+   [
+    "631b6914e7",
+    "plain",
+    "uncertain"
+   ],
+   [
+    "d5a8eeb40b",
+    "plain",
+    "uncertain"
+   ],
+   [
+    "82f61efbd3",
+    "plain",
+    "uncertain"
+   ],
+   [
+    "232c447e14",
+    "plain",
+    "cross"
+   ]
+  ]
+ },
+ "v2 classifier, ROI/detector crop": {
+  "spins": {
+   "correct": 27,
+   "uncertain": 3,
+   "wrong": 8
+  },
+  "frames": {
+   "frames": 456,
+   "confident": 417,
+   "correct": 301
+  },
+  "ms_median": 19.3,
+  "confusion": {
+   "plain->plain": 8,
+   "plain->cross": 1,
+   "cross->cross": 13,
+   "cross->uncertain": 1,
+   "circle->circle": 6,
+   "circle->uncertain": 2,
+   "circle->plain": 7
+  },
+  "misses": [
+   [
+    "005507feb4",
+    "plain",
+    "cross"
+   ],
+   [
+    "1526a468ec",
+    "cross",
+    "uncertain"
+   ],
+   [
+    "0488fcbb17",
+    "circle",
+    "uncertain"
+   ],
+   [
+    "546f7a60ff",
+    "circle",
+    "plain"
+   ],
+   [
+    "99cd6fa32b",
+    "circle",
+    "uncertain"
+   ],
+   [
+    "eea2d972fc",
+    "circle",
+    "plain"
+   ],
+   [
+    "f649fc10f7",
+    "circle",
+    "plain"
+   ],
+   [
+    "2328c65f69",
+    "circle",
+    "plain"
+   ],
+   [
+    "2431d63324",
+    "circle",
+    "plain"
+   ],
+   [
+    "46f075033a",
+    "circle",
+    "plain"
+   ],
+   [
+    "48db0cbac4",
+    "circle",
+    "plain"
+   ]
+  ]
+ }
+}
