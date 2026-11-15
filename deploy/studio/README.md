@@ -11,6 +11,10 @@ One project holds the whole VLA lifecycle of the brick-sorting robot, and the ru
 | Environment | **so101 brick station** (follower + leader + the three cameras) | `246feb8d-2d73-451a-bdd8-3edfa066c748` |
 | Dataset | **cal2 teleop, 3-stage prompts (456 episodes, MolmoAct2 training set)**: the current-calibration demos with the per-frame stage prompts the policy was trained on | `db961a58-3f56-4498-a597-7b948ae32a91` |
 | Model (deployed) | **MolmoAct2 SO-101 cal2 3-stage LoRA, step 8000 (OpenVINO INT8 + RTC)**, policy `molmoact2` | `22fb0973-b9df-4c10-bca7-8af2a8f9739d` |
+| Dataset | **duplo teleop, pick and place (517 episodes, calibration before 14 Nov)**: the first full pick-and-place demos, as recorded (RGB) | `b5d13487-5c13-4cc2-ac97-8049a8fa3ff1` |
+| Dataset | **duplo pick only (133 episodes, calibration before 14 Nov)**: pick-and-present demos | `c03bf983-35ba-4275-8cf9-37819b9f1baf` |
+| Datasets (earlier) | `Earlier snapshot (212 episodes)`, `Duplo teleoperation` (814 episodes) | |
+| Model (fallback) | **SmolVLA SO-101 3-stage (fallback, OpenVINO INT8 + RTC; calibration before 14 Nov)**, Intel's reference VLA, trained with Studio's library on a 3-stage relabel of the 517 demos; run it with `--joint-offset recal_2026-11-14` (`run_smolvla.sh`), not from Studio's Run page | `f013db8b-c317-4eba-8c1f-2f6545722fe3` |
 | Earlier models | `pi05 junction 20261114 (OpenVINO INT8)`, `ACT WARP duplo 417` (ACT dropped by the team) | |
 
 ## The VLA lifecycle
@@ -54,6 +58,11 @@ REPO=~/inference/dlsj-smolvla ~/inference/deploy/studio/import_model.sh \
 
 # calibration: Studio robot records <- calibration/robots/so_follower/follower.json, calibration/teleoperators/so_leader/leader.json
 python3 ~/inference/deploy/studio/sync_calibration.py --dry-run   # then without --dry-run
+
+# older recordings as recorded (RGB only; depth streams are not part of the Studio environment)
+D=~/desmond/dlsj/data/duplo_teleop; ~/inference/.venv/bin/python ~/inference/deploy/studio/build_dataset.py $D $D $S/duplo_teleop_studio \
+    --drop observation.images.top_depth --drop observation.images.inspect_depth
+~/inference/deploy/studio/import_dataset.sh $S/duplo_teleop_studio "duplo teleop, pick and place (517 episodes, calibration before 14 Nov)"
 
 # what the loop will load
 cd ~/inference/dlsj-smolvla && PYTHONPATH=$PWD ~/desmond/venvs/pi05rt/bin/python -m dlsj.deploy.studio_registry \

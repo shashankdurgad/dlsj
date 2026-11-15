@@ -5,6 +5,7 @@
 LABELS  the prepared training snapshot (only meta/ and data/ are read; its videos are not needed),
         e.g. molmoact2-cal2-456-3stage-20261114 (per-frame 3-stage tasks, explicit train/validation split).
 SOURCE  the recording that snapshot was built from (LeRobot v3), e.g. duplo_teleop_cal2 on the XPS.
+        Pass the same folder as LABELS and SOURCE to import a recording as it is (with --drop for depth streams).
 OUT     a new LeRobot v3 dataset for `physicalai-studio datasets import-dir`:
           - data/ and meta/ from LABELS (the exact task strings and episode set the policy was trained on),
           - the cameras LABELS keeps, with their video files hard-linked from SOURCE (no copy on the same disk),
@@ -92,12 +93,15 @@ def link_tree(src: Path, dst: Path) -> int:
     return n
 
 
-def build(labels: Path, source: Path, out: Path, full_frame: list[str]) -> dict:
+def build(labels: Path, source: Path, out: Path, full_frame: list[str], drop: list[str] | tuple = ()) -> dict:
     if out.exists():
         raise FileExistsError(out)
     info = json.loads((labels / "meta/info.json").read_text())
     src_info = json.loads((source / "meta/info.json").read_text())
-    cams = video_keys(info)
+    unknown = [c for c in drop if c not in info["features"]]
+    if unknown:
+        raise ValueError(f"--drop {unknown}: not features of the labels")
+    cams = [c for c in video_keys(info) if c not in drop]
     check_alignment(labels, source, cams)
 
     tmp = out.with_name(out.name + ".partial")
@@ -110,6 +114,14 @@ def build(labels: Path, source: Path, out: Path, full_frame: list[str]) -> dict:
             shutil.copy2(labels / name, tmp / "meta/training" / name)
 
     stats = json.loads((tmp / "meta/stats.json").read_text())
+    for cam in drop:  # e.g. depth streams: not part of the Studio environment
+        info["features"].pop(cam)
+        stats.pop(cam, None)
+    if drop:
+        for p in _parquets(tmp, "meta/episodes"):
+            df = pd.read_parquet(p)
+            df.drop(columns=[c for c in df.columns if any(c.startswith(f"{k}/{cam}/") for k in ("videos", "stats")
+                                                          for cam in drop)]).to_parquet(p, index=False)
     src_stats = json.loads((source / "meta/stats.json").read_text())
     src_eps = _episodes(source).set_index("episode_index")
     for cam in full_frame:
@@ -129,7 +141,7 @@ def build(labels: Path, source: Path, out: Path, full_frame: list[str]) -> dict:
     tasks = pd.read_parquet(tmp / "meta/tasks.parquet")
     tmp.rename(out)
     return {"out": str(out), "episodes": info["total_episodes"], "frames": info["total_frames"], "cameras": cams,
-            "full_frame": full_frame, "video_files": files, "tasks": sorted(tasks.index.tolist())}
+            "full_frame": full_frame, "dropped": list(drop), "video_files": files, "tasks": sorted(tasks.index.tolist())}
 
 
 def main() -> None:
@@ -139,9 +151,11 @@ def main() -> None:
     ap.add_argument("out", type=Path)
     ap.add_argument("--full-frame", action="append", default=[],
                     help="camera cropped at training, kept full-frame here (repeatable)")
+    ap.add_argument("--drop", action="append", default=[], help="leave this camera out, e.g. a depth stream (repeatable)")
     a = ap.parse_args()
     try:
-        print(json.dumps(build(a.labels.expanduser(), a.source.expanduser(), a.out.expanduser(), a.full_frame),
+        print(json.dumps(build(a.labels.expanduser(), a.source.expanduser(), a.out.expanduser(), a.full_frame,
+                               a.drop),
                          indent=2))
     except (ValueError, FileExistsError) as e:
         sys.exit(f"build_dataset: {e}")

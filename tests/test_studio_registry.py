@@ -205,3 +205,18 @@ def test_build_dataset_refuses_a_different_recording(tmp_path):
     df.to_parquet(labels / "data/chunk-000/file-000.parquet")
     with pytest.raises(ValueError, match="column action differs"):
         BD.build(labels, src, tmp_path / "out", ["observation.images.top"])
+
+
+def test_build_dataset_as_recorded_drops_depth(tmp_path):
+    src = _dataset(tmp_path / "src", 640, ["pick up the brick"], [0] * 5)
+    for c in CAMS:
+        (src / f"videos/{c}/chunk-000").mkdir(parents=True)
+        (src / f"videos/{c}/chunk-000/file-000.mp4").write_bytes(b"v")
+    out = BD.build(src, src, tmp_path / "out", [], drop=["observation.images.top"])
+    o = Path(out["out"])
+    assert out["cameras"] == ["observation.images.wrist"] and not (o / "videos/observation.images.top").exists()
+    assert "observation.images.top" not in json.loads((o / "meta/info.json").read_text())["features"]
+    assert "observation.images.top" not in json.loads((o / "meta/stats.json").read_text())
+    ep = pd.read_parquet(o / "meta/episodes/chunk-000/file-000.parquet")
+    assert not [c for c in ep.columns if "images.top" in c] and "videos/observation.images.wrist/file_index" in ep
+    assert "observation.images.top" in json.loads((src / "meta/info.json").read_text())["features"]  # source intact
