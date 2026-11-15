@@ -17,6 +17,8 @@ Reuses that controller (web console :8010, speed limits, Q = hold, ramp home on 
 * `--joint-offset joint=deg,...`: current calibration minus the training-time one (as in act_rollout); the policy
   sees state - offset, the arm gets action + offset;
 * RTC from `deploy/pi05/rtc_control.py` when the export has RTC inputs (`deploy/smolvla/export.py --rtc`).
+* `--residual off|shadow|on --residual-weights <residual_actor.npz>`: the pick-only grasp residual (`residual.py`),
+  hooked into the goal of every policy tick while the pick prompt is active; off (default) = unchanged.
 
     cd ~/inference/dlsj-smolvla && PYTHONPATH=$PWD ~/desmond/venvs/pi05rt/bin/python \
         ~/inference/deploy/smolvla/smolvla_control.py --export ~/inference/exports/smolvla_3stage_rtc_int8 \
@@ -91,7 +93,7 @@ def add_home_button(pc) -> None:
         class Handler(base):
             def do_POST(self):
                 name = self.path.removeprefix("/ctl/")
-                if name in ("home", "h") or name.startswith(("brick_", "stage_")):
+                if name in ("home", "h") or name.startswith(("brick_", "stage_", "residual_")):
                     ctl.command(name)
                     return self._send(200, b"{}", "application/json")
                 return super().do_POST()
@@ -264,6 +266,37 @@ def make_controller_class(base):
     return SmolController
 
 
+def _residual_args(ap) -> None:
+    """The pick-only grasp residual's flags (deploy/smolvla/residual.py). Kept here so --residual off never imports
+    it: off = this controller exactly as before."""
+    ap.add_argument("--residual", choices=("off", "shadow", "on"), default="off",
+                    help="pick-only grasp residual: off (default, controller unchanged), shadow (run + log, not "
+                         "applied), on (applied while the pick prompt is active)")
+    ap.add_argument("--residual-weights", default="zero",
+                    help="residual_actor.npz (or its deploy/ dir) from export_residual.py; 'zero' = identity")
+    ap.add_argument("--residual-device", default="numpy", help="numpy (default), or an OpenVINO device for the .onnx")
+    ap.add_argument("--residual-detector", default="~/inference/models/brick-detector-v1",
+                    help="wrist brick detector (OpenVINO model dir), run on --residual-detector-device")
+    ap.add_argument("--residual-detector-device", default="NPU")
+    ap.add_argument("--residual-max-joint-delta", type=float, default=20.0,
+                    help="reject a corrected goal that moves any body joint more than this (deg) from the plan")
+    ap.add_argument("--residual-top-seed", action="store_true",
+                    help="seed the wrist tracker and the top-target obs from the loop's top-camera target (off by "
+                         "default: the top camera -> table geometry was 6-14 cm off on recorded episodes)")
+
+
+def _residual_config(ours):
+    """None for --residual off, else (residual module, ResidualConfig) with the weights validated."""
+    if ours.residual == "off":
+        return None
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    import residual as RES
+
+    cfg = RES.config_from_args(ours)
+    log.info(RES.describe(cfg))  # loads + validates the export's meta before the arm is touched
+    return RES, cfg
+
+
 def main() -> None:
     global PICK, BRING, PLACE, BRICK, TRAINING_TASKS
     ap = argparse.ArgumentParser(add_help=False)
@@ -276,6 +309,7 @@ def main() -> None:
     ap.add_argument("--brick", default="", help="brick colour for {brick} in --pick-prompt (e.g. red)")
     ap.add_argument("--training-tasks", default="", help="json with 'tasks' (and 'top_crop'): refuse other prompts")
     ap.add_argument("--check-only", action="store_true", help="validate prompts/crop/export and exit (no arm)")
+    _residual_args(ap)
     ours, rest = ap.parse_known_args()
     global PICK_TEMPLATE, BRICK_COLOURS
     PICK, BRING, PLACE, BRICK = ours.pick_prompt, ours.bring_prompt, ours.place_prompt, ours.brick
@@ -309,10 +343,14 @@ def main() -> None:
         export_policy = _json.loads((export / "manifest.json").read_text())["policy"]["name"]
     except Exception:  # noqa: BLE001
         export_policy = ""
+    residual = _residual_config(ours)
     if ours.check_only:
         print(f"export {export} ({export_policy or 'no manifest'}); prompts: pick {PICK!r} / bring {BRING!r} / "
               f"place {[fill(PLACE, colour=b) for b in bowls]}; crop {_arg(rest, '--crop')!r}; "
               f"training tasks {'checked' if TRAINING_TASKS else 'not checked'}")
+        if residual is not None:
+            RES, cfg = residual
+            print(RES.describe(cfg), "| gate on the pick prompt:", RES.is_pick_prompt(PICK))
         if not (export / "manifest.json").exists():
             raise SystemExit(f"no export at {export}")
         return
@@ -331,6 +369,9 @@ def main() -> None:
     except Exception:  # noqa: BLE001
         use_rtc = False
     ctl_cls = make_controller_class(R.make_rtc_controller_class(pc.Controller))
+    if residual is not None:  # outermost: smolvla / auto / loop all get it; --residual off leaves ctl_cls untouched
+        RES, cfg = residual
+        ctl_cls = RES.make_residual_controller_class(ctl_cls, cfg)
 
     def make_policy(args):
         # MolmoAct2: its own wrapper (RTC inputs are added after the runtime preprocessors, which drop unknown keys;
