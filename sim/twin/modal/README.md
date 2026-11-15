@@ -49,7 +49,7 @@ $M --task bench-molmo --gpu RTX-PRO-6000                     # MolmoAct2 latency
 | `TwinEnv` with `DLSJ_KIT_ARGS=""` | top and inspect move, **wrist camera frozen** (image change 0.0): `VisualSync`'s USD writes to the wrist camera are not picked up by the Fabric path. Keep the GB10 KIT_ARGS for `TwinEnv` on x86 too (no speed gain from dropping them: 14.7 vs 14.3 steps/s). |
 | MolmoAct2 worker (`MolmoAct2Client`) | works; bf16, 10 flow steps, 30-action chunks, finite |
 | L40S fallback | not needed, not tested |
-| B200 (MolmoAct2) | not measured: the request queued for 25+ min without a container (no capacity) and was cancelled |
+| B200 (MolmoAct2) | not measured: two requests (2026-11-14 23:37 UTC, 17 min; 23:55 UTC, 12 min) never got a container (no B200 capacity for this workspace at the time) and were stopped; nothing was billed. Retry with `--gpu B200` later; `B200+` may land on a B300, which needs CUDA 13.1+ (the image's torch is cu130) |
 
 `sim/residual_env/app.py` gained a backwards-compatible `DLSJ_KIT_ARGS` override (unset = the GB10 flags) for the
 check above. Kit cold start without the shader cache: 100 s to the first frame; with the cached tar: 13-18 s.
@@ -72,7 +72,7 @@ check above. Kit cold start without the shader cache: 100 s to the first frame; 
 |---|---|---|---|---|---|
 | RTX-PRO-6000 | **0.232 s** (p95 0.243) | 0.234 / 0.233 s | **0.409 s** = 51 ms per chunk | 37 s (Volume) | 14.4 GB |
 | GB10 (for reference) | 0.37 s | | | | |
-| B200 | not measured (no capacity) | | | | |
+| B200 | not measured (no capacity in two attempts) | | | | |
 
 The client has no batched call; batch 8 loads the worker's model (`_Worker`) in-process and feeds a stacked batch
 through the same pre-processor -> `predict_action_chunk` -> post-processor (output (8, 30, 6)).
