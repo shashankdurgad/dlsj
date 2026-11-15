@@ -1,0 +1,208 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Adaptive Inspection</title>
+<link rel="stylesheet" href="vendor/reveal.js/reveal.css">
+<style>
+  @page { size: 1920px 1080px; margin: 0; }
+  :root{ --paper:#f4f4f2; --ink:#1b1b1b; --mute:#7a7a78; --hair:#d9d9d6; --soft:#ebebe8; }
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{font-family:"Avenir Next","Helvetica Neue",Arial,sans-serif;color:var(--ink);background:var(--paper);-webkit-print-color-adjust:exact;print-color-adjust:exact}
+  .s{width:1920px;height:1080px;position:relative;overflow:hidden;break-after:page;background:var(--paper);padding:80px 96px}
+  .s:last-child{break-after:auto}
+  img{display:block}
+  /* header */
+  .hd{display:flex;justify-content:space-between;align-items:flex-start}
+  .t{font-size:46px;font-weight:700;letter-spacing:-.01em}
+  .st{font-size:21px;color:var(--mute);margin-top:12px;max-width:900px;line-height:1.45;font-weight:500}
+  .nav{display:flex;align-items:center;gap:12px}
+  .pill{font-size:15px;font-weight:500;color:var(--mute);border:1.5px solid var(--hair);border-radius:999px;padding:6px 18px;letter-spacing:.02em}
+  .pill.on{color:var(--ink);border-color:var(--ink)}
+  .dot{width:5px;height:5px;border-radius:50%;background:var(--ink)}
+  .pg{position:absolute;right:96px;bottom:48px;font-size:15px;color:var(--mute);letter-spacing:.1em}
+  /* type */
+  .cap{font-size:15px;font-weight:700;letter-spacing:.02em}
+  .body{font-size:17px;color:var(--mute);line-height:1.55;font-weight:500}
+  .n{font-size:64px;font-weight:600;letter-spacing:-.02em;line-height:1}
+  .nl{font-size:16px;color:var(--mute);margin-top:10px;font-weight:500}
+  .stats{display:flex;align-items:flex-start}
+  .stats > div{padding:0 48px;border-left:1.5px solid var(--hair)}
+  .stats > div:first-child{padding-left:0;border-left:none}
+  .panel{border:1.5px solid var(--hair);border-radius:22px;background:#fafaf9}
+  .ph{border-radius:18px;object-fit:cover}
+
+  .print-only{display:none}
+  @media print{.print-only{display:block}.screen-only{display:none}}
+  .reveal{font-family:"Avenir Next","Helvetica Neue",Arial,sans-serif;color:var(--ink)}
+  .reveal-viewport{background:var(--paper)}
+  .reveal .slides{text-align:left}
+  .reveal .slides section.s{padding:80px 96px;width:1920px;height:1080px}
+  .reveal .controls{color:#1b1b1b}
+  @media screen{.reveal .pg{display:none}}
+  .reveal .progress{color:#1b1b1b}
+</style>
+</head>
+<body>
+<div class="reveal"><div class="slides">
+
+<!-- COVER -->
+<section class="s" style="background:#fbfbfa">
+  <div class="hd">
+    <div style="display:flex;align-items:center;gap:10px;font-size:17px;font-weight:600"><svg width="20" height="20" viewBox="0 0 20 20"><path d="M2 18 L10 3 L18 18 Z" fill="#1b1b1b"/></svg>Junction 2026</div>
+  </div>
+  <div style="position:absolute;left:96px;top:250px;width:900px">
+    <div style="font-size:30px;letter-spacing:.32em;font-weight:600">ADAPTIVE INSPECTION</div>
+    <div style="display:flex;align-items:center;gap:36px;margin-top:10px">
+      <div style="font-size:150px;font-weight:500;letter-spacing:-.02em;line-height:1">END TO END</div>
+    </div>
+    <p class="body" style="font-size:22px;margin-top:34px;max-width:720px">A robot arm that picks, inspects and sorts manufactured parts on its own, running entirely on a single Intel Core Ultra laptop.</p>
+    <span class="pill" style="display:inline-block;margin-top:40px;color:var(--ink);border-color:var(--ink);font-size:17px;padding:9px 26px">Intel Physical AI Challenge</span>
+  </div>
+  <img src="assets/cover-real.jpg" class="ph print-only" style="position:absolute;right:96px;top:250px;width:760px;height:570px;border-radius:28px;object-position:75% 50%">
+  <video data-autoplay class="ph screen-only" src="assets/cover-real.mp4" poster="assets/cover-real.jpg" autoplay muted loop playsinline style="position:absolute;right:96px;top:250px;width:760px;height:570px;border-radius:28px;object-fit:cover;object-position:60% 50%"></video>
+</section>
+
+<!-- LORA -->
+<section class="s">
+  <div class="hd">
+    <div><div class="t">Post-Training: LoRA</div></div>
+    <div class="nav"><span class="pill on">Post-training</span><span class="dot"></span><span class="pill">Detection</span></div>
+  </div>
+  <div style="display:grid;grid-template-columns:640px 1fr;gap:64px;margin-top:50px">
+    <div>
+      <div class="cap">Action error vs human demos</div>
+      <div style="display:flex;align-items:baseline;gap:28px;margin-top:24px">
+        <div class="n" style="font-size:110px;color:#b5b5b2">8.3°</div>
+        <div style="font-size:40px;color:var(--mute)">→</div>
+        <div class="n" style="font-size:110px">2.8°</div>
+      </div>
+      <div class="nl">zero-shot → fine-tuned, 3× more accurate</div>
+      <div style="margin-top:52px">
+        <div class="cap" style="margin-bottom:12px">What was trained</div>
+        <table style="width:100%;border-collapse:collapse;font-size:16px;font-weight:500">
+          <tr style="color:var(--mute);font-size:13px;letter-spacing:.06em;text-transform:uppercase"><td style="padding-bottom:8px">Component</td><td style="text-align:right">Params</td><td style="padding-left:26px">Mode</td><td style="text-align:right">Trainable</td></tr>
+          <tr style="border-top:1.5px solid var(--hair)"><td style="padding:9px 0">LLM attention + MLP</td><td style="text-align:right;color:var(--mute)">3,633M</td><td style="padding-left:26px;">LoRA</td><td style="text-align:right;">114M · 3.1%</td></tr><tr style="border-top:1.5px solid var(--hair)"><td style="padding:9px 0">Vision encoder attention + MLP</td><td style="text-align:right;color:var(--mute)">381M</td><td style="padding-left:26px;">LoRA</td><td style="text-align:right;">32M · 8.5%</td></tr><tr style="border-top:1.5px solid var(--hair)"><td style="padding:9px 0">Vision patch embedding</td><td style="text-align:right;color:var(--mute)">0.7M</td><td style="padding-left:26px;color:var(--mute)">Frozen</td><td style="text-align:right;"></td></tr><tr style="border-top:1.5px solid var(--hair)"><td style="padding:9px 0">Connector</td><td style="text-align:right;color:var(--mute)">57M</td><td style="padding-left:26px;">Full</td><td style="text-align:right;">100%</td></tr><tr style="border-top:1.5px solid var(--hair)"><td style="padding:9px 0">Action expert</td><td style="text-align:right;color:var(--mute)">578M</td><td style="padding-left:26px;">Full</td><td style="text-align:right;">100%</td></tr><tr style="border-top:1.5px solid var(--hair)"><td style="padding:9px 0">LLM final norm</td><td style="text-align:right;color:var(--mute)">2.6k</td><td style="padding-left:26px;">Full</td><td style="text-align:right;">100%</td></tr><tr style="border-top:1.5px solid var(--hair)"><td style="padding:9px 0">Embeddings, norms, positional</td><td style="text-align:right;color:var(--mute)">397M</td><td style="padding-left:26px;color:var(--mute)">Frozen</td><td style="text-align:right;"></td></tr><tr style="border-top:1.5px solid var(--hair)"><td style="padding:9px 0">LM head</td><td style="text-align:right;color:var(--mute)">396M</td><td style="padding-left:26px;color:var(--mute)">Frozen</td><td style="text-align:right;"></td></tr>
+          <tr style="border-top:1.5px solid var(--ink);font-weight:700"><td style="padding:10px 0">Total</td><td style="text-align:right">5,442M</td><td></td><td style="text-align:right">781M</td></tr>
+        </table>
+        <div class="nl" style="margin-top:16px">409 demos · 3 stages · 4× B300 · 8k steps</div>
+      </div>
+    </div>
+    <div class="panel" style="padding:40px;display:flex;flex-direction:column">
+      <div class="cap">Validation action error</div>
+      <img src="assets/lora-mse.png" style="width:100%;height:600px;object-fit:contain;margin-top:20px;mix-blend-mode:multiply;filter:grayscale(1) contrast(1.1)">
+    </div>
+  </div>
+  <div class="pg">02</div>
+</section>
+
+<!-- BEYOND -->
+<section class="s">
+  <div class="hd">
+    <div><div class="t">Post-Training: Beyond Imitation</div></div>
+    <div class="nav"><span class="pill on">Post-training</span><span class="dot"></span><span class="pill">Detection</span></div>
+  </div>
+  <div class="panel" style="margin-top:56px;padding:40px 0;display:grid;grid-template-columns:repeat(3,minmax(0,1fr))">
+    <div style="padding:0 40px">
+      <img src="assets/sim-overlay-2x2.jpg" class="ph" style="width:100%;aspect-ratio:4/3;height:auto">
+      <div class="cap" style="margin-top:30px">RL Residual</div>
+      <div class="body" style="margin-top:6px">A small network learns bounded corrections on top of the frozen policy.</div>
+      <div class="n" style="margin-top:30px">12.5% → 75%</div><div class="nl">first-attempt pick success in simulation</div>
+    </div>
+    <div style="padding:0 40px;border-left:1.5px solid var(--hair)">
+      <img src="assets/wsp.png" class="ph" style="width:100%;aspect-ratio:4/3;height:auto">
+      <div class="cap" style="margin-top:30px">WSP · Weight-Space Pickup</div>
+      <div class="body" style="margin-top:6px">A closed-form edit of the action head, with no gradient training.</div>
+      <div class="n" style="margin-top:30px">−24%</div><div class="nl">wrist error</div>
+    </div>
+    <div style="padding:0 40px;border-left:1.5px solid var(--hair)">
+      <img src="assets/sim-top.jpg" class="ph" style="width:100%;aspect-ratio:4/3;height:auto">
+      <div class="cap" style="margin-top:30px">Robustness in Sim</div>
+      <div class="body" style="margin-top:6px">A calibrated Isaac twin with randomised cameras, friction, mass and joints.</div>
+      <div class="n" style="margin-top:30px">20% → 80%</div><div class="nl">real demos replayed successfully</div>
+    </div>
+  </div>
+  <div class="pg">03</div>
+</section>
+
+<!-- ANOMALY -->
+<section class="s">
+  <div class="hd">
+    <div><div class="t">Anomaly Detection: Mixture-of-Experts Ensemble</div></div>
+    <div class="nav"><span class="pill">Post-training</span><span class="dot"></span><span class="pill on">Detection</span><span class="dot"></span><span class="pill">Runtime</span></div>
+  </div>
+  <div style="display:grid;grid-template-columns:1fr 470px;gap:32px;margin-top:44px">
+    <div class="panel" style="padding:44px 40px 28px"><svg viewBox="0 0 1220 500" width="100%" font-family="Avenir Next, Helvetica Neue, sans-serif"><defs><marker id="ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto"><path d="M0 0 L10 5 L0 10 z" fill="#1b1b1b"/></marker></defs><rect x="10" y="185" width="160" height="96" rx="16" fill="#ffffff" stroke="#1b1b1b" stroke-width="1.5"/><text x="90.0" y="229.0" text-anchor="middle" font-size="22" font-weight="600" fill="#1b1b1b">Inspection</text><text x="90.0" y="257.0" text-anchor="middle" font-size="16" font-weight="500" fill="#7a7a78">camera frame</text><rect x="225" y="185" width="190" height="96" rx="16" fill="#ffffff" stroke="#1b1b1b" stroke-width="1.5"/><text x="320.0" y="229.0" text-anchor="middle" font-size="22" font-weight="600" fill="#1b1b1b">YOLO detector</text><text x="320.0" y="257.0" text-anchor="middle" font-size="16" font-weight="500" fill="#7a7a78">crops held brick</text><text x="225" y="173" font-size="14" font-weight="700" letter-spacing="1.5" fill="#7a7a78">EXPERT 1</text><rect x="480" y="60" width="240" height="96" rx="16" fill="#ffffff" stroke="#1b1b1b" stroke-width="1.5"/><text x="600.0" y="104.0" text-anchor="middle" font-size="22" font-weight="600" fill="#1b1b1b">Anomalib PatchCore</text><text x="600.0" y="132.0" text-anchor="middle" font-size="16" font-weight="500" fill="#7a7a78">is it marked?</text><text x="480" y="48" font-size="14" font-weight="700" letter-spacing="1.5" fill="#7a7a78">EXPERT 2</text><rect x="480" y="310" width="240" height="96" rx="16" fill="#ffffff" stroke="#1b1b1b" stroke-width="1.5"/><text x="600.0" y="354.0" text-anchor="middle" font-size="22" font-weight="600" fill="#1b1b1b">YOLO classifier</text><text x="600.0" y="382.0" text-anchor="middle" font-size="16" font-weight="500" fill="#7a7a78">normal · marked</text><text x="480" y="298" font-size="14" font-weight="700" letter-spacing="1.5" fill="#7a7a78">EXPERT 3</text><rect x="785" y="185" width="170" height="96" rx="16" fill="#1b1b1b" stroke="#1b1b1b" stroke-width="1.5"/><text x="870.0" y="229.0" text-anchor="middle" font-size="22" font-weight="600" fill="#ffffff">Confidence</text><text x="870.0" y="257.0" text-anchor="middle" font-size="16" font-weight="500" fill="#bdbdbb">gate</text><path d="M170 233 L221 233" fill="none" stroke="#1b1b1b" stroke-width="1.6"  marker-end="url(#ah)"/><path d="M415 233 C445 233 445 108 476 108" fill="none" stroke="#1b1b1b" stroke-width="1.6"  marker-end="url(#ah)"/><path d="M415 233 C445 233 445 358 476 358" fill="none" stroke="#1b1b1b" stroke-width="1.6"  marker-end="url(#ah)"/><path d="M720 108 C752 108 752 233 781 233" fill="none" stroke="#1b1b1b" stroke-width="1.6"  marker-end="url(#ah)"/><path d="M720 358 C752 358 752 233 781 233" fill="none" stroke="#1b1b1b" stroke-width="1.6"  marker-end="url(#ah)"/><rect x="1030" y="150" width="180" height="56" rx="28" fill="#fff" stroke="#d9d9d6" stroke-width="1.5"/><circle cx="1058" cy="178" r="8" fill="#6fcf97"/><text x="1076" y="185" font-size="20" font-weight="600" fill="#1b1b1b">Normal</text><path d="M955 233 C990 233 990 178 1026 178" fill="none" stroke="#1b1b1b" stroke-width="1.6"  marker-end="url(#ah)"/><rect x="1030" y="260" width="180" height="56" rx="28" fill="#fff" stroke="#d9d9d6" stroke-width="1.5"/><circle cx="1058" cy="288" r="8" fill="#eb5757"/><text x="1076" y="295" font-size="20" font-weight="600" fill="#1b1b1b">Marked</text><path d="M955 233 C990 233 990 288 1026 288" fill="none" stroke="#1b1b1b" stroke-width="1.6"  marker-end="url(#ah)"/><path d="M870 281 L870 460 L90 460 L90 285" fill="none" stroke="#1b1b1b" stroke-width="1.6" stroke-dasharray="6 6" marker-end="url(#ah)"/><text x="480" y="485" text-anchor="middle" font-size="16" font-weight="500" fill="#7a7a78">experts disagree or unsure → spin and re-inspect</text></svg></div>
+    <div class="panel" style="padding:32px 30px;display:flex;flex-direction:column;justify-content:center;gap:48px"><div><div class="cap" style="margin-bottom:12px">Normal</div><div style="display:grid;grid-template-columns:repeat(3,1fr);gap:10px"><img src="assets/crops/plain_0.jpg" style="width:100%;aspect-ratio:1;object-fit:cover;border-radius:10px"><img src="assets/crops/plain_1.jpg" style="width:100%;aspect-ratio:1;object-fit:cover;border-radius:10px"><img src="assets/crops/plain_2.jpg" style="width:100%;aspect-ratio:1;object-fit:cover;border-radius:10px"></div></div><div><div class="cap" style="margin-bottom:12px">Marked</div><div style="display:grid;grid-template-columns:repeat(3,1fr);gap:10px"><img src="assets/crops/circle_0.jpg" style="width:100%;aspect-ratio:1;object-fit:cover;border-radius:10px"><img src="assets/crops/cross_0.jpg" style="width:100%;aspect-ratio:1;object-fit:cover;border-radius:10px"><img src="assets/crops/cross_1.jpg" style="width:100%;aspect-ratio:1;object-fit:cover;border-radius:10px"></div></div></div>
+  </div>
+  <div class="stats" style="margin-top:56px">
+    <div><div class="n">77.2%</div><div class="nl">YOLO bounding-box mAP</div></div>
+    <div><div class="n">88%</div><div class="nl">defect classification accuracy</div></div>
+    <div><div class="n">92%</div><div class="nl">ensemble accuracy, unsure → re-inspect</div></div>
+    <div><div class="n">6 ms</div><div class="nl">per frame on the NPU</div></div>
+  </div>
+  <div class="pg">04</div>
+</section>
+
+<!-- RUNTIME -->
+<section class="s">
+  <div class="hd">
+    <div><div class="t">Runtime Optimisation</div></div>
+    <div class="nav"><span class="pill">Detection</span><span class="dot"></span><span class="pill on">Runtime</span><span class="dot"></span><span class="pill">Studio</span></div>
+  </div>
+  <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:32px;margin-top:48px">
+    <div class="panel" style="padding:34px 36px"><div class="cap">Latency per chunk</div><div class="nl" style="margin-top:4px">ms, lower is better</div><div class="vchart" id="c-lat"></div></div>
+    <div class="panel" style="padding:34px 36px"><div class="cap">Speed-up vs baseline</div><div class="nl" style="margin-top:4px">×, higher is better</div><div class="vchart" id="c-spd"></div></div>
+    <div class="panel" style="padding:34px 36px"><div class="cap">Energy per chunk</div><div class="nl" style="margin-top:4px">joules, lower is better</div><div class="vchart" id="c-nrg"></div>
+      <div style="display:flex;gap:22px;margin-top:14px;font-size:14px;color:var(--mute);font-weight:500"><span><span style="display:inline-block;width:10px;height:10px;border-radius:2px;background:#1b1b1b;margin-right:6px"></span>CPU package</span><span><span style="display:inline-block;width:10px;height:10px;border-radius:2px;background:#b5b5b2;margin-right:6px"></span>Whole platform</span></div></div>
+  </div>
+  <div class="stats" style="margin-top:48px">
+    <div><div class="n">34×</div><div class="nl">faster · 10.8 s → 313 ms</div></div>
+    <div><div class="n">36×</div><div class="nl">less energy · 437 J → 12 J</div></div>
+    <div><div class="n">0</div><div class="nl">stalls in the 30 Hz control loop</div></div>
+  </div>
+  <div class="pg">05</div>
+</section>
+
+<!-- LOOP + STUDIO -->
+<section class="s">
+  <div class="hd">
+    <div><div class="t">Closed Loop &amp; Physical AI Studio</div></div>
+    <div class="nav"><span class="pill">Detection</span><span class="dot"></span><span class="pill">Runtime</span><span class="dot"></span><span class="pill on">Studio</span></div>
+  </div>
+  <div style="display:grid;grid-template-columns:1fr 1fr;gap:56px;margin-top:56px">
+    <div class="panel" style="padding:20px 48px;display:flex;flex-direction:column"><div style="flex:1;display:grid;grid-template-columns:120px 1fr;align-items:center;"><span style="font-size:30px;font-weight:700;letter-spacing:.06em">GPU</span><div><div style="font-size:30px;font-weight:600">VLA policy</div><div class="body" style="margin-top:6px;font-size:18px">Fine-tuned MolmoAct2 on OpenVINO · 313 ms per chunk</div></div></div><div style="flex:1;display:grid;grid-template-columns:120px 1fr;align-items:center;border-top:1.5px solid var(--hair);"><span style="font-size:30px;font-weight:700;letter-spacing:.06em">NPU</span><div><div style="font-size:30px;font-weight:600">Mixture-of-experts ensemble</div><div class="body" style="margin-top:6px;font-size:18px">Detector, PatchCore and classifier · 6 ms per frame</div></div></div><div style="flex:1;display:grid;grid-template-columns:120px 1fr;align-items:center;border-top:1.5px solid var(--hair);"><span style="font-size:30px;font-weight:700;letter-spacing:.06em">CPU</span><div><div style="font-size:30px;font-weight:600">Control and reasoning</div><div class="body" style="margin-top:6px;font-size:18px">30 Hz servo loop and sorting rules</div></div></div></div>
+    <div class="panel" style="padding:44px 48px;display:flex;flex-direction:column;justify-content:space-between">
+      <img src="assets/studio.png" class="ph" style="width:100%;height:auto;border-radius:14px;margin-bottom:18px">
+      <div><div style="display:grid;grid-template-columns:120px 1fr;padding:11px 0;border-top:1.5px solid var(--hair);align-items:baseline"><span class="cap">Configure</span><span class="body" style="font-size:16px">The robot, three cameras and environment are set up in one Studio project</span></div><div style="display:grid;grid-template-columns:120px 1fr;padding:11px 0;border-top:1.5px solid var(--hair);align-items:baseline"><span class="cap">Dataset</span><span class="body" style="font-size:16px">Our 456-episode teleop dataset is imported and versioned</span></div><div style="display:grid;grid-template-columns:120px 1fr;padding:11px 0;border-top:1.5px solid var(--hair);align-items:baseline"><span class="cap">Train</span><span class="body" style="font-size:16px">MolmoAct2 is fine-tuned with Studio's training library</span></div><div style="display:grid;grid-template-columns:120px 1fr;padding:11px 0;border-top:1.5px solid var(--hair);align-items:baseline"><span class="cap">Export</span><span class="body" style="font-size:16px">Studio's OpenVINO exporter builds the GPU model</span></div><div style="display:grid;grid-template-columns:120px 1fr;padding:11px 0;border-top:1.5px solid var(--hair);align-items:baseline"><span class="cap">Deploy</span><span class="body" style="font-size:16px">The run-time loop loads the policy by its Studio model ID</span></div></div>
+    </div>
+  </div>
+  </div>
+  <div class="pg">06</div>
+</section>
+
+</div></div>
+<script src="vendor/reveal.js/reveal.js"></script>
+<script>
+  function vchart(id, groups, unit, max, fmt){
+    const H=300;
+    let h=`<div style="display:flex;align-items:flex-end;justify-content:space-around;height:${H+40}px;margin-top:28px;border-bottom:1.5px solid #1b1b1b;gap:14px">`;
+    for(const g of groups){
+      h+=`<div style="display:flex;align-items:flex-end;gap:6px">`;
+      for(const [v,c] of g.bars){const bh=Math.max(v/max*H,3);h+=`<div style="display:flex;flex-direction:column;align-items:center;justify-content:flex-end"><div style="font-size:16px;font-weight:600;margin-bottom:6px;white-space:nowrap">${fmt(v)}</div><div style="width:${g.bars.length>1?40:62}px;height:${bh}px;background:${c};border-radius:6px 6px 0 0"></div></div>`;}
+      h+=`</div>`;
+    }
+    h+=`</div><div style="display:flex;justify-content:space-around;gap:14px;margin-top:10px">`;
+    for(const g of groups) h+=`<div style="font-size:14px;color:#7a7a78;font-weight:500;text-align:center;width:${100/groups.length}%;line-height:1.3">${g.label}</div>`;
+    document.getElementById(id).innerHTML=h+`</div>`;
+  }
+  const D="#1b1b1b", G="#b5b5b2";
+  vchart("c-lat",[{label:"PyTorch<br>CPU",bars:[[10770,G]]},{label:"OpenVINO<br>FP16",bars:[[362,G]]},{label:"+ RTC<br>deployed",bars:[[313,D]]}],"ms",10770,v=>v.toLocaleString());
+  vchart("c-spd",[{label:"PyTorch<br>CPU",bars:[[1,G]]},{label:"OpenVINO<br>FP16",bars:[[29.8,G]]},{label:"+ RTC<br>deployed",bars:[[34.4,D]]}],"×",34.4,v=>v+"×");
+  vchart("c-nrg",[{label:"Baseline<br>PyTorch CPU",bars:[[436.9,D],[580.2,G]]},{label:"Deployed<br>OpenVINO GPU",bars:[[12.1,D],[16.2,G]]}],"J",580.2,v=>Math.round(v*10)/10+" J");
+
+  if (location.search.includes('pdf')) { const r=document.querySelector('.reveal'); r.className=''; r.firstElementChild.className=''; }
+  else Reveal.initialize({width:1920,height:1080,margin:0,minScale:0.1,maxScale:3,center:false,hash:true,controls:true,progress:true,slideNumber:false,transition:'fade',transitionSpeed:'fast',pdfMaxPagesPerSlide:1});
+</script>
+</body>
+</html>
