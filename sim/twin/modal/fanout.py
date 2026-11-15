@@ -187,7 +187,9 @@ def job(spec: dict) -> dict:
     time.sleep(1.1)  # out files from the snapshot keep their mtimes; anything newer than the marker is the job's
     cmd, cenv = _command(spec["cmd"])
     env = {"PYTHONPATH": WORK, "HF_HOME": HF, "HF_HUB_OFFLINE": "1",
-           "DLSJ_KIT_ARGS": "--/app/useFabricSceneDelegate=false --/rtx/hydra/readTransformsFromFabricInRenderDelegate=false",  # the twin's render path
+           # the twin's render path (Fabric scene delegate off + VisualSync)
+           "DLSJ_KIT_ARGS": "--/app/useFabricSceneDelegate=false "
+                            "--/rtx/hydra/readTransformsFromFabricInRenderDelegate=false",
            **EULA, **cenv, **(spec.get("env") or {})}
     dst.mkdir(parents=True, exist_ok=True)
     log = Path("/tmp/stdout.log")

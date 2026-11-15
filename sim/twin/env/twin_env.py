@@ -136,7 +136,8 @@ def launch_app(headless: bool = True, cameras: bool = True):
         pass
     # the twin's validated render path: Fabric scene delegate OFF + VisualSync (sim/twin/visuals/usd_sync.py).
     # sim/residual_env/app.py defaults to the delegate ON for the residual env; the twin pins its own flags.
-    os.environ.setdefault("DLSJ_KIT_ARGS", "--/app/useFabricSceneDelegate=false --/rtx/hydra/readTransformsFromFabricInRenderDelegate=false")
+    os.environ.setdefault("DLSJ_KIT_ARGS", "--/app/useFabricSceneDelegate=false "
+                          "--/rtx/hydra/readTransformsFromFabricInRenderDelegate=false")
     from app import KIT_ARGS
     from isaaclab.app import AppLauncher
 
