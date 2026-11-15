@@ -79,6 +79,9 @@ class TwinEnvCfg:
     max_relative_target: float = 10.0  # LeRobot clamp, units per tick (1000 = off, as in teleop replays)
     meas_noise: bool = False  # Gaussian state noise; off: the play model's quantised encoder replaces it
     play: bool = True  # joint play / hold band / sag / encoder model fitted from data (sim/twin/dynamics)
+    # PlayCfg overrides, e.g. {"controller_delay": True} when TwinEnv stands in for the deployed VLA controller
+    # (+1 tick on pan / wrist_flex / wrist_roll, fitted on its traces); teleop replays keep the default (no delay)
+    play_cfg: dict = field(default_factory=dict)
     settle_ticks: int = 4  # physics ticks after a reset (bricks drop 0.5 mm, arm holds) before the first obs
     # scene
     layout: str = "sample"  # "sample": residual env layout distributions (seeded) | "nominal": fixed layout
@@ -286,7 +289,7 @@ class TwinEnv:
         if cfg.play:
             from sim.twin.dynamics.play import PlayCfg, install
 
-            self.play = install(self.residual, PlayCfg())
+            self.play = install(self.residual, PlayCfg(**cfg.play_cfg))
 
         self.bricks = None
         if cfg.bricks == "data" and not cfg.target_size:
