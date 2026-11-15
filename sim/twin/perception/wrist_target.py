@@ -70,7 +70,7 @@ class WristCamera:
     def __init__(
         self,
         offsets_rad=None,
-        tip_local=(0.008, 0.0, -0.090),
+        tip_local=(0.0063, 0.001, -0.0902),  # the fin-ray grasp point (physics apply.tip_local, rl/DEPLOY.md)
         grip_scale: float = 0.02406,
         grip_bias: float = -0.1183,
         urdf: str | Path = URDF,
@@ -79,7 +79,9 @@ class WristCamera:
         cover_weight: float = 0.0,
     ):
         if offsets_rad is None:
-            offsets_rad = json.loads(Path(OFFSETS_JSON).read_text())["joint_offsets_rad_for_sim"][:5]
+            res = json.loads(Path(OFFSETS_JSON).read_text())  # the twin's default: W9, else fit W
+            offsets_rad = (res.get("grasp_depth_candidates", {}).get("W9", {}).get("joint_offsets_rad_for_sim")
+                           or res["joint_offsets_rad_for_sim"])[:5]
         self.off = np.asarray(offsets_rad[:5], float)
         self.T = _chain(str(urdf))
         c = json.loads(Path(wrist_json).read_text())["camera"]

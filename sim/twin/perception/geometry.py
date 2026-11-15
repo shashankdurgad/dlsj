@@ -78,16 +78,23 @@ def _rpy(r, p, y):
 
 
 def default_offsets() -> list:
-    """Twin joint offsets (rad): align/joint_fit/result.json (the twin profile's default), else joe_cal2."""
+    """Twin joint offsets (rad): the twin profile's default (W9 from align/joint_fit/result.json, W if absent).
+    DLSJ_JOINT_OFFSETS=joe_cal2 selects joe_cal2's explicitly; a missing result.json is an error, never a silent
+    fallback."""
+    import os
+
+    if os.environ.get("DLSJ_JOINT_OFFSETS") == "joe_cal2":
+        import sys
+
+        sys.path.insert(0, str(REPO / "sim/residual_env"))
+        from calib import load_profile
+
+        return list(load_profile("joe_cal2").joint_offsets)
     p = REPO / "sim/twin/align/joint_fit/result.json"
-    if p.exists():
-        return [float(v) for v in json.loads(p.read_text())["joint_offsets_rad_for_sim"][:5]] + [0.0]
-    import sys
-
-    sys.path.insert(0, str(REPO / "sim/residual_env"))
-    from calib import load_profile
-
-    return list(load_profile("joe_cal2").joint_offsets)
+    res = json.loads(p.read_text())  # FileNotFoundError if missing
+    rad = res.get("grasp_depth_candidates", {}).get("W9", {}).get("joint_offsets_rad_for_sim") \
+        or res["joint_offsets_rad_for_sim"]
+    return [float(v) for v in rad[:5]] + [0.0]
 
 
 @lru_cache(maxsize=1)

@@ -40,6 +40,7 @@ Physics hooks: sim/twin/physics/apply.py `patch_scene_cfg(scene_cfg, profile)` b
 from __future__ import annotations
 
 import importlib
+import os
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -86,7 +87,9 @@ class TwinEnvCfg:
     start_jitter_deg: float = 1.0
     spread_plates: bool = True  # re-sample the plates without overlap (the residual env's sampler lets them overlap)
     scene_params: str = str(REPO / "sim/realism/scene_params.json")
-    servo_params: str = str(REPO / "sim/realism/servo_params.json")
+    # servo model: the twin fit (sim/twin/servo_fit/: gripper close rate fitted on real traces) when present
+    servo_params: str = str(REPO / "sim/twin/servo_fit/servo_params_fit.json") if (
+        REPO / "sim/twin/servo_fit/servo_params_fit.json").exists() else str(REPO / "sim/realism/servo_params.json")
     target_size: tuple | None = None  # e.g. (0.0636, 0.0318, 0.0192) for a 2x4 target
     look: Any = None  # visuals.twin_scene.TwinLook (None = default)
     finger_pads: bool = True  # the residual env's box finger pads (its grasp model)
@@ -234,7 +237,10 @@ class TwinEnv:
                     self._physics.patch_profile(self.profile)
                 if hasattr(self._physics, "patch_scene_cfg"):
                     scfg = self._physics.patch_scene_cfg(scfg, self.profile) or scfg
-            except Exception as e:  # noqa: BLE001
+            except Exception as e:
+                # a failed physics patch leaves the stock gripper bias / pad tip / contacts: never silently
+                if os.environ.get("DLSJ_ALLOW_PHYSICS_FAIL") != "1":
+                    raise
                 print(f"[TwinEnv] WARNING: physics patch_scene_cfg failed ({type(e).__name__}: {e})", flush=True)
         self.scene_cfg = scfg
         self.scene = InteractiveScene(scfg)
@@ -255,7 +261,9 @@ class TwinEnv:
         if self._physics is not None and hasattr(self._physics, "post_spawn"):
             try:
                 self.physics_info = self._physics.post_spawn(self)
-            except Exception as e:  # noqa: BLE001
+            except Exception as e:
+                if os.environ.get("DLSJ_ALLOW_PHYSICS_FAIL") != "1":
+                    raise
                 print(f"[TwinEnv] WARNING: physics post_spawn failed ({type(e).__name__}: {e})", flush=True)
         self.sim.reset()
         self.scene.reset()

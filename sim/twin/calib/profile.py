@@ -67,8 +67,8 @@ def joint_offsets() -> list | None:
     if which == "joe_cal2":
         return None
     path = REPO / "sim/twin/align/joint_fit/result.json"
-    if not path.exists():
-        return None
+    if not path.exists():  # never silently fall back to joe_cal2's offsets (set DLSJ_JOINT_OFFSETS=joe_cal2 for that)
+        raise FileNotFoundError(f"{path} missing: the twin's joint offsets come from it")
     res = json.loads(path.read_text())
     if which == "W9" and "W9" in res.get("grasp_depth_candidates", {}):
         rad = res["grasp_depth_candidates"]["W9"]["joint_offsets_rad_for_sim"]
