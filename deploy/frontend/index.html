@@ -3,69 +3,212 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Station</title>
+<title>Sorting cell</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Barlow:wght@300;400&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Geist:wght@300..600&display=swap" rel="stylesheet">
 <style>
-:root{--bg:#000;--fg:#fff;--muted:#8c8c8c;--line:#222;--pad:clamp(16px,2vw,32px)}
+:root{
+  --bg:#000;--fg:#fff;--soft:rgba(255,255,255,.66);--faint:rgba(255,255,255,.36);--hair:rgba(255,255,255,.12);
+  --glass:rgba(10,10,10,.5);--pad:clamp(16px,1.8vw,30px);--amb:transparent;
+  --cpu:#ffffff;--gpu:#7fb6ff;--npu:#7ff0c4;
+}
 *{box-sizing:border-box;margin:0;padding:0}
-html,body{height:100%;background:var(--bg);color:var(--fg)}
-body{font-family:"Barlow",system-ui,sans-serif;font-weight:300;font-variant-numeric:tabular-nums;
-  -webkit-font-smoothing:antialiased;display:grid;grid-template-rows:1fr auto;height:100vh}
-.view{position:relative;overflow:hidden;min-height:0}
-.view img{position:absolute;inset:0;width:100%;height:100%;object-fit:contain;opacity:0;transition:opacity .8s}
-.view img.live{opacity:1}
-.bar{display:flex;align-items:baseline;gap:clamp(24px,4vw,64px);padding:var(--pad);border-top:1px solid var(--line)}
-.stage{flex:1;font-size:clamp(20px,2vw,30px)}
-.n{font-size:clamp(28px,3vw,46px);line-height:1}
-.n small{font-size:.42em;color:var(--muted);margin-left:6px}
-.dot{width:9px;height:9px;border-radius:50%;background:var(--fg);align-self:center}
-body.offline .dot{background:none;border:1px solid var(--muted)}
-body.offline .stage,body.offline .n{color:var(--muted)}
-@media (prefers-reduced-motion:reduce){*{transition:none!important}}
+html,body{height:100%;background:var(--bg);color:var(--fg);overflow:hidden}
+body{font-family:"Geist",system-ui,sans-serif;font-variant-numeric:tabular-nums;-webkit-font-smoothing:antialiased}
+button{font:inherit;color:inherit}
+
+.twin{position:fixed;inset:0}
+.twin img{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;opacity:0;transition:opacity 1s}
+.twin img.live{opacity:1}
+.twin::after{content:"";position:absolute;inset:0;pointer-events:none;
+  background:linear-gradient(to bottom,rgba(0,0,0,.6),transparent 16%,transparent 58%,rgba(0,0,0,.85))}
+.ambient{position:fixed;inset:0;pointer-events:none;box-shadow:inset 0 0 180px -50px var(--amb);transition:box-shadow 1.8s}
+.glass{background:var(--glass);backdrop-filter:blur(20px) saturate(150%);-webkit-backdrop-filter:blur(20px) saturate(150%);
+  border:1px solid var(--hair)}
+
+/* top line */
+.top{position:fixed;top:var(--pad);left:var(--pad);right:var(--pad);display:flex;align-items:center;gap:16px}
+.model{font-size:16px;font-weight:500}
+.model span{color:var(--faint);font-weight:400;margin-left:8px}
+.spacer{flex:1}
+.status{display:flex;align-items:center;gap:8px;font-size:14px;color:var(--soft)}
+.status i{width:8px;height:8px;border-radius:50%;background:var(--faint)}
+.status.on i{background:var(--fg);animation:pulse 2s ease-in-out infinite}
+@keyframes pulse{0%,100%{box-shadow:0 0 0 0 rgba(255,255,255,.4)}60%{box-shadow:0 0 0 8px rgba(255,255,255,0)}}
+.ctl{display:flex;gap:4px;padding:4px;border-radius:14px}
+.ctl button{width:42px;height:38px;border:0;border-radius:10px;background:transparent;cursor:pointer;display:grid;place-items:center}
+.ctl button:hover{background:rgba(255,255,255,.09)}
+.ctl button:focus-visible{outline:2px solid var(--fg);outline-offset:2px}
+.ctl button[hidden]{display:none}
+.ctl svg{width:15px;height:15px;fill:var(--fg)}
+.ctl .stop{background:var(--fg)}.ctl .stop:hover{background:#ddd}.ctl .stop svg{fill:#000}
+
+/* reality, next to its twin */
+.real{position:fixed;top:calc(var(--pad) + 58px);right:var(--pad);width:clamp(220px,20vw,320px);aspect-ratio:4/3;
+  border-radius:14px;overflow:hidden}
+.real img{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;opacity:0;transition:opacity .6s}
+.real img.live{opacity:1}
+.real svg{position:absolute;inset:0;width:100%;height:100%}
+.box{fill:none;stroke-width:6}.plate{fill:none;stroke-width:4;stroke-dasharray:10 10;opacity:.8}
+.tgt{fill:none;stroke:var(--fg);stroke-width:7}.held{fill:none;stroke:var(--fg);stroke-width:7}
+
+/* bottom: numbers | loop + ledger | silicon */
+.bottom{position:fixed;left:var(--pad);right:var(--pad);bottom:var(--pad);display:grid;
+  grid-template-columns:auto 1fr auto;align-items:end;gap:clamp(24px,3.5vw,64px)}
+.rate{font-size:clamp(60px,7vw,116px);font-weight:300;line-height:.82;letter-spacing:-.035em}
+.rate small{font-size:.2em;letter-spacing:0;color:var(--soft);font-weight:400;margin-left:8px}
+.sub{display:flex;gap:22px;margin-top:14px;font-size:15px;color:var(--soft)}
+.sub b{color:var(--fg);font-weight:400}
+
+.center{display:flex;flex-direction:column;gap:18px;min-width:0}
+.loop{display:flex;align-items:center;gap:0}
+.st{display:flex;align-items:center;gap:10px;font-size:15px;color:var(--faint);transition:color .4s}
+.st i{width:10px;height:10px;border-radius:50%;border:1.5px solid currentColor;transition:all .4s}
+.st.done{color:var(--soft)}.st.done i{background:currentColor}
+.st.now{color:var(--fg)}.st.now i{background:var(--tint);border-color:var(--tint);box-shadow:0 0 14px var(--tint)}
+.st+.st::before{content:"";width:clamp(18px,3vw,56px);height:1px;background:var(--hair);margin:0 12px}
+.ledger{display:flex;gap:7px;align-items:flex-end;min-height:34px;overflow:hidden}
+.tile{flex:none;display:flex;flex-direction:column;gap:4px;animation:in .5s ease-out}
+@keyframes in{from{transform:translateY(10px);opacity:0}}
+.tile .b{width:26px;height:26px;border-radius:6px;display:grid;place-items:center}
+.tile .b svg{width:14px;height:14px;stroke:rgba(0,0,0,.75);stroke-width:2.4;fill:none}
+.tile .w{height:3px;border-radius:2px}
+
+.silicon{display:grid;grid-template-columns:auto 120px auto;gap:6px 12px;align-items:center;font-size:12px;color:var(--soft)}
+.silicon svg{width:120px;height:20px;overflow:visible}
+.silicon .pct{font-size:13px;color:var(--fg);min-width:3ch;text-align:right}
+.silicon .lbl{letter-spacing:.06em}
+
+body.offline .bottom,body.offline .real{opacity:.45}
+@media (max-width:900px){.bottom{grid-template-columns:1fr;gap:18px}.silicon{display:none}}
+@media (prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
 </style>
 </head>
 <body class="offline">
-<div class="view"><img id="twin" alt="Digital twin"><img id="cam" alt="Top camera"></div>
-<div class="bar">
-  <span class="stage" id="stage"></span>
-  <span class="n" id="sorted">0<small>sorted</small></span>
-  <span class="n" id="rate">–<small>/min</small></span>
-  <span class="dot"></span>
-</div>
+<div class="twin"><img id="cam0" alt="Top camera"><img id="twin" alt="Digital twin"></div>
+<div class="ambient"></div>
+
+<header class="top">
+  <div class="model" id="model"></div>
+  <div class="spacer"></div>
+  <div class="status" id="status"><i></i><span id="statusText">Offline</span></div>
+  <div class="ctl glass" role="group" aria-label="Loop controls">
+    <button id="bStart" aria-label="Start" title="Start"><svg viewBox="0 0 16 16"><path d="M4 2.5v11l9.5-5.5z"/></svg></button>
+    <button id="bPause" aria-label="Pause" title="Pause" hidden><svg viewBox="0 0 16 16"><rect x="3.5" y="2.5" width="3" height="11" rx=".6"/><rect x="9.5" y="2.5" width="3" height="11" rx=".6"/></svg></button>
+    <button id="bHome" aria-label="Home" title="Home"><svg viewBox="0 0 16 16"><path d="M8 2 1.5 7.5h2V14h3.5v-4h2v4h3.5V7.5h2z"/></svg></button>
+    <button id="bStop" class="stop" aria-label="Stop" title="Stop"><svg viewBox="0 0 16 16"><rect x="3" y="3" width="10" height="10" rx="1.4"/></svg></button>
+  </div>
+</header>
+
+<div class="real glass"><img id="real" alt="Camera"><svg id="ovl" viewBox="0 0 640 480" preserveAspectRatio="xMidYMid slice"></svg></div>
+
+<footer class="bottom">
+  <div>
+    <div class="rate"><span id="rate">–</span><small>/min</small></div>
+    <div class="sub"><span><b id="sorted">0</b> sorted</span><span><b id="lat">–</b> ms</span></div>
+  </div>
+  <div class="center">
+    <div class="loop" id="loop"></div>
+    <div class="ledger" id="ledger"></div>
+  </div>
+  <div class="silicon" id="silicon"></div>
+</footer>
+
 <script>
 const $=id=>document.getElementById(id);
-const STEP={survey:'Survey',verify:'Survey',pick:'Pick',grasp:'Pick',bring:'Bring',tune:'Bring',inspect:'Inspect',
-  inspecting:'Inspect',spin:'Inspect',place:'Place',release:'Place',idle:'Idle',done:'Done',paused:'Paused'};
-let twinLive=false;
+const COL={blue:'#3d7be0',brown:'#a0682f',red:'#e04545',white:'#f2f2f2',yellow:'#f2c230',purple:'#9b7fe0',orange:'#f08a24'};
+const CHIP={cpu:'var(--cpu)',gpu:'var(--gpu)',npu:'var(--npu)'};
+const STAGES=[['perceive','Perceive'],['pick','Pick'],['inspect','Inspect'],['place','Place']];
+const STAGE_OF={survey:'perceive',verify:'perceive',done:'perceive',home:'perceive',pick:'pick',bring:'inspect',tune:'inspect',
+  inspect:'inspect',place:'place',release:'place'};
+// which silicon is doing the work in each step: the VLA moves the arm on the GPU, YOLO looks on the NPU
+const SILICON={survey:'npu',verify:'npu',done:'npu',home:'cpu',pick:'gpu',bring:'gpu',tune:'cpu',inspect:'npu',place:'gpu',release:'gpu'};
+const MARK_OF_BOWL={yellow:'',orange:'circle',purple:'cross'};
+let cfg={}, twinLive=false, ledgerN=0;
+
+$('loop').innerHTML=STAGES.map(([k,n])=>`<span class="st" data-k="${k}"><i></i>${n}</span>`).join('');
+$('silicon').innerHTML=['cpu','gpu','npu'].map(k=>`<span class="lbl" style="color:${CHIP[k]}">${k.toUpperCase()}</span>
+  <svg viewBox="0 0 120 20" preserveAspectRatio="none"><path id="a-${k}" fill="${CHIP[k]}" opacity=".18"/><polyline id="l-${k}" fill="none" stroke="${CHIP[k]}" stroke-width="1.3"/></svg>
+  <span class="pct" id="p-${k}">–</span>`).join('');
+
 function stream(img,url){if(!url)return;
-  img.onload=()=>{img.classList.add('live');if(img.id==='twin'){twinLive=true;$('cam').style.display='none'}};
-  img.onerror=()=>{img.classList.remove('live');if(img.id==='twin'){twinLive=false;$('cam').style.display=''}
+  img.onload=()=>{img.classList.add('live');if(img.id==='twin')twinLive=true};
+  img.onerror=()=>{img.classList.remove('live');if(img.id==='twin')twinLive=false;
     setTimeout(()=>{img.src=url+(url.includes('?')?'&':'?')+'r='+Date.now()},3000)};
   img.src=url}
+const svg=(t,a)=>{const e=document.createElementNS('http://www.w3.org/2000/svg',t);for(const k in a)e.setAttribute(k,a[k]);return e};
+const corners=([x0,y0,x1,y1],k=20)=>svg('path',{class:'tgt',
+  d:`M${x0} ${y0+k}V${y0}H${x0+k}M${x1-k} ${y0}H${x1}V${y0+k}M${x1} ${y1-k}V${y1}H${x1-k}M${x0+k} ${y1}H${x0}V${y1-k}`});
+const markSvg=m=>m==='circle'?'<svg viewBox="0 0 14 14"><circle cx="7" cy="7" r="4.2"/></svg>':
+  m==='cross'?'<svg viewBox="0 0 14 14"><path d="M3.5 3.5l7 7M10.5 3.5l-7 7"/></svg>':'';
+
+function modelName(p){if(!p)return'';const s=`${p.name||''} ${p.policy||''}`.toLowerCase();
+  const fam=s.includes('molmo')?'MolmoAct2':s.includes('pi0')?'π0.5':s.includes('smol')?'SmolVLA':s.includes('diffusion')?'Diffusion Policy':(p.policy||'');
+  const m=(p.name||'').match(/(\d+(?:\.\d+)?)\s*k\b/i)||(p.name||'').match(/step[_ -]?0*(\d+)/i);
+  const st=m?(/k/i.test(m[0])?m[1]+'k':(Math.round(+m[1]/100)/10)+'k'):'';
+  return fam?`${fam}<span>${st}</span>`:''}
+
+function lane(k,h){const v=(h||[]).map(x=>x==null?0:x), n=v.length;if(!n)return;
+  const pts=v.map((x,i)=>`${(i/(Math.max(n,60)-1))*120},${19-x*18}`);
+  $('l-'+k).setAttribute('points',pts.join(' '));
+  $('a-'+k).setAttribute('d',`M0 20L${pts.join('L')}L${((n-1)/(Math.max(n,60)-1))*120} 20Z`);
+  const last=h[h.length-1];$('p-'+k).textContent=last==null?'–':Math.round(last*100)+'%'}
+
 function render(s){
-  const age=(s.link||{}).age_s;document.body.classList.toggle('offline',age==null||age>2);
-  const L=s.loop||{};
-  const stage=STEP[L.step]||(s.phase==='running'?{pick:'Pick',bring:'Bring',place:'Place'}[s.stage]:s.phase==='stopped'?'Stopped':'Idle');
-  $('stage').textContent=stage||'';
-  const sorted=Object.values(L.tallies||{}).reduce((a,b)=>a+b,0);
-  $('sorted').firstChild.nodeValue=sorted;
-  const mins=L.started&&s.now?(s.now-L.started)/60:0;
-  $('rate').firstChild.nodeValue=mins>0.5&&sorted?(sorted/mins).toFixed(1):'–';
+  const age=(s.link||{}).age_s, off=age==null||age>2;document.body.classList.toggle('offline',off);
+  const L=s.loop||{}, P=s.perception||{}, mode=L.mode||(s.phase==='running'?'running':'idle');
+  $('model').innerHTML=modelName(s.policy);
+  const running=!off&&mode==='running', paused=L.step==='paused'||mode==='paused';
+  $('status').className='status'+(running?' on':'');
+  $('statusText').textContent=off?'Offline':running?'Running':paused?'Paused':L.step==='done'?'Done':'Idle';
+  $('bStart').hidden=running;$('bPause').hidden=!running;$('bStart').onclick=()=>cmd(paused?'resume':'start');
+
+  // the loop, tinted by the silicon doing the work
+  const step=L.step||(s.phase==='running'?s.stage:''), cur=STAGE_OF[step]||(s.stage==='bring'?'inspect':s.stage);
+  const ci=STAGES.findIndex(([k])=>k===cur), tint=CHIP[SILICON[step]||'gpu'];
+  document.querySelectorAll('.st').forEach((e,i)=>{e.className='st'+(running&&i===ci?' now':running&&i<ci?' done':'');
+    e.style.setProperty('--tint',tint)});
+
+  // ambient light in the colour of the brick in play
+  const brick=(P.target||{}).colour||s.brick;
+  document.documentElement.style.setProperty('--amb',running&&COL[brick]?COL[brick]+'aa':'transparent');
+
+  // reality: the top camera with what YOLO sees; the inspection camera while the brick is at the camera
+  const atCam=['bring','tune','inspect'].includes(step);
+  const want=atCam?'inspect':'top';
+  if(cfg.camsBase&&$('real').dataset.cam!==want){$('real').dataset.cam=want;stream($('real'),`${cfg.camsBase}/stream/${want}`)}
+  const o=$('ovl');o.replaceChildren();
+  if(want==='top'){for(const pl of P.plates||[])o.appendChild(svg('circle',{class:'plate',cx:pl.cx,cy:pl.cy,r:pl.r,stroke:COL[pl.colour]||'#888'}));
+    for(const b of P.table||[]){const[x0,y0,x1,y1]=b.box;o.appendChild(svg('rect',{class:'box',x:x0,y:y0,width:x1-x0,height:y1-y0,stroke:COL[b.colour]||'#fff'}))}
+    if(P.target)o.appendChild(corners(P.target.box))}
+  else{const h=(P.inspect||{}).held;if(h){const[x0,y0,x1,y1]=h;o.appendChild(svg('rect',{class:'held',x:x0,y:y0,width:x1-x0,height:y1-y0}))}}
+
+  // ledger of sorted bricks: colour, the mark found at inspection, the bowl
+  const led=s.ledger||[];
+  if(led.length!==ledgerN){ledgerN=led.length;
+    $('ledger').innerHTML=led.slice(-24).map(x=>`<span class="tile"><span class="b" style="background:${COL[x.brick]||'#666'}">${markSvg(MARK_OF_BOWL[x.bowl])}</span><span class="w" style="background:${COL[x.bowl]||'#666'}"></span></span>`).join('')}
+
+  // numbers
+  const sorted=led.length||Object.values(L.tallies||{}).reduce((a,b)=>a+b,0);
+  $('sorted').textContent=sorted;
+  const mins=L.started&&s.now?(s.now-L.started)/60:0;$('rate').textContent=mins>0.5&&sorted?(sorted/mins).toFixed(1):'–';
+  $('lat').textContent=s.latency_ms!=null&&s.phase==='running'?Math.round(s.latency_ms):'–';
+  const si=s.silicon||{};['cpu','gpu','npu'].forEach(k=>lane(k,si[k]));
 }
+async function cmd(n){try{await fetch('/loop/'+n,{method:'POST'})}catch(e){}}
+$('bPause').onclick=()=>cmd('pause');$('bHome').onclick=()=>cmd('home');$('bStop').onclick=()=>cmd('stop');
+addEventListener('keydown',e=>{if(e.key==='Escape')cmd('stop')});
+
 async function poll(){try{render(await fetch('/api/state').then(r=>r.json()))}catch(e){document.body.classList.add('offline')}}
-(async()=>{let cfg={};try{cfg=await fetch('/api/config').then(r=>r.json())}catch(e){}
-  const cams=(cfg.cams||'').replace(/\/\/(localhost|127\.0\.0\.1)/,'//'+location.hostname);
-  stream($('twin'),cfg.twin);if(cams)stream($('cam'),`${cams}/stream/top`);
-  setInterval(poll,250);poll();
-  // watchdog: a renderer restart can leave the <img> frozen on its last frame without an error event
-  let lastFrames=-1, lastStarted='';
+(async()=>{try{cfg=await fetch('/api/config').then(r=>r.json())}catch(e){}
+  cfg.camsBase=(cfg.cams||'').replace(/\/\/(localhost|127\.0\.0\.1)/,'//'+location.hostname);
+  stream($('twin'),cfg.twin);if(cfg.camsBase)stream($('cam0'),`${cfg.camsBase}/stream/top`);
+  setInterval(poll,200);poll();
+  let lastFrames=-1,lastStarted='';
   setInterval(async()=>{if(!cfg.twin)return;try{const h=await fetch('/twin/health').then(r=>{if(!r.ok)throw 0;return r.json()});
-      const restarted=h.started!==lastStarted&&lastStarted!=='', stalled=h.frames===lastFrames;
-      if(restarted||stalled||!twinLive){const img=$('twin');img.src=cfg.twin+'?r='+Date.now()}
-      lastFrames=h.frames;lastStarted=h.started}
-    catch(e){twinLive=false;$('twin').classList.remove('live');$('cam').style.display=''}},4000)})();
+      if((h.started!==lastStarted&&lastStarted!=='')||h.frames===lastFrames||!twinLive)$('twin').src=cfg.twin+'?r='+Date.now();
+      lastFrames=h.frames;lastStarted=h.started}catch(e){twinLive=false;$('twin').classList.remove('live')}},4000)})();
 </script>
 </body>
 </html>

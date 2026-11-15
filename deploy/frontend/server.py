@@ -46,6 +46,91 @@ def trim(snap: dict) -> dict:
     return out
 
 
+class Silicon:
+    """Live CPU / GPU / NPU utilisation (0-1) on the XPS from counters readable without root:
+    /proc/stat, the xe driver's GT idle residency, and the intel_vpu NPU busy time. Missing counters read None."""
+
+    GPU_IDLE = "/sys/class/drm/card*/device/tile0/gt0/gtidle/idle_residency_ms"
+    NPU_BUSY = "/sys/class/accel/accel*/device/npu_busy_time_us"
+
+    def __init__(self, hz: float = 4.0, keep: int = 60, mock: bool = False):
+        import glob
+
+        self.mock, self.period = mock, 1.0 / hz
+        self.gpu_f = next(iter(sorted(glob.glob(self.GPU_IDLE))), None)
+        self.npu_f = next(iter(sorted(glob.glob(self.NPU_BUSY))), None)
+        self.hist = {k: [] for k in ("cpu", "gpu", "npu")}
+        self.keep, self.lock = keep, threading.Lock()
+        threading.Thread(target=self._run, daemon=True, name="silicon").start()
+
+    @staticmethod
+    def _read(path):
+        try:
+            return float(Path(path).read_text().split()[0])
+        except Exception:  # noqa: BLE001
+            return None
+
+    @staticmethod
+    def _cpu():
+        try:
+            v = [float(x) for x in Path("/proc/stat").read_text().splitlines()[0].split()[1:]]
+            return sum(v), v[3] + v[4]  # total, idle + iowait
+        except Exception:  # noqa: BLE001
+            return None
+
+    def _run(self) -> None:
+        prev = (time.monotonic(), self._cpu(), self._read(self.gpu_f) if self.gpu_f else None,
+                self._read(self.npu_f) if self.npu_f else None)
+        while True:
+            time.sleep(self.period)
+            now = (time.monotonic(), self._cpu(), self._read(self.gpu_f) if self.gpu_f else None,
+                   self._read(self.npu_f) if self.npu_f else None)
+            dt = now[0] - prev[0]
+            if self.mock:
+                t = time.time()
+                u = {"cpu": 0.25 + 0.1 * math.sin(t), "gpu": 0.55 + 0.4 * math.sin(t * 2.1) ** 2,
+                     "npu": 0.1 + 0.6 * max(0.0, math.sin(t * 0.7)) ** 4}
+            else:
+                u = {"cpu": None, "gpu": None, "npu": None}
+                if now[1] and prev[1] and now[1][0] > prev[1][0]:
+                    u["cpu"] = 1 - (now[1][1] - prev[1][1]) / (now[1][0] - prev[1][0])
+                if now[2] is not None and prev[2] is not None:
+                    u["gpu"] = 1 - (now[2] - prev[2]) / (dt * 1000)
+                if now[3] is not None and prev[3] is not None:
+                    u["npu"] = (now[3] - prev[3]) / (dt * 1e6)
+            with self.lock:
+                for k, v in u.items():
+                    self.hist[k] = (self.hist[k] + [None if v is None else round(max(0.0, min(1.0, v)), 3)])[-self.keep:]
+            prev = now
+
+    def state(self) -> dict:
+        with self.lock:
+            return {k: list(v) for k, v in self.hist.items()}
+
+
+class Ledger:
+    """One entry per sorted brick: when a bowl's tally goes up, record the brick colour of the cycle and the bowl."""
+
+    def __init__(self, keep: int = 40):
+        self.keep, self.items, self.prev, self.started = keep, [], {}, None
+
+    def update(self, snap: dict) -> None:
+        loop = snap.get("loop") or {}
+        if not loop:
+            return
+        if loop.get("started") != self.started:  # a new run: start a new ledger
+            self.started, self.items, self.prev = loop.get("started"), [], dict(loop.get("tallies") or {})
+            return
+        tallies = loop.get("tallies") or {}
+        cycles = [c for c in (loop.get("cycles") or []) if c.get("result") == "sorted"]
+        brick = cycles[-1].get("brick") if cycles else snap.get("brick")
+        for bowl, n in tallies.items():
+            for _ in range(max(0, n - self.prev.get(bowl, 0))):
+                self.items.append({"brick": brick, "bowl": bowl, "t": time.time()})
+        self.prev = dict(tallies)
+        self.items = self.items[-self.keep:]
+
+
 class Source:
     """Background poller of the console's /ctl/state (or a synthetic robot with --mock)."""
 
@@ -55,6 +140,7 @@ class Source:
         self.snap: dict = {}
         self.t_ok = 0.0
         self.policy_hint = None
+        self.silicon, self.ledger = Silicon(mock=mock), Ledger()
         threading.Thread(target=self._run, daemon=True, name="console-poll").start()
 
     def _run(self) -> None:
@@ -65,6 +151,7 @@ class Source:
                     urllib.request.urlopen(self.url, timeout=0.5).read())
                 with self.lock:
                     self.snap, self.t_ok = snap, time.time()
+                    self.ledger.update(snap)
             except Exception:  # noqa: BLE001  console not running: keep the last snapshot, the page shows "offline"
                 pass
             nxt += self.period
@@ -77,6 +164,9 @@ class Source:
         out = trim(snap) if snap else {}
         out["link"] = {"age_s": None if not t_ok else round(time.time() - t_ok, 2)}
         out["now"] = time.time()
+        out["silicon"] = self.silicon.state()
+        with self.lock:
+            out["ledger"] = list(self.ledger.items)
         if out.get("policy") is None and self.policy_hint:
             out["policy"] = self.policy_hint
         return out
@@ -131,7 +221,7 @@ class MockRobot:
                 "loop": {"mode": "running", "step": step, "cycle": n + 1, "attempts": 0, "tallies": dict(cls.tallies),
                          "cycles": cur, "step_s": round(ph * period, 1), "target": table[0] if table else None,
                          "started": cls.t0,
-                         "grasp": {"state": "holding" if stage != "pick" else "open"}},
+                         "grasp": {"state": "holding" if stage != "pick" else "open", "pos": q[5]}},
                 "perception": {"table": table, "sorted": [], "workspace": [0, 60, 560, 480],
                                "plates": [{"colour": "yellow", "cx": 480, "cy": 120, "r": 55},
                                           {"colour": "purple", "cx": 500, "cy": 300, "r": 55},
@@ -140,11 +230,14 @@ class MockRobot:
                                "inspect": {"held": [250, 170, 390, 300], "close": step == "inspect"} if stage == "bring"
                                else None, "age_s": 0.2},
                 "studio": {"name": "molmoact2-cal2-456-8k", "policy": "molmoact2", "model_id": "mock"},
-                "inspection": {"state": "ok", "outcome": "good" if n % 4 else "defect", "confidence": 0.93}
+                "inspection": {"state": "ok", "outcome": ("none", "circle", "cross")[n % 3], "frames": 61}
                 if step == "inspect" else None}
 
 
-def make_handler(source: Source, config: dict, twin_upstream: str = ""):
+LOOP_COMMANDS = ("start", "pause", "resume", "stop", "home")
+
+
+def make_handler(source: Source, config: dict, twin_upstream: str = "", console: str = ""):
 
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, *a):  # quiet
@@ -176,6 +269,20 @@ def make_handler(source: Source, config: dict, twin_upstream: str = ""):
                 pass
             finally:
                 up.close()
+
+        def do_POST(self):  # noqa: N802
+            """Loop controls (Start / Pause / Resume / Stop / Home), passed to the console's /loop/<cmd>."""
+            name = self.path.split("?", 1)[0].removeprefix("/loop/")
+            if not self.path.startswith("/loop/") or name not in LOOP_COMMANDS:
+                return self._send(404, b"", "text/plain")
+            if not console:  # mock
+                return self._send(200, b"{}", "application/json")
+            try:
+                req = urllib.request.Request(f"{console}/loop/{name}", data=b"", method="POST")
+                urllib.request.urlopen(req, timeout=3).read()
+                return self._send(200, b"{}", "application/json")
+            except Exception:  # noqa: BLE001  console down or not a loop controller
+                return self._send(502, b"{}", "application/json")
 
         def do_GET(self):  # noqa: N802
             path = self.path.split("?", 1)[0]
@@ -214,7 +321,8 @@ def main() -> None:
     source = Source(a.console.rstrip("/") + "/ctl/state", a.hz, a.mock)
     config = {"twin": "/twin.mjpg" if a.twin else "", "cams": "" if a.mock else (a.cams or a.console).rstrip("/"),
               "mock": a.mock}
-    server = ThreadingHTTPServer((a.host, a.port), make_handler(source, config, a.twin))
+    server = ThreadingHTTPServer((a.host, a.port),
+                                 make_handler(source, config, a.twin, "" if a.mock else a.console.rstrip("/")))
     print(f"station display on http://{a.host}:{a.port}  (console {a.console}{', MOCK' if a.mock else ''}; "
           f"twin {a.twin})", flush=True)
     server.serve_forever()
