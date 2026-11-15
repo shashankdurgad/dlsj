@@ -1,0 +1,329 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Adaptive Inspection</title>
+<meta name="description" content="A robot arm that picks, inspects and sorts manufactured parts on its own, running entirely on a single Intel Core Ultra laptop. Intel Physical AI Challenge, Junction 2026.">
+<meta property="og:title" content="Adaptive Inspection: End to End">
+<meta property="og:description" content="A robot arm that picks, inspects and sorts manufactured parts on its own, running entirely on a single Intel Core Ultra laptop.">
+<meta property="og:image" content="https://shashankdurgad.github.io/dlsj/media/hero.jpg">
+<meta property="og:type" content="website">
+<meta name="theme-color" content="#f4f3f1">
+<link rel="preload" href="fonts/figtree-latin.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<a class="skip" href="#overview">Skip to content</a>
+
+<header class="bar">
+  <div class="bar-in">
+    <a class="home" href="#top"><svg viewBox="0 0 10 9" aria-hidden="true"><path d="M5 0l5 9H0z"/></svg>Junction 2026</a>
+    <nav aria-label="Sections">
+      <ul class="pills">
+        <li><a href="#overview">Overview</a></li>
+        <li><a href="#data">Data</a></li>
+        <li><a href="#post-training">Post-training</a></li>
+        <li><a href="#simulation">Simulation</a></li>
+        <li><a href="#detection">Detection</a></li>
+        <li><a href="#runtime">Runtime</a></li>
+        <li><a href="#loop">Loop</a></li>
+        <li><a href="#open-source">Open source</a></li>
+      </ul>
+    </nav>
+  </div>
+</header>
+
+<main>
+<section class="hero wrap" id="top">
+  <p class="kicker">Adaptive Inspection</p>
+  <h1>End to End</h1>
+  <div class="hero-media">
+    <video data-loop src="media/hero.mp4" poster="media/hero.jpg" width="854" height="480" autoplay muted loop playsinline preload="auto" aria-label="The SO-101 arm picking and sorting bricks"></video>
+  </div>
+  <div class="hero-text">
+    <p class="lead">A robot arm that picks, inspects and sorts manufactured parts on its own, running entirely on a single Intel Core Ultra laptop.</p>
+    <p class="tag">Intel Physical AI Challenge, Junction 2026</p>
+    <div class="team" data-team></div>
+    <p class="links">
+      <a class="btn" href="https://github.com/shashankdurgad/dlsj">Code</a>
+      <a class="btn" href="https://huggingface.co/collections/akoniti/so-101-duplo-inspection-data-vla-digital-twin-6af9610802014765d70d3423">Data and models</a>
+    </p>
+  </div>
+  <div class="marks">
+    <div class="marks-uni">
+      <img src="logos/cambridge.svg" alt="University of Cambridge" width="234" height="50">
+      <img src="logos/ucl.svg" alt="UCL" width="140" height="39">
+    </div>
+    <div class="marks-sponsor">
+      <span>Sponsored by Intel Robotics</span>
+      <img src="logos/intel.svg" alt="Intel" width="76" height="30">
+    </div>
+  </div>
+</section>
+
+<section class="sec wrap" id="overview">
+  <h2>Overview</h2>
+  <p class="prose big">We built a full end-to-end robotic manufacturing inspection setup, designed for reliability, robustness and adaptability with consistent throughput.</p>
+  <ol class="steps">
+    <li><span class="step-n">1</span><h3>Pre-post-training</h3><p>LoRA SFT of the MolmoAct2 base policy</p></li>
+    <li><span class="step-n">2</span><h3>Mid-post-training</h3><p>A digital twin of the physical setup for RL with DICE-RL</p></li>
+    <li><span class="step-n">3</span><h3>Post-post-training</h3><p>Weight-space programming (WSP) for fine-tuning</p></li>
+  </ol>
+  <div class="prose two">
+    <p>Fast and robust to lighting and object perturbations. Optimised with OpenVINO on an Intel Core Ultra laptop GPU, with a mixture-of-experts computer-vision ensemble for anomaly detection on the laptop NPU.</p>
+    <p>Datasets and trained models are fully open-sourced. Modal was used to train the policies, sim environments and CV models. Codex was used for weight-space programming.</p>
+  </div>
+</section>
+
+<section class="sec wrap" id="data">
+  <h2>Data</h2>
+  <div class="split">
+    <dl class="stats">
+      <div><dt>1,106</dt><dd>teleop episodes</dd></div>
+      <div><dt>~2.2 h</dt><dd>of demonstrations at 30 fps</dd></div>
+    </dl>
+    <p class="prose">From slow to fast demonstrations. Episodes are ranked by a trained progress critic, used as a self-supervised reward model, to filter and weight action chunks by value and remove teleop dead time.</p>
+  </div>
+  <figure class="card media-card">
+    <picture>
+      <source media="(max-width: 720px)" srcset="media/teleop_m.jpg" width="900" height="677">
+      <img src="media/teleop.jpg" alt="Overhead camera frames sampled across the teleop episodes" width="2000" height="752" loading="lazy" decoding="async">
+    </picture>
+  </figure>
+</section>
+
+<section class="sec wrap" id="post-training">
+  <h2>Post-training: LoRA</h2>
+  <div class="lora">
+    <div class="lora-left">
+      <div class="delta">
+        <p class="delta-n"><span class="from">8.3°</span><span class="arrow" aria-hidden="true">→</span><span class="to">2.8°</span></p>
+        <p class="cap">action error vs human demos, zero-shot → fine-tuned, 3× more accurate</p>
+      </div>
+      <div class="table-wrap">
+        <table class="trained">
+          <caption>What was trained</caption>
+          <thead><tr><th scope="col">Component</th><th scope="col" class="num">Params</th><th scope="col">Mode</th><th scope="col" class="num">Trainable</th></tr></thead>
+          <tbody>
+            <tr><th scope="row">LLM attention + MLP</th><td class="num">3,633M</td><td>LoRA</td><td class="num">114M, 3.1%</td></tr>
+            <tr><th scope="row">Vision encoder attention + MLP</th><td class="num">381M</td><td>LoRA</td><td class="num">32M, 8.5%</td></tr>
+            <tr><th scope="row">Vision patch embedding</th><td class="num">0.7M</td><td class="dim">Frozen</td><td class="num dim">–</td></tr>
+            <tr><th scope="row">Connector</th><td class="num">57M</td><td>Full</td><td class="num">100%</td></tr>
+            <tr><th scope="row">Action expert</th><td class="num">578M</td><td>Full</td><td class="num">100%</td></tr>
+            <tr><th scope="row">LLM final norm</th><td class="num">2.6k</td><td>Full</td><td class="num">100%</td></tr>
+            <tr><th scope="row">Embeddings, norms, positional</th><td class="num">397M</td><td class="dim">Frozen</td><td class="num dim">–</td></tr>
+            <tr><th scope="row">LM head</th><td class="num">396M</td><td class="dim">Frozen</td><td class="num dim">–</td></tr>
+          </tbody>
+          <tfoot><tr><th scope="row">Total</th><td class="num">5,442M</td><td></td><td class="num">781M</td></tr></tfoot>
+        </table>
+      </div>
+      <p class="cap">409 demos, 3 stages, 4× B300, 8k steps</p>
+    </div>
+    <figure class="card chart-card">
+      <figcaption class="card-t">Validation action error</figcaption>
+      <img src="media/val_mse.png" alt="Validation denoised action MSE over 8,000 optimizer steps" width="1400" height="1023" loading="lazy" decoding="async">
+    </figure>
+  </div>
+
+  <h2 class="h2-next">Post-training: beyond imitation</h2>
+  <div class="trio">
+    <article class="card tile">
+      <img src="media/rl_residual.jpg" alt="Residual policy rollouts in the twin" width="640" height="480" loading="lazy" decoding="async">
+      <h3>RL residual (DICE-RL)</h3>
+      <p>A small network learns bounded corrections on top of the frozen policy, trained in the digital twin.</p>
+    </article>
+    <article class="card tile">
+      <img src="media/wsp.jpg" alt="Weight-space pickup rollout" width="560" height="480" loading="lazy" decoding="async">
+      <h3>WSP, weight-space pickup</h3>
+      <p>A closed-form edit of the action head, with no gradient training.</p>
+      <p class="tile-n">−24%</p>
+      <p class="cap">wrist error</p>
+    </article>
+    <article class="card tile">
+      <img src="media/sim_robust.jpg" alt="Randomised scene in the Isaac twin" width="640" height="480" loading="lazy" decoding="async">
+      <h3>Robustness in sim</h3>
+      <p>A calibrated Isaac twin with randomised cameras, friction, mass and joints.</p>
+      <p class="tile-n">20% → 89%</p>
+      <p class="cap">real demos replayed successfully as the twin was calibrated</p>
+    </article>
+  </div>
+</section>
+
+<section class="sec wrap" id="simulation">
+  <h2>Simulation</h2>
+  <p class="prose big">Fully fitted to real recordings.</p>
+  <div class="vid-wide">
+    <video data-loop src="media/sim_replay.mp4" poster="media/sim_replay.jpg" width="1280" height="720" muted loop playsinline preload="none" aria-label="A recorded teleop demo and the Isaac Lab twin replaying the same joint commands"></video>
+  </div>
+  <div class="fit">
+    <div class="vid-side">
+      <video data-loop src="media/sim_wipe.mp4" poster="media/sim_wipe.jpg" width="960" height="720" muted loop playsinline preload="none" aria-label="Real and simulated top camera, wireframe then render"></video>
+    </div>
+    <dl class="facts">
+      <div><dt>Cameras</dt><dd>Wrist camera mount fitted from real frames. Inspect camera calibrated with a ChArUco board on a laptop screen. Overhead camera pose fitted to the arm's silhouette and checked at table level against 262 real grasps (0.4 cm systematic bias).</dd></div>
+      <div><dt>Joints</dt><dd>Joint offsets refitted from camera views of 44 episodes, with URDF FK matching Isaac to 0.45 mm.</dd></div>
+      <div><dt>Servo dynamics</dt><dd>Response rate and delay fitted to 249 real command windows.</dd></div>
+      <div><dt>Mechanical play</dt><dd>Backlash, hold band, sag and encoder quantisation identified from over 1,000 holds per joint across 450 episodes.</dd></div>
+      <div><dt>Contact physics</dt><dd>Built around the real gripper: UMI-style fin-ray TPU fingers as 4 independently hinged slices with fitted stiffness (held gripper reading 5.7 sim vs 5.65 real). Real Duplo geometry from LDraw CAD (studs, hollow underside, tubes).</dd></div>
+      <div><dt>Validation</dt><dd>Open-loop replay of 60 held-out human demos lifts 89% of bricks.</dd></div>
+    </dl>
+  </div>
+  <div class="renders">
+    <img src="media/render_hero_three_quarter.jpg" alt="Rendered twin, three-quarter view" width="1600" height="900" loading="lazy" decoding="async">
+    <img src="media/render_finray_closeup_grasp.jpg" alt="Fin-ray fingers grasping a brick" width="1600" height="900" loading="lazy" decoding="async">
+    <img src="media/render_finray_upside_down_brick.jpg" alt="Fin-ray fingers holding an upside-down brick" width="1600" height="900" loading="lazy" decoding="async">
+    <img src="media/render_hero_cluttered_table.jpg" alt="Rendered twin with a cluttered table" width="1600" height="900" loading="lazy" decoding="async">
+  </div>
+  <div class="dr">
+    <video data-loop src="media/sim_dr.mp4" poster="media/sim_dr.jpg" width="1152" height="898" muted loop playsinline preload="none" aria-label="Nine domain-randomised replays of the same recorded actions"></video>
+    <img src="media/dr_montage.jpg" alt="Fifteen randomised renders of the top camera" width="1600" height="1257" loading="lazy" decoding="async">
+  </div>
+</section>
+
+<section class="sec wrap" id="detection">
+  <h2>Anomaly detection: mixture-of-experts ensemble</h2>
+  <div class="det">
+    <figure class="card flow-card">
+      <div class="flow" role="img" aria-label="Inspection camera frame, then YOLO detector crops the held brick, then Anomalib PatchCore and a YOLO classifier, then a confidence gate decides normal or marked. If the experts disagree or are unsure, the brick is spun and re-inspected.">
+        <div class="node"><b>Inspection</b><span>camera frame</span></div>
+        <div class="link" aria-hidden="true"></div>
+        <div class="node"><i>Expert 1</i><b>YOLO detector</b><span>crops held brick</span></div>
+        <div class="link fork" aria-hidden="true"></div>
+        <div class="pair">
+          <div class="node"><i>Expert 2</i><b>Anomalib PatchCore</b><span>is it marked?</span></div>
+          <div class="node"><i>Expert 3</i><b>YOLO classifier</b><span>normal / marked</span></div>
+        </div>
+        <div class="link join" aria-hidden="true"></div>
+        <div class="node gate"><b>Confidence</b><span>gate</span></div>
+        <div class="link fork" aria-hidden="true"></div>
+        <div class="pair out">
+          <div class="node pill-node"><span class="dot ok"></span>Normal</div>
+          <div class="node pill-node"><span class="dot bad"></span>Marked</div>
+        </div>
+      </div>
+      <p class="retry" aria-hidden="true">experts disagree or unsure → spin and re-inspect</p>
+    </figure>
+    <div class="card bricks">
+      <p class="card-t">Normal</p>
+      <div class="brick-row">
+        <img src="media/brick_normal_1.jpg" alt="Normal brick" width="320" height="320" loading="lazy" decoding="async">
+        <img src="media/brick_normal_2.jpg" alt="Normal brick" width="320" height="320" loading="lazy" decoding="async">
+        <img src="media/brick_normal_3.jpg" alt="Normal brick" width="320" height="320" loading="lazy" decoding="async">
+      </div>
+      <p class="card-t">Marked</p>
+      <div class="brick-row">
+        <img src="media/brick_marked_1.jpg" alt="Marked brick" width="320" height="320" loading="lazy" decoding="async">
+        <img src="media/brick_marked_2.jpg" alt="Marked brick" width="320" height="320" loading="lazy" decoding="async">
+        <img src="media/brick_marked_3.jpg" alt="Marked brick" width="320" height="320" loading="lazy" decoding="async">
+      </div>
+    </div>
+  </div>
+  <p class="prose">Trained on collected and labelled data (~200 per class) with augmentation (rotation, brightness, zoom).</p>
+  <dl class="stats row4">
+    <div><dt>77.2%</dt><dd>YOLO box mAP</dd></div>
+    <div><dt>88%</dt><dd>defect-classification accuracy</dd></div>
+    <div><dt>92%</dt><dd>ensemble accuracy on a 129&#8209;image test set</dd></div>
+    <div><dt>6 ms</dt><dd>per frame on the NPU</dd></div>
+  </dl>
+</section>
+
+<section class="sec wrap" id="runtime">
+  <h2>Runtime optimisation</h2>
+  <p class="prose big">The stock VLA in PyTorch took ~11 s per action chunk (10,770 ms), so the arm waited. We exported it to OpenVINO on the Arc GPU, quantised it to INT8 and added real-time chunking: the next move is computed while the arm moves.</p>
+  <div class="charts">
+    <figure class="card chart">
+      <figcaption><b>Latency per chunk</b><span>ms, lower is better</span></figcaption>
+      <svg viewBox="0 0 300 220" role="img" aria-label="Latency per chunk: PyTorch on CPU 10,770 ms; OpenVINO on GPU 362 ms; INT8 plus RTC, deployed, 313 ms">
+        <line class="base" x1="16" x2="284" y1="170" y2="170"/>
+        <rect class="b-grey" x="38" y="40" width="44" height="130" rx="2"/>
+        <rect class="b-grey" x="128" y="165.6" width="44" height="4.4" rx="1"/>
+        <rect class="b-ink" x="218" y="166.2" width="44" height="3.8" rx="1"/>
+        <text class="v" x="60" y="32">10,770</text><text class="v" x="150" y="157">362</text><text class="v" x="240" y="157">313</text>
+        <text class="l" x="60" y="190">PyTorch</text><text class="l" x="60" y="204">CPU</text>
+        <text class="l" x="150" y="190">OpenVINO</text><text class="l" x="150" y="204">GPU</text>
+        <text class="l" x="240" y="190">INT8 + RTC</text><text class="l" x="240" y="204">deployed</text>
+      </svg>
+    </figure>
+    <figure class="card chart">
+      <figcaption><b>Speed-up vs baseline</b><span>×, higher is better</span></figcaption>
+      <svg viewBox="0 0 300 220" role="img" aria-label="Speed-up vs baseline: PyTorch on CPU 1 times; OpenVINO on GPU 29.8 times; INT8 plus RTC, deployed, 34.4 times">
+        <line class="base" x1="16" x2="284" y1="170" y2="170"/>
+        <rect class="b-grey" x="38" y="166.2" width="44" height="3.8" rx="1"/>
+        <rect class="b-grey" x="128" y="57.4" width="44" height="112.6" rx="2"/>
+        <rect class="b-ink" x="218" y="40" width="44" height="130" rx="2"/>
+        <text class="v" x="60" y="157">1×</text><text class="v" x="150" y="49">29.8×</text><text class="v" x="240" y="32">34.4×</text>
+        <text class="l" x="60" y="190">PyTorch</text><text class="l" x="60" y="204">CPU</text>
+        <text class="l" x="150" y="190">OpenVINO</text><text class="l" x="150" y="204">GPU</text>
+        <text class="l" x="240" y="190">INT8 + RTC</text><text class="l" x="240" y="204">deployed</text>
+      </svg>
+    </figure>
+    <figure class="card chart">
+      <figcaption><b>Energy per chunk</b><span>joules, lower is better</span></figcaption>
+      <svg viewBox="0 0 300 220" role="img" aria-label="Energy per chunk: baseline PyTorch on CPU 436.9 joules CPU package, 580.2 joules whole platform; deployed OpenVINO on GPU 12.1 joules CPU package, 16.2 joules whole platform">
+        <line class="base" x1="16" x2="284" y1="170" y2="170"/>
+        <rect class="b-ink" x="51" y="72.1" width="34" height="97.9" rx="2"/>
+        <rect class="b-grey" x="91" y="40" width="34" height="130" rx="2"/>
+        <rect class="b-ink" x="181" y="167.3" width="34" height="2.7" rx="1"/>
+        <rect class="b-grey" x="221" y="166.4" width="34" height="3.6" rx="1"/>
+        <text class="v" x="68" y="64">436.9 J</text><text class="v" x="108" y="32">580.2 J</text>
+        <text class="v" x="198" y="157">12.1 J</text><text class="v" x="238" y="157">16.2 J</text>
+        <text class="l" x="88" y="190">Baseline</text><text class="l" x="88" y="204">PyTorch CPU</text>
+        <text class="l" x="218" y="190">Deployed</text><text class="l" x="218" y="204">OpenVINO GPU</text>
+      </svg>
+      <p class="legend"><span><i class="sw ink"></i>CPU package</span><span><i class="sw grey"></i>Whole platform</span></p>
+    </figure>
+  </div>
+  <dl class="stats row3">
+    <div><dt>34×</dt><dd>faster, 10.8 s → 313 ms</dd></div>
+    <div><dt>36×</dt><dd>less energy, 437 J → 12 J per chunk</dd></div>
+    <div><dt>0</dt><dd>stalls in the 30 Hz control loop</dd></div>
+  </dl>
+</section>
+
+<section class="sec wrap" id="loop">
+  <h2>Closed loop and Physical AI Studio</h2>
+  <div class="loop">
+    <div class="card engines">
+      <div class="engine"><p class="chip">GPU</p><div><h3>VLA policy</h3><p>Fine-tuned MolmoAct2 on OpenVINO, 313 ms per chunk</p></div></div>
+      <div class="engine"><p class="chip">NPU</p><div><h3>Mixture-of-experts ensemble</h3><p>Detector, PatchCore and classifier, 6 ms per frame</p></div></div>
+      <div class="engine"><p class="chip">CPU</p><div><h3>Control and reasoning</h3><p>30 Hz servo loop and sorting rules</p></div></div>
+    </div>
+    <div class="card studio">
+      <img src="media/studio.jpg" alt="Physical AI Studio" width="1002" height="197" loading="lazy" decoding="async">
+      <dl class="studio-steps">
+        <div><dt>Configure</dt><dd>The robot, three cameras and environment are set up in one Studio project</dd></div>
+        <div><dt>Dataset</dt><dd>Our 456-episode teleop dataset is imported and versioned</dd></div>
+        <div><dt>Train</dt><dd>MolmoAct2 is fine-tuned with Studio's training library</dd></div>
+        <div><dt>Export</dt><dd>Studio's OpenVINO exporter builds the GPU model</dd></div>
+        <div><dt>Deploy</dt><dd>The run-time loop loads the policy by its Studio model ID</dd></div>
+      </dl>
+    </div>
+  </div>
+</section>
+
+<section class="sec wrap" id="open-source">
+  <h2>Open source</h2>
+  <div class="oss">
+    <a class="card oss-link" href="https://huggingface.co/collections/akoniti/so-101-duplo-inspection-data-vla-digital-twin-6af9610802014765d70d3423">
+      <span class="oss-k">Datasets and trained models</span>
+      <span class="oss-v">Hugging Face collection</span>
+    </a>
+    <a class="card oss-link" href="https://github.com/shashankdurgad/dlsj">
+      <span class="oss-k">Code</span>
+      <span class="oss-v">github.com/shashankdurgad/dlsj</span>
+    </a>
+  </div>
+  <p class="cap">Code under MIT, data under CC BY 4.0.</p>
+</section>
+</main>
+
+<footer class="foot wrap">
+  <div class="team" data-team></div>
+  <p>Intel Physical AI Challenge, Junction 2026</p>
+  <p class="fine">University and Intel logos are trademarks of their owners, shown as affiliation marks.</p>
+</footer>
+
+<script src="site.js" defer></script>
+</body>
+</html>
