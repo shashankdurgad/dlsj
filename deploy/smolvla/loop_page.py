@@ -78,7 +78,7 @@ th{color:var(--mute);font-weight:500;text-align:left;padding:4px 6px;border-bott
   <section class="card"><h2>Data collection <em><a href="/collect" target="_blank" style="color:var(--acc)">review</a></em></h2>
    <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:8px" id="colbtns"></div>
    <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:6px"><button onclick="PZ('grip_open')">Open gripper</button><button onclick="PZ('grip_close')">Close gripper</button>
-    <button class="go" onclick="CL('spin')">Spin &amp; save</button></div>
+    <button onclick="CL('bring')">Bring to camera (VLA)</button><button class="go" onclick="CL('spin')">Spin &amp; save</button></div>
    <div class="mute" id="colmsg" style="font-size:12px"></div><div id="colcounts" style="font-size:12.5px;margin-top:4px"></div></section>
   <section class="card"><h2>Inspection pose <em id="ipsrc"></em></h2>
    <div id="offwrap"><div class="btns" style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:8px">

@@ -531,3 +531,19 @@ def test_spin_and_save_records_label(build, tmp_path, monkeypatch):
         threading.Event().wait(0.01)
     assert c.phase == "holding" and c.L["mode"] == "off"  # no hand-over to the VLA
     assert c.collect.counts()["cross"] == {"spins": 1, "crops": 3}
+
+
+def test_bring_to_camera_with_the_vla_then_hold(build):
+    c, clock, _ = build()
+    c.L["grasp"] = {"state": "holding", "pos": 5.6}
+    c.collect_command("bring")
+    assert c.phase == "running" and c.stage == "bring"  # the VLA's own bring prompt runs
+    for _ in range(30 * 8):
+        clock.now += 1 / 30
+        c.measured[5] = 5.6
+        c.measured[:5] = [-8.7, 20.0, -17.2, 63.4, 5.8]  # the VLA settled at the camera
+        c.tick()
+        if c.phase == "holding":
+            break
+    assert c.phase == "holding" and "Spin & save" in c.collect_msg and c.L["mode"] == "off"
+
