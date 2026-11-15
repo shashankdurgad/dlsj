@@ -122,8 +122,8 @@ def make_auto_controller_class(base):
 def main() -> None:
     ap = argparse.ArgumentParser(add_help=False)
     ap.add_argument("--inspect-device", default="NPU", help="YOLO + detector device (default NPU)")
-    ap.add_argument("--inspector", choices=("held_cube", "yolo_v2"), default="held_cube",
-                    help="held_cube: Joe's held-cube YOLO26n v2 detector (default); yolo_v2: the older classifier")
+    ap.add_argument("--inspector", choices=("held_cube", "held_cube_v2", "yolo_v2"), default="held_cube",
+                    help="held_cube: Joe's held-cube YOLO26n v4 detector (default); held_cube_v2; yolo_v2: the older classifier")
     ap.add_argument("--inspect-roi", default="", help="x0,y0,x1,y1 crop of the inspect image (default: centred)")
     ap.add_argument("--inspect-frames", type=int, default=12)
     ap.add_argument("--inspect-range", type=float, default=180.0)

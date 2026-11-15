@@ -205,7 +205,8 @@ class HeldCubeInspector:
     the full inspection frame, so no crop selection is needed and cubes lying on the table are ignored by design.
     Each frame becomes the same dict YoloInspector.classify returns (probs over plain/circle/cross, confident class,
     box, 320 px crop for the dashboard / data collection), so the decision rule, the loop and collection are unchanged.
-    Rig check, 38 labelled spins: 36 right / 1 uncertain / 1 wrong (v2 live: 29 / 5 / 4), 4.1 ms per frame on the NPU.
+    Rig check, 38 labelled spins: v4 epoch 4 37 right / 0 uncertain / 1 wrong, v2 36 / 1 / 1 (YOLO v2 classifier live:
+    29 / 5 / 4), 4.1 ms per frame on the NPU.
     """
 
     NAMES = {0: "cross", 1: "circle", 2: "plain"}
@@ -289,28 +290,32 @@ def scaled_agg(cfg, n: int, base: int = 12):
                                yolo_max_outlier_frames=math.floor(cfg.yolo_max_outlier_frames * k))
 
 
-HELD_CUBE_WEIGHTS = "held-cube-yolo26n-v2/held_cube_symbols_held_only_openvino_model"
+# held-cube detectors from Joe's GitHub releases, exported to OpenVINO under ~/inference/models
+HELD_CUBE_WEIGHTS = {
+    "held_cube": "held-cube-yolo26n-v4/held_cube_symbols_cross_v4_epoch4_openvino_model",  # v4 epoch 4 (default)
+    "held_cube_v2": "held-cube-yolo26n-v2/held_cube_symbols_held_only_openvino_model",
+}
 
 
 def make_auto_inspector(cameras, follower_id: str = "follower", device: str = "NPU", roi=None,
                         kind: str = "held_cube", **kw) -> AutoInspector:
-    """The production inspector on `device`, calibrated roll limits. kind: "held_cube" (Joe's held-cube YOLO26n v2
-    detector, default since 15 Nov) or "yolo_v2" (YOLO v2 classifier on a detector/ROI crop)."""
+    """The production inspector on `device`, calibrated roll limits. kind: "held_cube" (Joe's held-cube YOLO26n v4
+    detector, default), "held_cube_v2", or "yolo_v2" (YOLO v2 classifier on a detector/ROI crop)."""
     from dlsj import arms
     from dlsj.inspect.yolo_inspector import YoloInspector
 
     models = Path("~/inference/models").expanduser()
-    if kind == "held_cube":
+    if kind in HELD_CUBE_WEIGHTS:
         from dlsj.inspect.brick_detector import BrickDetector
 
         top_det = BrickDetector(str(_ov_dir(models / "brick-detector-v1")), device.lower())
-        insp = HeldCubeInspector(models / HELD_CUBE_WEIGHTS, device, detector=top_det)
+        insp = HeldCubeInspector(models / HELD_CUBE_WEIGHTS[kind], device, detector=top_det)
         try:
             limits = arms.joint_limits_deg(follower_id, "wrist_roll")
         except Exception as e:  # noqa: BLE001
             log.warning("no calibrated wrist_roll limits (%s); sweeping without clipping", e)
             limits = None
-        log.info("auto-inspect: held-cube YOLO26n v2 on %s, wrist_roll limits %s", device, limits)
+        log.info("auto-inspect: %s (%s) on %s, wrist_roll limits %s", kind, HELD_CUBE_WEIGHTS[kind], device, limits)
         return AutoInspector(cameras, insp, limits, **kw)
     insp = YoloInspector(models / "brick-yolo-classifier-v2", device, roi=roi, padding=0.05,
                          detector_weights=str(_ov_dir(models / "brick-detector-v1")), detector_device=device.lower())

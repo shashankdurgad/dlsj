@@ -65,7 +65,11 @@ Other research done in conversation (not separate reports):
   empty-table test on the real camera (false positives there would block "done"); the gripper fingertips scored
   0.23–0.35 on older-setup frames when just outside the home ignore box.
 
-- **Held-cube YOLO26n v2 (Joe, release `held-cube-yolo26n-v2-20261115`) is the live spin classifier since 15 Nov**
+- **Held-cube YOLO26n v4 epoch 4 (release `held-cube-yolo26n-v4-20261115`, training still running) replaced v2 as the
+  live spin classifier**: rig eval **37 right / 0 uncertain / 1 wrong** of 38 (14/14 cross, 15/15 circle), 4.1 ms/frame
+  on the NPU. The one miss is again red brick `232c447e14` (labelled plain, called cross on every frame by both v2 and
+  v4, which was trained on corrected red-cross labels): likely our label. `bench/held_cube_v4/`.
+- Earlier the same day: **held-cube YOLO26n v2 (release `held-cube-yolo26n-v2-20261115`) as the live spin classifier**
   (`auto_inspect.HeldCubeInspector`, `--inspector yolo_v2` falls back). One detector finds the cube held in the
   gripper and its visible symbol on the full inspection frame (table cubes ignored by design). On our 38 labelled rig
   spins (12 saved frames each): **36 right / 1 uncertain / 1 wrong** vs the v2 classifier's live decisions **29 / 5 / 4**
