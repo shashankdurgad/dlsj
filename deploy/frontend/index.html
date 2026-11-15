@@ -58,7 +58,14 @@ async function poll(){try{render(await fetch('/api/state').then(r=>r.json()))}ca
 (async()=>{let cfg={};try{cfg=await fetch('/api/config').then(r=>r.json())}catch(e){}
   const cams=(cfg.cams||'').replace(/\/\/(localhost|127\.0\.0\.1)/,'//'+location.hostname);
   stream($('twin'),cfg.twin);if(cams)stream($('cam'),`${cams}/stream/top`);
-  setInterval(poll,250);poll()})();
+  setInterval(poll,250);poll();
+  // watchdog: a renderer restart can leave the <img> frozen on its last frame without an error event
+  let lastFrames=-1, lastStarted='';
+  setInterval(async()=>{if(!cfg.twin)return;try{const h=await fetch('/twin/health').then(r=>{if(!r.ok)throw 0;return r.json()});
+      const restarted=h.started!==lastStarted&&lastStarted!=='', stalled=h.frames===lastFrames;
+      if(restarted||stalled||!twinLive){const img=$('twin');img.src=cfg.twin+'?r='+Date.now()}
+      lastFrames=h.frames;lastStarted=h.started}
+    catch(e){twinLive=false;$('twin').classList.remove('live');$('cam').style.display=''}},4000)})();
 </script>
 </body>
 </html>
