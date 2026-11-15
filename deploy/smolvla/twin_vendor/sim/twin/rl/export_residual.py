@@ -54,7 +54,8 @@ def export(ckpt: str, onnx: bool = False) -> dict:
                          "deployed residual could not reproduce the trained one; retrain or re-save with the meta")
     a = ck["actor"]
     n = len([k for k in a if k.startswith("W.")])
-    out = Path(ckpt).parent / "deploy"
+    stem = Path(ckpt).stem  # residual.pt -> deploy/, rounds/residual_round03.pt -> rounds/deploy_residual_round03/
+    out = Path(ckpt).parent / ("deploy" if stem == "residual" else f"deploy_{stem}")
     out.mkdir(exist_ok=True)
     arr = {}
     for i in range(n):
@@ -70,7 +71,11 @@ def export(ckpt: str, onnx: bool = False) -> dict:
             "source": str(ckpt), "residual_scale": list(ck["res_scale"]), "rate_per_tick": list(ck["rate"]),
             "tip_local": list(ck["tip_local"]), "joint_offsets": ck.get("joint_offsets"),
             "decision_ticks": int(ck.get("decision_ticks", 5)), "fade_ticks": int(ck.get("fade_ticks", 6)),
-            "grasp_cfg": ck.get("grasp_cfg")}
+            "grasp_cfg": ck.get("grasp_cfg"),
+            # the controller / prior the residual was trained against (the robot must run the same)
+            "max_step": ck.get("max_step"), "controller_delay": ck.get("controller_delay"),
+            "fixed_noise": ck.get("fixed_noise"), "finetune": ck.get("finetune"),
+            "provenance": ck.get("provenance")}
     np.savez(out / "residual_actor.npz", meta=np.array(json.dumps(meta)), **arr)
     # parity + latency against the torch actor
     from sim.twin.rl.dice import Dice

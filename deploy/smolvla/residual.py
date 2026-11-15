@@ -8,8 +8,14 @@ Per control tick, only while the controller runs the policy (phase "running"):
   gate, top-camera target) + plan (next 5 planned goals - measured) -> r in [-1, 1]^6 -> offset target = r * scale;
 * every tick: the applied offset moves toward its target at <= rate; the tick's planned goal g becomes
   IK(g with wrist += offset, tip(g) + R(g) @ offset_xyz), gripper clip(g + offset, 0, 100); then the controller's own
-  max-step / sync band / LeRobot clamp, unchanged.
-Bounds, rates, fingertip point and joint offsets come from the export's meta (`residual_actor.npz`), never from here.
+  max-step slew / sync band / LeRobot clamp, unchanged (the twin trained it in that order: residual first, then the
+  slew of the final command, then the clamp).
+Bounds, rates, fingertip point (the fin-ray grasp point) and joint offsets (W9) come from the export's meta
+(`residual_actor.npz`), never from here. The meta also records the controller and prior the residual was trained
+against: `max_step` ("4,8": body deg / gripper units per tick, checked against --max-step / --max-step-gripper),
+`controller_delay` (the twin's play model of this controller; nothing to set here), `fixed_noise` (the deployed
+MolmoAct2 export starts its flow from a fixed-seed noise op) and `finetune` (the 8k fine-tune with its trained
+prompts). `latent` must be false (the deployed export does not output the pooled hidden state).
 
 Wrist target: `OVBrickDetector` (brick-detector-v1, plain OpenVINO on the NPU, never ultralytics) in its own thread,
 only while the gate is open, feeding `TargetTracker` (`twin_vendor/.../perception/wrist_target.py`, unchanged).
@@ -26,8 +32,8 @@ Modes (`--residual`): off = nothing is built, the controller is exactly the old 
 and are logged, the arm gets the unmodified plan; on = applied. `--residual-weights zero` = an all-zero residual
 (identity, for testing the plumbing). POST /ctl/residual_off fades it out live; /ctl/residual_on re-arms it.
 
-Vendored twin files (`twin_vendor/sim/twin/...`, refreshed by `sync_twin_vendor.sh`): watson ~/Documents/dlsj at
-b109014 + the working tree of 2026-11-15 02:39 UTC.
+Vendored twin files (`twin_vendor/sim/twin/...`, refreshed by `sync_twin_vendor.sh` from this repo's sim/twin):
+main at f9701eb (2026-11-15 05:36 UTC).
 """
 
 from __future__ import annotations
@@ -49,11 +55,14 @@ HERE = Path(__file__).resolve().parent
 VENDOR = HERE / "twin_vendor" / "sim" / "twin"
 MODES = ("off", "shadow", "on")
 DEFAULT_DETECTOR = "~/inference/models/brick-detector-v1"
-# DEPLOY.md defaults, used only by the zero (identity) residual; a real export must carry its own meta
-ZERO_META = {"layers": 0, "s_dim": 29, "a_dim": 30, "obs_dim": 29, "latent": False, "top_target": True,
+# DEPLOY.md defaults (the current exports: no latent, no top target, obs 25), used only by the zero (identity)
+# residual; a real export must carry its own meta
+ZERO_META = {"layers": 0, "s_dim": 25, "a_dim": 30, "obs_dim": 25, "latent": False, "top_target": False,
              "residual_scale": [0.035, 0.035, 0.02, 10.0, 10.0, 30.0], "rate_per_tick": [0.005, 0.005, 0.005, 3.0, 3.0, None],
              "tip_local": [0.0063, 0.001, -0.0902], "joint_offsets": None, "decision_ticks": 5, "fade_ticks": 6,
-             "source": "zero"}
+             "max_step": "4,8", "controller_delay": True, "fixed_noise": True, "finetune": True, "source": "zero"}
+# what the residual was trained against: an export without these cannot be checked against this controller
+TRAINED_AGAINST = ("max_step", "controller_delay", "fixed_noise", "finetune")
 # hard sanity limits on an export's bounds (DEPLOY.md: 3.5 cm / 2 cm / 10 deg / 30 units)
 MAX_SCALE = [0.05, 0.05, 0.05, 15.0, 15.0, 40.0]
 TIME_NORM = 240.0  # obs[11] = ticks since the pick prompt / 240
@@ -95,7 +104,8 @@ class OVResidual:
         import openvino as ov
 
         self.meta = meta
-        self.model = ov.Core().compile_model(str(onnx), device.upper())
+        cfg = {"INFERENCE_PRECISION_HINT": "f32"} if device.upper() == "CPU" else {}  # ARM / AMX CPUs default to f16
+        self.model = ov.Core().compile_model(str(onnx), device.upper(), cfg)
         self.req = self.model.create_infer_request()
 
     def __call__(self, state, plan) -> np.ndarray:
@@ -125,8 +135,12 @@ def load_policy(weights: str, device: str = "numpy"):
 
 def validate_meta(meta: dict, pol=None) -> None:
     need = [k for k in ("residual_scale", "rate_per_tick", "tip_local", "s_dim", "a_dim", "obs_dim") if k not in meta]
+    need += [k for k in TRAINED_AGAINST if meta.get(k) is None]
     if need:
         raise SystemExit(f"residual export meta has no {need}: re-export with the current export_residual.py")
+    meta_max_step(meta)  # parses
+    if len(meta["tip_local"]) != 3 or len(meta["rate_per_tick"]) != 6:
+        raise SystemExit(f"residual meta tip_local {meta['tip_local']} / rate_per_tick {meta['rate_per_tick']}")
     if meta.get("latent"):
         raise SystemExit("this residual needs the MolmoAct2 pooled latent, which the deployed export does not output")
     if meta["a_dim"] != PLAN_STEPS * 6:
@@ -143,6 +157,53 @@ def validate_meta(meta: dict, pol=None) -> None:
     W = getattr(pol, "W", None) if pol is not None else None
     if W and (W[0].shape[0] != meta["s_dim"] + meta["a_dim"] or W[-1].shape[1] != 6):
         raise SystemExit(f"residual weights {W[0].shape} -> {W[-1].shape} do not match the meta dims")
+
+
+def meta_max_step(meta: dict) -> tuple[float, float]:
+    """The controller slew the residual was trained behind: (body deg, gripper units) per tick."""
+    v = meta.get("max_step")
+    try:
+        vals = [float(x) for x in (v.split(",") if isinstance(v, str) else v)]
+    except Exception:  # noqa: BLE001
+        raise SystemExit(f"residual meta max_step {v!r}: expected 'body,gripper'") from None
+    if len(vals) == 1:
+        vals = vals * 2
+    if len(vals) != 2 or min(vals) <= 0:
+        raise SystemExit(f"residual meta max_step {v!r}: expected 'body,gripper'")
+    return vals[0], vals[1]
+
+
+def check_controller(meta: dict, max_step, max_step_gripper=None) -> list[str]:
+    """Differences between this controller's slew (`--max-step`, `--max-step-gripper`, or its live (6,) max_step)
+    and the one the residual was trained behind. Empty = same."""
+    want = meta_max_step(meta)
+    if max_step_gripper is None:
+        ms = np.asarray(max_step, float).ravel()
+        have = (float(ms[:5].max()), float(ms[5])) if ms.size == 6 else (float(ms[0]), float(ms[0]))
+        if ms.size == 6 and np.ptp(ms[:5]) > 1e-9:
+            return [f"controller max_step {ms.tolist()} is not one value for the body joints"]
+    else:
+        have = (float(max_step), float(max_step_gripper))
+    bad = []
+    if abs(have[0] - want[0]) > 1e-6:
+        bad.append(f"--max-step {have[0]:g} but the residual was trained behind {want[0]:g} deg per tick")
+    if abs(have[1] - want[1]) > 1e-6:
+        bad.append(f"--max-step-gripper {have[1]:g} but the residual was trained behind {want[1]:g} units per tick")
+    return bad
+
+
+def joint_offsets_name(meta: dict) -> str:
+    """'W9' / 'W' when the meta's FK offsets are the twin's named fit (vendored result.json), else 'custom'."""
+    off = meta.get("joint_offsets")
+    if off is None:
+        return "default"
+    res = json.loads((VENDOR / "align/joint_fit/result.json").read_text())
+    named = {"W9": res.get("grasp_depth_candidates", {}).get("W9", {}).get("joint_offsets_rad_for_sim"),
+             "W": res.get("joint_offsets_rad_for_sim")}
+    for k, v in named.items():
+        if v is not None and np.allclose(np.asarray(v, float)[:5], np.asarray(off, float)[:5], atol=1e-6):
+            return k
+    return "custom"
 
 
 def joint_offsets(meta: dict) -> list[float]:
@@ -389,6 +450,10 @@ class GraspResidual:
     def idle(self) -> bool:
         return not self.pick and not np.any(np.abs(self.o) > 1e-12)
 
+    def decides(self, gate: bool) -> bool:
+        """Whether step(..., gate) will run the network (the obs then wants a fresh joint reading)."""
+        return bool(gate) and self.k % self.decision_ticks == 0
+
     def obs(self, measured, cmd_prev, det: Det) -> np.ndarray:
         m = np.asarray(measured, float)
         load = (m[5] - (m[5] if cmd_prev is None else float(cmd_prev[5]))) / 10.0
@@ -468,6 +533,7 @@ class ResidualConfig:
     max_age_s: float = 0.15  # an older wrist result counts as "not detected"
     max_joint_delta: float = 20.0
     seed_top: bool = False  # --residual-top-seed: the top geometry is not verified yet (see residual_replay.py)
+    slew: str = ""  # smolvla_control's check of --max-step against the meta (for --check-only)
 
 
 def config_from_args(ns) -> ResidualConfig:
@@ -480,9 +546,41 @@ def config_from_args(ns) -> ResidualConfig:
 def describe(cfg: ResidualConfig) -> str:
     pol = load_policy(cfg.weights, cfg.device)
     m = pol.meta
-    return (f"residual {cfg.mode}: {cfg.weights} (source {m.get('source')}), s_dim {m['s_dim']}, top_target "
-            f"{bool(m.get('top_target'))}, scale {m['residual_scale']}, rate {m['rate_per_tick']}, tip {m['tip_local']}, "
-            f"decision {m.get('decision_ticks', 5)} / fade {m.get('fade_ticks', 6)} ticks")
+    r = lambda v: None if v is None else [round(float(x), 4) for x in v]  # noqa: E731
+    return (f"residual {cfg.mode}: {cfg.weights} (source {m.get('source')}), s_dim {m['s_dim']} obs {m['obs_dim']}, "
+            f"latent {bool(m.get('latent'))}, top_target {bool(m.get('top_target'))}, detector {m.get('detector')}, "
+            f"scale {r(m['residual_scale'])}, rate {m['rate_per_tick']}, tip {r(m['tip_local'])}, joint offsets "
+            f"{joint_offsets_name(m)}, decision {m.get('decision_ticks', 5)} / fade {m.get('fade_ticks', 6)} ticks; "
+            f"trained behind max_step {m.get('max_step')}, controller_delay {m.get('controller_delay')}, "
+            f"fixed_noise {m.get('fixed_noise')}, finetune {m.get('finetune')}; policy {type(pol).__name__} "
+            f"on {cfg.device}")
+
+
+def probe(cfg: ResidualConfig, n: int = 20) -> str:
+    """--check-only: everything the hook builds except the arm and cameras. The wrist detector on its device (n
+    blank frames), the wrist camera model + fin outlines from the vendored twin files, one residual step on a ready
+    pose. Raises (SystemExit) on what would fail at start-up."""
+    pol = load_policy(cfg.weights, cfg.device)
+    res = GraspResidual(pol, max_joint_delta=cfg.max_joint_delta)
+    cam = WT.WristCamera(offsets_rad=res.kin.off.tolist(), tip_local=res.meta["tip_local"])
+    t0 = time.perf_counter()
+    warm_fin_cache(cam)
+    fin_ms = (time.perf_counter() - t0) * 1e3
+    det = make_wrist_detector(cfg.detector, cfg.detector_device, cfg.detector_conf)
+    frame = np.zeros((480, 640, 3), np.uint8)
+    ms = []
+    for _ in range(n):
+        t0 = time.perf_counter()
+        det.detect(frame)
+        ms.append((time.perf_counter() - t0) * 1e3)
+    ready = np.array([26.3, -51.8, 30.1, 73.1, 15.9, 37.7])
+    _, info = res.step(ready, ready, ready, [ready] * PLAN_STEPS, Det(), True)
+    dev = getattr(det, "device", "?")
+    if dev != cfg.detector_device.upper():
+        log.warning("wrist detector fell back to %s (asked for %s)", dev, cfg.detector_device)
+    return (f"wrist detector {Path(cfg.detector).expanduser()} on {dev} ({type(det).__name__}): blank frame median "
+            f"{np.median(ms[2:] or ms):.1f} ms (first {ms[0]:.0f} ms); fin outlines {fin_ms:.0f} ms; one residual "
+            f"decision r {np.round(info['r'], 3).tolist()} in {info['policy_ms']} ms")
 
 
 def make_residual_controller_class(base, cfg: ResidualConfig, detector=None):
@@ -497,6 +595,10 @@ def make_residual_controller_class(base, cfg: ResidualConfig, detector=None):
             super().__init__(*a, **kw)
             pol = load_policy(cfg.weights, cfg.device)
             self.res = GraspResidual(pol, max_joint_delta=cfg.max_joint_delta)
+            # smolvla_control.main already refused a different slew in "on" mode; this catches other callers
+            self.res_slew_bad = check_controller(self.res.meta, self.max_step)
+            for b in self.res_slew_bad:
+                log.warning("residual: %s", b)
             self.res_cam = WT.WristCamera(offsets_rad=self.res.kin.off.tolist(), tip_local=self.res.meta["tip_local"])
             warm_fin_cache(self.res_cam)
             self.res_top_cam = TopCamera()
@@ -531,7 +633,13 @@ def make_residual_controller_class(base, cfg: ResidualConfig, detector=None):
             self.res.reset(xyz)
             self.res_wrist.reset(None if xyz is None else xyz[:2])
             self.res_seed = {"top_px": px, "top_xyz": None if xyz is None else np.round(xyz, 4).tolist()}
-            self._res_log("residual_start", mode=self.res_live, **self.res_seed)
+            bad = check_controller(self.res.meta, self.max_step)  # +/- keys change the slew live
+            if bad != self.res_slew_bad:
+                for b in bad:
+                    log.warning("residual: %s", b)
+                self.res_slew_bad = bad
+            self._res_log("residual_start", mode=self.res_live, max_step=np.asarray(self.max_step, float),
+                          slew_ok=not bad, **self.res_seed)
 
         def _res_det(self) -> tuple[Det, dict]:
             rec = self.res_wrist.latest
@@ -567,7 +675,11 @@ def make_residual_controller_class(base, cfg: ResidualConfig, detector=None):
             self.res_on_prev = gate
             if not gate and self.res.idle:
                 return target
-            measured = self.measured if self.measured is not None else np.asarray(self.arm.read(), float)
+            if self.measured is None or self.res.decides(gate):
+                # the network sees the joints now (as the twin's obs does), not the previous tick's reading
+                measured = np.asarray(self.arm.read(), float)
+            else:
+                measured = self.measured
             plan = [p for p in (self._planned(self.t + j) for j in range(PLAN_STEPS)) if p is not None] or [target]
             det, dinfo = self._res_det()
             g2, info = self.res.step(np.asarray(target, float), measured, self.cmd, plan, det, gate)

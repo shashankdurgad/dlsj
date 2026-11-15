@@ -6,7 +6,10 @@ the robot (`residual.WristDetector.process`), then `GraspResidual.step`. Reports
 against the 30 Hz budget, detection rate while picking, the size of the corrections and two geometry checks:
 * the wrist target at the gripper-close frame, relative to the fingertip (a grasped brick sits near (0, 0, ~0));
 * with --top: the top-camera target (detector on the first top frame, nearest the close-frame fingertip) vs that
-  fingertip (the top camera -> table geometry check).
+  fingertip (the top camera -> table geometry check);
+* the residual around the close (from `CLOSE_WINDOW` frames before it to 5 after): the applied offset there (xyz mm,
+  wrist deg, gripper units), its largest value, and the mean |r| of the network's decisions in the pick.
+The command fed back to the obs (gripper load) is the corrected goal slewed by the meta's max_step, as on the robot.
 
     python deploy/smolvla/residual_replay.py --dataset <lerobot root> --episode 3 \
         --detector ~/inference/models/brick-detector-v1 --device CPU [--weights zero|<npz>] [--out replay.jsonl]
@@ -26,6 +29,8 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import residual as RES  # noqa: E402
+
+CLOSE_WINDOW = 30  # frames before the gripper close summarised in the report (1 s)
 
 
 def load_episode(root: str | Path, episode: int, cams=("wrist", "top")) -> dict:
@@ -104,6 +109,9 @@ def replay(ep: dict, policy, detector, top_seed: bool = False, log=None) -> dict
     wd.reset(None if xyz is None else xyz[:2])
     n = len(ep["state"])
     tick_ms, det_ms, track_ms, deltas, valid, rel_close = [], [], [], [], [], None
+    offs, rs = [], []
+    slew = np.array([RES.meta_max_step(res.meta)[0]] * 5 + [RES.meta_max_step(res.meta)[1]]) \
+        if res.meta.get("max_step") else None
     cmd_prev = None
     for i in range(n):
         m, goal = ep["state"][i], ep["action"][i]
@@ -122,7 +130,12 @@ def replay(ep: dict, policy, detector, top_seed: bool = False, log=None) -> dict
         g2, info = res.step(goal, m, cmd_prev, ep["action"][i:i + RES.PLAN_STEPS], det, pick[i])
         tick_ms.append((time.perf_counter() - t0) * 1e3)
         deltas.append(np.abs(np.asarray(g2) - goal))
-        cmd_prev = np.asarray(g2, float)
+        offs.append(np.asarray(info["o"], float))
+        if info.get("decision"):
+            rs.append(np.abs(info["r"]))
+        g2 = np.asarray(g2, float)
+        base = m if cmd_prev is None else cmd_prev
+        cmd_prev = g2 if slew is None else base + np.clip(g2 - base, -slew, slew)
         if log is not None:
             row = {"i": i, "pick": pick[i], "goal": goal, "goal_res": g2, **{k: v for k, v in info.items()}}
             if rec is not None:
@@ -132,6 +145,16 @@ def replay(ep: dict, policy, detector, top_seed: bool = False, log=None) -> dict
             log.write(json.dumps({k: (np.round(np.asarray(v, float), 4).tolist() if isinstance(v, np.ndarray) else v)
                                   for k, v in row.items()}, default=str) + "\n")
     deltas = np.stack(deltas)
+    offs = np.stack(offs) * [1e3, 1e3, 1e3, 1, 1, 1]  # xyz mm
+
+    def near_close():
+        if close is None:
+            return {}
+        w = offs[max(0, close - CLOSE_WINDOW):close + 6]
+        k = np.abs(w).argmax(0)
+        return {"offset_at_close": np.round(offs[close], 1).tolist(),
+                "offset_max_near_close": np.round(w[k, range(6)], 1).tolist(),
+                "goal_change_max_near_close": np.round(deltas[max(0, close - CLOSE_WINDOW):close + 6].max(0), 2).tolist()}
 
     def pct(x, q):
         return round(float(np.percentile(x, q)), 3) if len(x) else None
@@ -146,7 +169,9 @@ def replay(ep: dict, policy, detector, top_seed: bool = False, log=None) -> dict
             "max_change_outside_pick": round(float(deltas[~np.asarray(pick)].max()), 6) if not all(pick) else 0.0,
             "wrist_rel_at_close_mm": None if rel_close is None else np.round(rel_close * 1e3, 1).tolist(),
             "top_target_xyz": None if xyz is None else np.round(xyz, 4).tolist(), "top_box": top_box,
-            "top_target_minus_close_tip_mm": None if top_err is None else round(top_err * 1e3, 1)}
+            "top_target_minus_close_tip_mm": None if top_err is None else round(top_err * 1e3, 1),
+            "decisions": len(rs), "mean_abs_r": np.round(np.mean(rs, 0), 3).tolist() if rs else None,
+            "offset_max_pick": np.round(np.abs(offs).max(0), 1).tolist(), **near_close()}
 
 
 def main() -> None:

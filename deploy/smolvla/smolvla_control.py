@@ -285,15 +285,28 @@ def _residual_args(ap) -> None:
                          "default: the twin's top camera and the W9 FK disagree by ~5-7 cm at table level, see residual.py)")
 
 
-def _residual_config(ours):
-    """None for --residual off, else (residual module, ResidualConfig) with the weights validated."""
+def _residual_config(ours, rest=(), offset=None):
+    """None for --residual off, else (residual module, ResidualConfig) with the weights validated and checked against
+    this controller (before the arm is touched): the slew it was trained behind (--max-step / --max-step-gripper;
+    "on" refuses a different one, "shadow" warns) and the calibration frame (no --joint-offset)."""
     if ours.residual == "off":
         return None
     sys.path.insert(0, str(Path(__file__).resolve().parent))
     import residual as RES
 
     cfg = RES.config_from_args(ours)
-    log.info(RES.describe(cfg))  # loads + validates the export's meta before the arm is touched
+    log.info(RES.describe(cfg))  # loads + validates the export's meta
+    if offset is not None and np.any(offset):
+        raise SystemExit("--residual needs the arm in the calibration frame it was trained in: drop --joint-offset")
+    pol = RES.load_policy(cfg.weights, cfg.device)
+    default = 8.0  # pi05_control.DEFAULT_MAX_STEP (both flags)
+    ms, msg = (float(_arg(list(rest), k) or default) for k in ("--max-step", "--max-step-gripper"))
+    bad = RES.check_controller(pol.meta, ms, msg)
+    for b in bad:
+        log.warning("residual: %s", b)
+    if bad and cfg.mode == "on":
+        raise SystemExit("--residual on: " + "; ".join(bad) + " (run the controller it was trained behind, or shadow)")
+    cfg.slew = f"max_step {ms:g},{msg:g}: " + ("; ".join(bad) if bad else "matches the training controller")
     return RES, cfg
 
 
@@ -343,14 +356,15 @@ def main() -> None:
         export_policy = _json.loads((export / "manifest.json").read_text())["policy"]["name"]
     except Exception:  # noqa: BLE001
         export_policy = ""
-    residual = _residual_config(ours)
+    residual = _residual_config(ours, rest, offset)
     if ours.check_only:
         print(f"export {export} ({export_policy or 'no manifest'}); prompts: pick {PICK!r} / bring {BRING!r} / "
               f"place {[fill(PLACE, colour=b) for b in bowls]}; crop {_arg(rest, '--crop')!r}; "
               f"training tasks {'checked' if TRAINING_TASKS else 'not checked'}")
         if residual is not None:
             RES, cfg = residual
-            print(RES.describe(cfg), "| gate on the pick prompt:", RES.is_pick_prompt(PICK))
+            print(RES.describe(cfg), "| gate on the pick prompt:", RES.is_pick_prompt(PICK), "|", cfg.slew)
+            print(RES.probe(cfg))  # wrist detector on its device + the vendored twin files; never the arm
         if not (export / "manifest.json").exists():
             raise SystemExit(f"no export at {export}")
         return

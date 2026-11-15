@@ -28,8 +28,8 @@ import smolvla_control as S  # noqa: E402
 
 import rtc_control as R  # noqa: E402  (smolvla_control put deploy/pi05 on sys.path)
 
-# the controller before the residual hook (feat/residual-deploy branched here), for the byte-for-byte check
-REFERENCE_COMMIT = "d2ee6c8"
+# the controller before the residual hook (main before feat/residual-deploy was merged), for the byte-for-byte check
+REFERENCE_COMMIT = "f9701eb"
 # pi05_control (Desmond's console) at the version with the trace log, if this checkout has no dlsj.deploy.pi05_control
 PI05_CONTROL_COMMIT = "6f800bd"
 PICK = "pick up the brick"
@@ -91,9 +91,10 @@ BRING_GOAL = np.array([-20.0, -60.0, 70.0, 20.0, 0.0, 2.0])
 
 class FakeArm:
     def __init__(self):
-        self.q, self.sent = START.copy(), []
+        self.q, self.sent, self.reads = START.copy(), [], 0
 
     def read(self):
+        self.reads += 1
         return self.q.copy()
 
     def send(self, cmd):
@@ -137,7 +138,7 @@ def cameras():
 
 def run(cls, policy, n=200, script=None, trace=None):
     arm = FakeArm()
-    c = cls(arm, cameras(), policy, bowls=["yellow", "purple", "orange"], fps=30, max_step=4.0, max_step_gripper=4.0,
+    c = cls(arm, cameras(), policy, bowls=["yellow", "purple", "orange"], fps=30, max_step=4.0, max_step_gripper=8.0,
             sync=True, trace=trace, horizon=15)
     script = script or {0: "start", 120: "m"}
     for t in range(n):
@@ -146,6 +147,7 @@ def run(cls, policy, n=200, script=None, trace=None):
         c.tick()
     if hasattr(c, "res_wrist"):
         c.res_wrist.stop()
+    c.arm_reads = arm.reads
     return np.stack(arm.sent), c
 
 
@@ -153,7 +155,7 @@ def base_cls(Smod, pc):
     return Smod.make_controller_class(R.make_rtc_controller_class(pc.Controller))
 
 
-def write_dummy(path: Path, r_const, s_dim=29, obs_dim=29, top_target=True, hidden=256, layers=4, **meta_kw):
+def write_dummy(path: Path, r_const, s_dim=25, obs_dim=25, top_target=False, hidden=256, layers=4, **meta_kw):
     """A residual_actor.npz in export_residual.py's format whose output is the constant r_const."""
     rng = np.random.default_rng(0)
     dims = [s_dim + 30] + [hidden] * (layers - 1) + [6]
@@ -183,7 +185,7 @@ def test_off_is_byte_identical_to_the_pre_residual_controller(pc, S_ref):
 
 
 def test_zero_residual_is_identity_and_logs_every_pick_tick(pc):
-    off, _ = run(base_cls(S, pc), FakePolicy())
+    off, c_off = run(base_cls(S, pc), FakePolicy())
     cfg = RES.ResidualConfig(mode="on", weights="zero")
     det = FakeDetector([(250, 200, 330, 280, 0.9)])
     trace = io.StringIO()
@@ -195,7 +197,11 @@ def test_zero_residual_is_identity_and_logs_every_pick_tick(pc):
     assert res and len(after) == 1 and after[0]["handoff"] and not after[0]["gate"]
     dec = [r for r in res if r.get("decision")]
     assert [r["k"] for r in dec][:3] == [1, 6, 11]  # one decision every 5 gated ticks
-    assert len(dec[0]["state"]) == 29 and len(dec[0]["plan"]) == 30
+    assert len(dec[0]["state"]) == 25 and len(dec[0]["plan"]) == 30
+    # one extra joint read per decision (the obs sees the arm now), none on the other ticks
+    assert c.arm_reads - c_off.arm_reads == len(dec)
+    starts = [r for r in recs if r["kind"] == "residual_start"]
+    assert starts[0]["slew_ok"] and starts[0]["max_step"] == [4.0] * 5 + [8.0]
     assert any(r["kind"] == "residual_start" for r in recs)
     assert c.res_stats["ticks"] == len(res) and c.res_stats["rejected"] == 0
 
@@ -270,7 +276,7 @@ def test_kin_matches_the_wrist_camera_fk_and_ik_reaches_the_offset():
 
 
 def test_obs_layout_and_plan_feature():
-    res = RES.GraspResidual(RES.ZeroPolicy())
+    res = RES.GraspResidual(RES.ZeroPolicy({**RES.ZERO_META, "top_target": True, "obs_dim": 29, "s_dim": 29}))
     res.reset(top_xyz=np.array([0.25, -0.05, RES.WT.BRICK_CENTRE_Z]))
     res.pick, res.t_pick = True, 48
     m = np.array([10, -30, 40, 60, 5, 20.0])
@@ -282,7 +288,10 @@ def test_obs_layout_and_plan_feature():
     assert s[25:28] == pytest.approx(Rm.T @ (res.top_xyz - p) * 10)
     pf = RES.GraspResidual.plan_feat([m + 2, m + 4], m)
     assert pf.shape == (30,) and pf[:6] == pytest.approx([0.1] * 6) and pf[-6:] == pytest.approx([0.2] * 6)
-    assert RES.GraspResidual(RES.ZeroPolicy()).obs(m, None, RES.Det())[25:29] == pytest.approx([0, 0, 0, 0])
+    assert res.obs(m, None, RES.Det())[9] == 0.0
+    res.top_xyz = None
+    assert res.obs(m, None, RES.Det())[25:29] == pytest.approx([0, 0, 0, 0])
+    assert RES.GraspResidual(RES.ZeroPolicy()).obs(m, None, RES.Det()).shape == (25,)  # the current exports
 
 
 def test_state_path_models_get_the_plan_repeated(tmp_path):
@@ -294,15 +303,18 @@ def test_state_path_models_get_the_plan_repeated(tmp_path):
 
 
 @pytest.mark.parametrize("bad", [
-    {"latent": True}, {"residual_scale": [0.2, 0.035, 0.02, 10, 10, 30]}, {"obs_dim": 25},
-    {"residual_scale": None}])
+    {"latent": True}, {"residual_scale": [0.2, 0.035, 0.02, 10, 10, 30]}, {"obs_dim": 29},
+    {"residual_scale": None}, {"max_step": None}, {"fixed_noise": None}, {"finetune": None},
+    {"controller_delay": None}, {"max_step": "fast"}, {"max_step": "4,8,2"}, {"tip_local": [0.0, -0.09]}])
 def test_load_refuses_what_the_robot_cannot_reproduce(tmp_path, bad):
     meta = {k: v for k, v in bad.items() if v is not None}
     w = write_dummy(tmp_path / "a.npz", [0.0] * 6, **meta)
-    if bad.get("residual_scale", 1) is None:  # drop the key altogether
+    gone = [k for k, v in bad.items() if v is None]
+    if gone:  # drop the key altogether (an export from before the field existed)
         z = dict(np.load(w))
         m = json.loads(str(z.pop("meta")))
-        m.pop("residual_scale")
+        for k in gone:
+            m.pop(k)
         np.savez(w, meta=np.array(json.dumps(m)), **z)
     with pytest.raises(SystemExit):
         RES.load_policy(str(w))
@@ -381,7 +393,7 @@ def test_replay_recorded_episode_with_the_real_detector():
 
 def test_timing_fits_the_30hz_budget(tmp_path):
     """Per control tick (decision every 5th): full-size network + obs + IK. Per wrist frame: tracker update."""
-    w = write_dummy(tmp_path / "a.npz", [0.3, -0.3, 0.1, 0.2, -0.2, 0.1], s_dim=29 + 120, obs_dim=29)
+    w = write_dummy(tmp_path / "a.npz", [0.3, -0.3, 0.1, 0.2, -0.2, 0.1], s_dim=29 + 120, obs_dim=29, top_target=True)
     res = RES.GraspResidual(RES.load_policy(str(w)))
     m = START.copy()
     ms = []
@@ -401,3 +413,102 @@ def test_timing_fits_the_30hz_budget(tmp_path):
     p99, tp99 = np.percentile(ms, 99), np.percentile(tk, 99)
     print(f"residual step p50 {np.median(ms):.3f} p99 {p99:.3f} ms; tracker p50 {np.median(tk):.3f} p99 {tp99:.3f} ms")
     assert p99 < 5.0 and tp99 < 5.0  # 33 ms per tick; the detector itself is ~4 ms on the NPU, in its own thread
+
+
+# ----------------------------------------------------------------------------- the controller it was trained behind
+def _ns(*argv):
+    import argparse
+
+    ap = argparse.ArgumentParser()
+    S._residual_args(ap)
+    return ap.parse_args(list(argv))
+
+
+def test_slew_check_against_the_meta():
+    m = RES.ZERO_META
+    assert RES.meta_max_step(m) == (4.0, 8.0) and RES.meta_max_step({"max_step": [4, 8]}) == (4.0, 8.0)
+    assert RES.check_controller(m, 4.0, 8.0) == []
+    assert RES.check_controller(m, np.array([4.0] * 5 + [8.0])) == []
+    assert len(RES.check_controller(m, 8.0, 8.0)) == 1 and len(RES.check_controller(m, 5.0, 4.0)) == 2
+    assert RES.check_controller(m, np.array([5.0] * 5 + [10.0]))  # the console's +/- keys scale it live
+
+
+def test_residual_config_refuses_a_different_controller(tmp_path):
+    w = str(write_dummy(tmp_path / "a.npz", [0.0] * 6))
+    on = _ns("--residual", "on", "--residual-weights", w)
+    _, cfg = S._residual_config(on, ["--max-step", "4"], np.zeros(6))  # gripper default 8 = trained
+    assert "matches" in cfg.slew
+    with pytest.raises(SystemExit):
+        S._residual_config(on, [], np.zeros(6))  # pi05_control's defaults are 8 / 8
+    with pytest.raises(SystemExit):
+        S._residual_config(on, ["--max-step=4", "--max-step-gripper", "4"], np.zeros(6))
+    _, cfg = S._residual_config(_ns("--residual", "shadow", "--residual-weights", w), [], np.zeros(6))
+    assert "trained behind" in cfg.slew  # shadow only warns: nothing is applied
+    with pytest.raises(SystemExit):
+        S._residual_config(on, ["--max-step", "4"], np.array([0, 0, 0, 0, 0, 2.0]))  # --joint-offset
+
+
+def test_residual_goes_in_before_the_controller_slew(pc, tmp_path):
+    """The twin's order: residual -> the controller's --max-step slew of the final command -> clamp."""
+    w = write_dummy(tmp_path / "a.npz", [0.9, -0.9, 0.5, 0.9, 0.9, 0.9])
+    trace = io.StringIO()
+    cls = RES.make_residual_controller_class(base_cls(S, pc), RES.ResidualConfig(mode="on", weights=str(w)),
+                                             detector=FakeDetector())
+    sent, c = run(cls, FakePolicy(), trace=trace)
+    recs = [json.loads(line) for line in trace.getvalue().splitlines()]
+    n = 0
+    for a, b in zip(recs, recs[1:]):
+        if a["kind"] == "residual" and a["applied"] and b["kind"] == "tick":
+            assert b["target"] == pytest.approx(a["goal_res"], abs=2e-3)  # the slew's input is the corrected goal
+            n += 1
+    assert n > 50
+    steps = np.abs(np.diff(sent, axis=0))
+    assert steps[:, :5].max() <= 4.0 + 1e-9 and steps[:, 5].max() <= 8.0 + 1e-9
+
+
+@pytest.mark.skipif(not os.environ.get("DLSJ_RESIDUAL_EXPORT"),
+                    reason="set DLSJ_RESIDUAL_EXPORT to an export_residual.py deploy_* dir")
+def test_real_export_meta_matches_the_spec():
+    d = Path(os.environ["DLSJ_RESIDUAL_EXPORT"]).expanduser()
+    pol = RES.load_policy(str(d))
+    m = pol.meta
+    assert m["s_dim"] == m["obs_dim"] == 25 and m["a_dim"] == 30 and not m["latent"] and not m["top_target"]
+    assert m["tip_local"] == pytest.approx([0.0063, 0.001, -0.0902], abs=1e-6)  # the fin-ray grasp point
+    assert RES.joint_offsets_name(m) == "W9"
+    assert RES.meta_max_step(m) == (4.0, 8.0) and m["fixed_noise"] and m["finetune"] and m["controller_delay"]
+    assert m["residual_scale"] == pytest.approx([0.035, 0.035, 0.02, 10, 10, 30], rel=1e-6)
+    rng = np.random.default_rng(1)
+    s = rng.standard_normal((16, 25)).astype(np.float32) * 0.5
+    p = rng.standard_normal((16, 30)).astype(np.float32) * 0.3
+    out = np.stack([pol(s[i], p[i]) for i in range(16)])
+    assert np.isfinite(out).all() and np.abs(out).max() <= 1.0
+    if (d / "residual_actor.onnx").exists():
+        pytest.importorskip("openvino")
+        ov = RES.load_policy(str(d), "CPU")
+        got = np.stack([ov(s[i], p[i]) for i in range(16)])
+        assert np.abs(got - out).max() < 1e-4  # numpy (the default) and OpenVINO agree
+
+
+def test_ab_counts_picks_closes_and_modes(pc, tmp_path):
+    import residual_ab as AB
+
+    w = write_dummy(tmp_path / "a.npz", [0.5, 0.0, 0.0, 0.0, 0.0, 0.0])
+    class ClosePolicy(FakePolicy):  # opens the jaw to 60, then closes it once (a clock, as MolmoAct2's close)
+        def __call__(self, state, images, task):
+            c = super().__call__(state, images, task)
+            c[:, 5] = 60.0 if self.calls < 4 else 0.0
+            return c
+
+    # M at tick 120 hands over to bring
+    for mode in ("off", "shadow", "on"):
+        trace = io.StringIO()
+        cls = base_cls(S, pc) if mode == "off" else RES.make_residual_controller_class(
+            base_cls(S, pc), RES.ResidualConfig(mode=mode, weights=str(w)), detector=FakeDetector())
+        run(cls, ClosePolicy(), trace=trace)
+        f = tmp_path / f"{mode}.jsonl"
+        f.write_text(trace.getvalue())
+        (p,) = AB.picks(f)
+        assert p["mode"] == mode and p["closes"] == 1 and p["grasped"] and p["first_attempt"] and p["end"] == "bring"
+        assert (p["decisions"] > 0) == (mode != "off")
+    assert AB.fisher(10, 0, 0, 10) < 0.001 and AB.fisher(5, 5, 5, 5) == 1.0
+    assert AB.wilson(0, 10)[0] == 0.0 and AB.wilson(10, 10)[1] == 1.0
