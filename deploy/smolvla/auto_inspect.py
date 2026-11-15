@@ -227,7 +227,11 @@ class HeldCubeInspector:
         # the decision rule re-gates every frame with agg.yolo_min_conf: v2's 0.8 suits a classifier's softmax, but the
         # detector's confidences on held bricks sit at ~0.5-0.8, so with 0.8 most confident frames counted as unsure and
         # every brick came out uncertain -> purple (live, 15 Nov). Use the detector's own bar (0.5, Joe's demo setting).
-        self.agg = AggregateConfig(strategy="yolo_topk", yolo_min_conf=conf, yolo_min_margin=0.2)
+        # plain needs >= 50 % of frames confidently plain (the shared default is 80 %): edge-on and mid-turn views often get
+        # no box and count as unsure, so 80 % sent plain bricks with zero mark frames to the fallback plate (14 Nov:
+        # 68/153 spins uncertain). Replay of those 153 spins at 50 %: no marked decision changes, 25 uncertain -> plain
+        # (21 with zero mark frames, the rest 1-4, within the 5 outliers a plain brick is allowed).
+        self.agg = AggregateConfig(strategy="yolo_topk", yolo_min_conf=conf, yolo_min_margin=0.2, yolo_plain_frac=0.5)
         self.detector = detector  # the top-camera brick detector the loop's perception uses
         self.model.predict(np.zeros((480, 640, 3), np.uint8), imgsz=640, conf=0.05, device=device.lower(),
                            verbose=False)  # compile once, on the chosen device
