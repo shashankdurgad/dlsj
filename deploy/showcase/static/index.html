@@ -1,0 +1,192 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Brick Sorter Live</title>
+<meta name="description" content="An SO-101 arm sorting Duplo bricks on one Intel Core Ultra laptop: VLA on the Arc GPU, YOLO on the NPU, control on the CPU.">
+<link rel="stylesheet" href="./style.css">
+<script type="importmap">
+{ "imports": { "three": "./vendor/three.module.js", "three/examples/jsm/": "./vendor/jsm/" } }
+</script>
+</head>
+<body>
+<a class="skip" href="#mission">Skip to mission control</a>
+
+<header class="bar">
+  <div class="brand">
+    <svg class="brand-mark" viewBox="0 0 32 32" aria-hidden="true"><rect x="3" y="11" width="26" height="15" rx="3"/><circle cx="10" cy="11" r="3.4"/><circle cx="22" cy="11" r="3.4"/></svg>
+    <div>
+      <div class="brand-name" id="title">Brick sorter</div>
+      <div class="brand-sub" id="tagline">One laptop. Three engines. Every brick inspected.</div>
+    </div>
+  </div>
+  <nav class="jump" aria-label="Page sections">
+    <a href="#mission">Live</a>
+    <a href="#how">How it works</a>
+    <span id="navSections"></span>
+  </nav>
+  <div class="bar-right">
+    <div class="conn" id="conn" role="status" aria-live="polite"><span class="dot"></span><span id="connText">Connecting</span></div>
+    <button class="btn-stop" id="btnStop" type="button" aria-label="Stop the robot">
+      <svg viewBox="0 0 20 20" aria-hidden="true"><rect x="4" y="4" width="12" height="12" rx="2"/></svg>Stop
+    </button>
+  </div>
+</header>
+
+<div class="offline-banner" id="offlineBanner" hidden>
+  <strong id="offlineTitle">Robot offline: showing the last recorded run</strong>
+  <span id="offlineDetail"></span>
+</div>
+
+<main>
+  <!-- HERO: live digital twin -->
+  <section class="hero" aria-label="Live digital twin">
+    <div class="stage" id="stage">
+      <canvas id="twin" aria-label="3D model of the SO-101 arm mirroring the real robot's joint angles"></canvas>
+      <div class="stage-hud">
+        <div class="hud-step">
+          <span class="hud-step-k">Now</span>
+          <span class="hud-step-v" id="hudStep">Waiting for the robot</span>
+        </div>
+        <p class="hud-msg" id="hudMsg"></p>
+      </div>
+      <div class="stage-joints" id="joints" aria-label="Joint angles"></div>
+      <div class="stage-hint" id="twinHint">Drag to orbit the view</div>
+      <div class="stage-fallback" id="twinFallback" hidden>3D view unavailable in this browser. Live data continues below.</div>
+    </div>
+
+    <aside class="hero-side">
+      <div class="prompt-card">
+        <div class="k">The VLA is told</div>
+        <blockquote id="prompt">…</blockquote>
+        <div class="prompt-meta"><span class="chip gpu">Arc GPU</span> MolmoAct2, OpenVINO INT8</div>
+      </div>
+
+      <div class="verdict-card" id="verdictCard" data-verdict="none">
+        <div class="k">Latest inspection</div>
+        <div class="verdict-row">
+          <div class="verdict-swatch" aria-hidden="true"></div>
+          <div>
+            <div class="verdict-v" id="verdictV">No brick inspected yet</div>
+            <div class="verdict-why" id="verdictWhy"></div>
+          </div>
+        </div>
+        <div class="frames" id="frames" aria-label="Per-frame YOLO confidence while the wrist spins the brick"></div>
+        <div class="frames-cap" id="framesCap"><span class="chip npu">NPU</span> YOLO, one bar per frame of the spin</div>
+      </div>
+
+      <div class="mini-grid">
+        <div class="mini">
+          <div class="k">VLA latency</div>
+          <div class="mini-v"><span id="latV">–</span><small>ms</small></div>
+          <svg class="spark" id="spark" viewBox="0 0 160 36" preserveAspectRatio="none" aria-hidden="true"><path class="spark-area"/><path class="spark-line"/></svg>
+          <div class="mini-note" id="latMed">median –</div>
+        </div>
+        <div class="mini">
+          <div class="k">Gripper</div>
+          <div class="gauge" id="gauge">
+            <svg viewBox="0 0 120 70" aria-hidden="true">
+              <path class="g-track" d="M10 62 A50 50 0 0 1 110 62"/>
+              <path class="g-hold" id="gHold" d="M10 62 A50 50 0 0 1 110 62"/>
+              <path class="g-val" id="gVal" d="M10 62 A50 50 0 0 1 110 62"/>
+            </svg>
+            <div class="gauge-v"><span id="gripV">–</span></div>
+          </div>
+          <div class="mini-note" id="gripState">–</div>
+        </div>
+      </div>
+    </aside>
+  </section>
+
+  <!-- stage strip -->
+  <section class="strip-wrap" aria-label="Sorting cycle">
+    <ol class="strip" id="strip"></ol>
+    <div class="controls" role="group" aria-label="Loop controls">
+      <button type="button" class="btn" data-cmd="start">Start loop</button>
+      <button type="button" class="btn" data-cmd="pause">Pause</button>
+      <button type="button" class="btn" data-cmd="resume">Resume</button>
+      <button type="button" class="btn" data-cmd="home">Go home</button>
+      <span class="ctl-msg" id="ctlMsg" role="status" aria-live="polite"></span>
+    </div>
+  </section>
+
+  <!-- MISSION CONTROL -->
+  <section class="mission" id="mission" aria-labelledby="missionH">
+    <div class="sec-head">
+      <h2 id="missionH">Mission control</h2>
+      <p class="lead">What the robot sees, decides and does, live from the laptop.</p>
+    </div>
+
+    <div class="cams">
+      <figure class="cam" data-cam="top">
+        <div class="cam-box"><img alt="Live top camera" data-src="/live/top?w=640"><canvas></canvas><div class="cam-off">Top camera feed unavailable. Retrying.</div></div>
+        <figcaption><b>Top camera</b> finds bricks and plates <span class="chip npu">NPU</span></figcaption>
+      </figure>
+      <figure class="cam" data-cam="inspect">
+        <div class="cam-box"><img alt="Live inspection camera" data-src="/live/inspect?w=640"><canvas></canvas><div class="cam-off">Inspection camera feed unavailable. Retrying.</div></div>
+        <figcaption><b>Inspection camera</b> watches the brick spin <span class="chip npu">NPU</span></figcaption>
+      </figure>
+      <figure class="cam" data-cam="wrist">
+        <div class="cam-box"><img alt="Live wrist camera" data-src="/live/wrist?w=640"><canvas></canvas><div class="cam-off">Wrist camera feed unavailable. Retrying.</div></div>
+        <figcaption><b>Wrist camera</b> feeds the VLA <span class="chip gpu">GPU</span></figcaption>
+      </figure>
+    </div>
+
+    <div class="panels">
+      <div class="panel devices">
+        <h3>Where it runs</h3>
+        <ul class="dev-list">
+          <li class="dev gpu"><span class="dev-name">Arc GPU</span><span class="dev-what">MolmoAct2 VLA plans the next motion chunk</span><span class="dev-num"><b id="devGpu">~300</b> ms per chunk</span><span class="dev-pulse" id="pulseGpu"></span></li>
+          <li class="dev npu"><span class="dev-name">NPU</span><span class="dev-what">YOLO finds bricks and reads the marks</span><span class="dev-num"><b id="devNpu">~4</b> ms per frame</span><span class="dev-pulse" id="pulseNpu"></span></li>
+          <li class="dev cpu"><span class="dev-name">CPU</span><span class="dev-what">Blends chunks and drives the servos</span><span class="dev-num"><b>30</b> Hz control</span><span class="dev-pulse" id="pulseCpu"></span></li>
+        </ul>
+        <div class="dev-foot" id="devFoot"></div>
+      </div>
+
+      <div class="panel tallies">
+        <h3>Sorted this run</h3>
+        <div class="tally-row">
+          <div class="tally plain"><div class="tally-n" id="tPlain">0</div><div class="tally-l">plain, yellow plate</div></div>
+          <div class="tally marked"><div class="tally-n" id="tMarked">0</div><div class="tally-l">marked, purple plate</div></div>
+        </div>
+        <div class="tally-cycle" id="cycleInfo">Cycle –</div>
+      </div>
+
+      <div class="panel log">
+        <h3>Cycle log</h3>
+        <div class="table-scroll">
+          <table class="cycles">
+            <thead><tr><th>#</th><th>Brick</th><th>Verdict</th><th>Plate</th><th class="num">Frames</th><th class="num">Inspect</th><th class="num">Cycle</th></tr></thead>
+            <tbody id="cycles"><tr class="empty"><td colspan="7">No cycles yet. Press Start loop to sort the bricks on the table.</td></tr></tbody>
+          </table>
+        </div>
+      </div>
+
+      <div class="panel events">
+        <h3>Event feed</h3>
+        <ol class="ev" id="events"></ol>
+      </div>
+    </div>
+  </section>
+
+  <!-- HOW IT WORKS -->
+  <section class="how" id="how" aria-labelledby="howH">
+    <div class="sec-head">
+      <h2 id="howH">How it works</h2>
+      <p class="lead">Every brick takes the same path through the three engines of one Core Ultra laptop.</p>
+    </div>
+    <ol class="pipeline" id="pipeline"></ol>
+  </section>
+
+  <div id="story"></div>
+</main>
+
+<footer class="foot">
+  <span>Intel challenge, Junction 2026. Physical AI Studio, Anomalib and OpenVINO on a Core Ultra laptop.</span>
+  <span id="footState"></span>
+</footer>
+
+<script type="module" src="./app.js"></script>
+</body>
+</html>
