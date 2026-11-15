@@ -14,6 +14,8 @@ The full plan, commands, code snippets and sources are in **[docs/PLAYBOOK.md](d
 
 ## Open data and models
 
+Everything on Hugging Face: https://huggingface.co/collections/akoniti/so-101-duplo-inspection-data-vla-digital-twin-6af9610802014765d70d3423
+
 Write-up of the hackathon entry and our approach: **[docs/OPEN_SOURCE.md](docs/OPEN_SOURCE.md)**.
 
 - Datasets (CC BY 4.0, LeRobot format): [akoniti/dlsj-canonical](https://huggingface.co/datasets/akoniti/dlsj-canonical),

@@ -1,5 +1,7 @@
 # Open source release
 
+Everything on Hugging Face: https://huggingface.co/collections/akoniti/so-101-duplo-inspection-data-vla-digital-twin-6af9610802014765d70d3423
+
 Our entry to the **Intel Physical AI challenge at Junction 2026**: an SO-101 arm that inspects and sorts Duplo
 bricks, built with Intel Physical AI Studio, Anomalib and OpenVINO and run on an Intel Core Ultra laptop (CPU, GPU
 and NPU).
