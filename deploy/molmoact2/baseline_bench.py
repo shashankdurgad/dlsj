@@ -157,7 +157,7 @@ def timed(fn, args) -> dict:
 
     ms, loads, redone = [], [], 0
     k = 0
-    e0, t0 = rapl_uj(), time.perf_counter()
+    e0, t0, w0 = rapl_uj(), time.perf_counter(), time.time()
     while len(ms) < args.iters:
         wait_arm_free(lambda m: print(m, flush=True))
         load1 = os.getloadavg()[0]
@@ -172,8 +172,9 @@ def timed(fn, args) -> dict:
             fn(k)
             ms.append((time.perf_counter() - t) * 1e3)
             k += 1
-    e1, t1 = rapl_uj(), time.perf_counter()
-    out = {**stats(ms), "load1_per_block": loads, "blocks_redone": redone}
+    e1, t1, w1 = rapl_uj(), time.perf_counter(), time.time()
+    # wall-clock window of the timed calls: lets an external (root) energy log be matched afterwards
+    out = {**stats(ms), "load1_per_block": loads, "blocks_redone": redone, "wall": [round(w0, 3), round(w1, 3)]}
     if e0 is not None and e1 is not None and e1 > e0:
         w = (e1 - e0) / 1e6 / (t1 - t0)
         out |= {"pkg_power_w": round(w, 1), "pkg_j_per_chunk": round(w * out["median_ms"] / 1e3, 2)}

@@ -1,0 +1,80 @@
+{
+ "ov:/home/intel/inference/exports/molmo_opt/ft_cal2_456_8k/rtc_int8@GPU": {
+  "load_s": 5.9,
+  "median_ms": 313.4,
+  "p90_ms": 315.5,
+  "p99_ms": 317.2,
+  "n": 50,
+  "load1_per_block": [
+   2.3,
+   2.2,
+   2.18,
+   2.18,
+   2.17
+  ],
+  "blocks_redone": 0,
+  "pkg_power_w": null,
+  "rtc": true,
+  "peak_rss_mb": 5898.0,
+  "gpu_resident_mb": 1792.2,
+  "quality": {
+   "vs_ref_joints": 31.972,
+   "vs_ref_gripper": 11.526,
+   "demo_err_joints": 2.801,
+   "demo_err_ref_joints": 32.626
+  },
+  "label": "fine-tuned 8k, OV GPU INT8+RTC (deployed)"
+ },
+ "ov:/home/intel/inference/exports/molmo_opt/ft_cal2_456/rtc_int8@GPU": {
+  "load_s": 11.1,
+  "median_ms": 314.3,
+  "p90_ms": 317.6,
+  "p99_ms": 318.3,
+  "n": 50,
+  "load1_per_block": [
+   2.15,
+   2.14,
+   2.14,
+   2.29,
+   2.18
+  ],
+  "blocks_redone": 0,
+  "pkg_power_w": null,
+  "rtc": true,
+  "peak_rss_mb": 5858.1,
+  "gpu_resident_mb": 1792.2,
+  "quality": {
+   "vs_ref_joints": 32.183,
+   "vs_ref_gripper": 10.574,
+   "demo_err_joints": 3.516,
+   "demo_err_ref_joints": 32.626
+  },
+  "label": "fine-tuned 5.5k, OV GPU INT8+RTC"
+ },
+ "ov:/run/media/intel/Untitled/exports_wristedit/rtc_int8@GPU": {
+  "load_s": 6.2,
+  "median_ms": 351.2,
+  "p90_ms": 355.3,
+  "p99_ms": 359.4,
+  "n": 50,
+  "load1_per_block": [
+   2.0,
+   2.0,
+   2.4,
+   2.29,
+   2.18
+  ],
+  "blocks_redone": 0,
+  "pkg_power_w": null,
+  "rtc": true,
+  "peak_rss_mb": 5899.4,
+  "gpu_resident_mb": 1792.3,
+  "quality": {
+   "vs_ref_joints": 32.361,
+   "vs_ref_gripper": 11.253,
+   "demo_err_joints": 2.835,
+   "demo_err_ref_joints": 32.626
+  },
+  "label": "fine-tuned 8k wrist-edit, OV GPU INT8+RTC"
+ }
+}

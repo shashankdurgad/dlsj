@@ -82,7 +82,7 @@ class Store:
             out[e["label"]]["crops"] += max(0, n)
         return out
 
-    def view(self, limit: int = 60) -> list[dict]:
+    def view(self, limit: int = 40) -> list[dict]:
         """Newest first, with crop file names and the model's per-frame guess."""
         out = []
         for e in reversed(self.data["entries"][-limit:]):
@@ -106,6 +106,14 @@ def crops(d) -> list[Path]:
 
 
 def per_frame(d) -> dict:
+    cj = Path(d) / "crops.json"  # continuous spins: one prediction per crop
+    if cj.exists():
+        try:
+            return {int(r["i"]): {"mark": r.get("confident") if r.get("confident") in ("circle", "cross") else None,
+                                  "label": "perfect" if r.get("confident") == "none" else r.get("confident"),
+                                  "score": r.get("conf")} for r in json.loads(cj.read_text())}
+        except Exception:  # noqa: BLE001
+            return {}
     try:
         j = json.loads((Path(d) / "sweep.json").read_text())
         return {int(f["i"]): f for f in (j.get("inspection") or {}).get("per_frame", [])}

@@ -71,21 +71,33 @@ class AutoInspector:
         self.out_root = Path(out_root).expanduser()
         self.abort = threading.Event()
         self.listener = None  # optional callable(event: dict): live per-frame results for a dashboard
+        self.continuous = False  # roll without stopping and classify every camera frame (~1 per degree)
+        self.continuous_speed = 30.0  # deg/s; at 30 fps that is one frame per degree
 
     # ------------------------------------------------------------------ one sweep
     def _sweep_once(self, robot, start_cmd: np.ndarray):
         from dlsj.inspect import aggregate as agg
         from dlsj.loop.sweep import SweepConfig, Sweeper
 
-        cfg = SweepConfig(frames=self.frames, range_deg=self.range_deg, settle_ms=self.settle_ms,
+        frames = self.frames
+        extra = {}
+        if self.continuous:  # a planned angle per camera frame: range / (speed / fps)
+            frames = int(self.range_deg / max(1e-3, self.continuous_speed / self.fps)) + 1
+            extra = {"continuous": True, "continuous_speed_deg_s": self.continuous_speed}
+        cfg = SweepConfig(frames=frames, range_deg=self.range_deg, settle_ms=self.settle_ms,
                           max_speed_deg_s=min(self.speed, 120.0), limits=self.limits,
-                          grasp_empty_pos=self.grasp_empty_pos, camera="inspect", fps=self.fps, return_to_start=True)
+                          grasp_empty_pos=self.grasp_empty_pos, camera="inspect", fps=self.fps, return_to_start=True,
+                          **extra)
         pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="inspect-infer")
         futures, crops = [], {}
+
+        self._crop_info = {}
 
         def infer(frame, i, angle):
             c = self.insp.classify(frame)
             crops[i] = c["crop"]
+            self._crop_info[i] = {"angle": round(float(angle), 1), "top": c.get("top"),
+                                  "conf": round(float(c.get("conf") or 0), 3), "confident": c.get("confident")}
             if self.listener is not None:
                 try:
                     self.listener({"kind": "frame", "i": i, "angle": float(angle), "frame": frame, **c})
@@ -106,14 +118,16 @@ class AutoInspector:
         can_stop = (self.early_stop and hasattr(agg, "early_stop")
                     and "should_stop" in _inspect.signature(Sweeper.run).parameters)
         kw = {"should_stop": should_stop} if can_stop else {}
+        cams = _LatestFrame(self.cameras) if self.continuous else self.cameras
         try:
-            sres = Sweeper(robot, self.cameras, cfg, self.abort).run(start_cmd.copy(), on_frame=on_frame, **kw)
+            sres = Sweeper(robot, cams, cfg, self.abort).run(start_cmd.copy(), on_frame=on_frame, **kw)
             recs = [f.result(timeout=10.0) for f in futures]
         finally:
             pool.shutdown(wait=True, cancel_futures=True)
         res = None
         if recs and sres.status == "ok":
-            res = agg.aggregate(recs, 0.5, 1 - self.insp.min_conf, self.insp.min_conf, self.insp.agg, "yolo_topk")
+            res = agg.aggregate(recs, 0.5, 1 - self.insp.min_conf, self.insp.min_conf, scaled_agg(self.insp.agg, len(recs)),
+                                "yolo_topk")
         return sres, recs, crops, res
 
     def _save(self, attempt: int, sres, recs, crops, res) -> str | None:
@@ -123,11 +137,20 @@ class AutoInspector:
             from dlsj.loop.sweep_test import save_sweep
 
             out = self.out_root / (datetime.now().strftime("%Y%m%d-%H%M%S") + f"_a{attempt}")
-            save_sweep(out, sres.frames, sres.angles, None, sres, None, recs or None, None, None,
+            n = len(sres.frames)
+            keep = sorted({round(k * (n - 1) / 11) for k in range(12)}) if n > 12 else list(range(n))
+            sub = (lambda xs: [xs[k] for k in keep if k < len(xs)]) if n > 12 else (lambda xs: xs)
+            save_sweep(out, sub(sres.frames), sub(sres.angles), None, sres if n <= 12 else None, None,
+                       (sub(recs) if recs else None), None, None,
                        {"source": "auto_inspect", "outcome": None if res is None else res.outcome().value,
-                        "reason": None if res is None else res.summary.get("reason")})
-            for i, c in crops.items():
-                cv2.imwrite(str(out / f"crop_{i:02d}.jpg"), c, [cv2.IMWRITE_JPEG_QUALITY, 92])
+                        "reason": None if res is None else res.summary.get("reason"), "frames_total": n,
+                        "continuous": self.continuous})
+            meta = []
+            for i, c in sorted(crops.items()):
+                cv2.imwrite(str(out / f"crop_{i:03d}.jpg"), c, [cv2.IMWRITE_JPEG_QUALITY, 92])
+                r = self._crop_info.get(i, {})
+                meta.append({"i": i, **r})
+            (out / "crops.json").write_text(__import__("json").dumps(meta))
             return str(out)
         except Exception as e:  # noqa: BLE001  saving must never break the run
             log.warning("could not save the sweep: %s", e)
@@ -173,6 +196,38 @@ def _ov_dir(d: Path) -> Path:
     if not link.exists():
         link.symlink_to(d.name)
     return link
+
+
+class _LatestFrame:
+    """Continuous spins: `fresh(name, 1)` returns the newest camera frame at once instead of waiting ~33 ms for the
+    next one, so the roll never pauses between frames (the sweep only ticks the wrist when it isn't grabbing)."""
+
+    def __init__(self, cameras):
+        self.cameras = cameras
+
+    def fresh(self, name, n, timeout_s: float = 2.0):
+        s = getattr(self.cameras, "streams", {}).get(name)
+        if n == 1 and s is not None and getattr(s, "frame", None) is not None:
+            with s.cond:
+                f = s.frame
+            return [np.ascontiguousarray(f[..., ::-1])]  # BGR -> RGB, like StreamCameras.fresh
+        return self.cameras.fresh(name, n, timeout_s)
+
+    def __getattr__(self, k):
+        return getattr(self.cameras, k)
+
+
+def scaled_agg(cfg, n: int, base: int = 12):
+    """The yolo_topk counts were tuned on 12 frames: scale "marked needs >= 2" and "plain allows <= 1 outlier" with
+    the frame count (a continuous spin has ~180), so a dense spin is judged like a 12-stop one."""
+    import dataclasses
+    import math
+
+    if n <= base or not dataclasses.is_dataclass(cfg):
+        return cfg
+    k = n / base
+    return dataclasses.replace(cfg, yolo_min_marked_frames=math.ceil(cfg.yolo_min_marked_frames * k),
+                               yolo_max_outlier_frames=math.floor(cfg.yolo_max_outlier_frames * k))
 
 
 def make_auto_inspector(cameras, follower_id: str = "follower", device: str = "NPU", roi=None, **kw) -> AutoInspector:

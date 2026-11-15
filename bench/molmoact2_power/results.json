@@ -1,0 +1,62 @@
+{
+ "ov:/home/intel/inference/exports/molmo_opt/ft_cal2_456_8k/rtc_int8@GPU": {
+  "load_s": 6.2,
+  "median_ms": 312.8,
+  "p90_ms": 314.8,
+  "p99_ms": 316.8,
+  "n": 100,
+  "load1_per_block": [
+   1.03,
+   1.1,
+   1.1,
+   1.1,
+   1.33,
+   1.33,
+   1.38,
+   1.35,
+   1.35,
+   1.32
+  ],
+  "blocks_redone": 0,
+  "wall": [
+   1794713305.61,
+   1794713336.945
+  ],
+  "pkg_power_w": null,
+  "rtc": true,
+  "peak_rss_mb": 5899.3,
+  "gpu_resident_mb": 1792.2,
+  "quality": {
+   "vs_ref_joints": 31.972,
+   "vs_ref_gripper": 11.526,
+   "demo_err_joints": 2.801,
+   "demo_err_ref_joints": 32.626
+  },
+  "label": "now: fine-tuned 8k, OV GPU INT8+RTC"
+ },
+ "torch:cpu:bf16": {
+  "load_s": 24.7,
+  "median_ms": 13746.1,
+  "p90_ms": 14500.0,
+  "p99_ms": 14912.6,
+  "n": 10,
+  "load1_per_block": [
+   3.45
+  ],
+  "blocks_redone": 4,
+  "wall": [
+   1794714339.918,
+   1794714595.629
+  ],
+  "pkg_power_w": null,
+  "peak_rss_mb": 26818.0,
+  "gpu_resident_mb": 100.2,
+  "quality": {
+   "vs_ref_joints": 31.267,
+   "vs_ref_gripper": 9.911,
+   "demo_err_joints": 8.831,
+   "demo_err_ref_joints": 32.626
+  },
+  "label": "baseline: stock PyTorch CPU bf16"
+ }
+}
