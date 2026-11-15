@@ -82,6 +82,8 @@ th{color:var(--mute);font-weight:500;text-align:left;padding:4px 6px;border-bott
     <div class="mute" style="font-size:12px;margin-bottom:4px">Offset from where the VLA stops. Pan negative = brick moves right on the inspection camera (demo fit).</div>
     <table id="offtab"></table><div class="mute" id="vlaend" style="font-size:12px"></div></div>
    <div id="fixwrap"><div class="btns" style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:8px">
+    <button id="holdbtn2" onclick="PZ(this.dataset.on?'hold_off':'hold_on')">Hold at camera</button>
+    <button id="spinbtn2" class="go" onclick="PZ('spin')">Spin now</button>
     <button onclick="PZ('goto')">Go to pose</button><button onclick="PZ('save')">Save</button><button onclick="PZ('reset')">Demo pose</button>
     <button onclick="PZ('grip_open')">Open gripper</button><button onclick="PZ('grip_close')">Close gripper</button></div>
    <table id="iptab"></table></div><div class="mute" id="ipmsg" style="font-size:12px;margin-top:6px"></div></section>
@@ -104,7 +106,8 @@ function drawOffset(ip){$('offwrap').style.display='';$('fixwrap').style.display
  $('spinbtn').disabled=!ip.at_camera;$('vlaend').textContent=ip.vla_end?'VLA stopped at '+ip.vla_end.join(', '):'';
  $('offtab').innerHTML=ip.joints.map((j,i)=>`<tr><td>${JL[j]||j}</td><td style="text-align:right;width:56px">${ip.offset[i]>0?'+':''}${ip.offset[i].toFixed(1)}</td><td style="text-align:right">${[-5,-1,1,5].map(d=>`<button style="padding:3px 8px" onclick="PZ('off_nudge/${j}/${d}')">${d>0?'+':''}${d}</button>`).join(' ')}</td></tr>`).join('')}
 const JL={shoulder_pan:'pan',shoulder_lift:'lift',elbow_flex:'elbow',wrist_flex:'wrist flex',wrist_roll:'roll'};
-function drawPose(ip){if(!ip)return;if(ip.mode==='vla_offset')return drawOffset(ip);$('offwrap').style.display='none';$('fixwrap').style.display='';$('ipsrc').textContent=ip.source+(ip.enabled?'':' (VLA bring in use)');$('ipmsg').textContent=ip.message||'';
+function drawPose(ip){if(!ip)return;if(ip.mode==='vla_offset')return drawOffset(ip);$('offwrap').style.display='none';$('fixwrap').style.display='';
+ $('holdbtn2').textContent=ip.hold?'Hold at camera: ON':'Hold at camera: off';$('holdbtn2').dataset.on=ip.hold?'1':'';$('spinbtn2').disabled=!ip.at_camera;$('ipsrc').textContent=(ip.mode==='vla_pose'?'VLA bring, then this pose: ':'')+ip.source+(ip.at_camera?' · HOLDING AT CAMERA':'');$('ipmsg').textContent=ip.message||'';
  $('iptab').innerHTML=ip.joints.map((j,i)=>`<tr><td>${JL[j]||j}</td><td style="text-align:right;width:56px">${ip.pose[i].toFixed(1)}</td><td style="text-align:right">${[-5,-1,1,5].map(d=>`<button style="padding:3px 8px" onclick="PZ('nudge/${j}/${d}')">${d>0?'+':''}${d}</button>`).join(' ')}</td></tr>`).join('')}
 addEventListener('keydown',e=>{if(e.repeat||e.target.tagName==='INPUT')return;const k=e.key.toLowerCase();
  if(k==='q'){L('stop');e.preventDefault()}else if(k==='s')L('start');else if(k==='p')L('pause');else if(k==='r')L('resume');else if(k==='h')L('home')});

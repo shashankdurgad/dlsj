@@ -96,7 +96,8 @@ def build(monkeypatch, tmp_path):
         insp = inspector or StubInspector()
         monkeypatch.setattr(LC, "time", clock)
         monkeypatch.setattr(LC.LCFG, "log_dir", str(tmp_path))
-        monkeypatch.setattr(LC.LCFG, "bring_mode", "fixed" if fixed_pose else "vla_offset")
+        monkeypatch.setattr(LC.LCFG, "bring_mode", fixed_pose if isinstance(fixed_pose, str) else
+                            ("fixed" if fixed_pose else "vla_offset"))
         monkeypatch.setattr(LC, "_make_top_detector", lambda: None)
         monkeypatch.setattr(S, "_manual_make_controller_class", lambda b: b, raising=False)
         monkeypatch.setattr(S, "BRING", "bring the brick to the inspection camera")
@@ -471,4 +472,34 @@ def test_saved_offset_applied_without_hold(build):
     assert insp.done.wait(2.0)
     cyc = c.L["cycles"][-1]
     assert cyc["offset"][0] == -6.0 and cyc["vla_end"][0] == pytest.approx(-12.0)
+
+
+def test_vla_bring_then_straight_to_saved_pose(build):
+    c, clock, insp = build(fixed_pose="vla_pose")
+    c.ready = np.array([26.3, -51.8, 30.1, 73.1, 15.9, 37.7])
+    c.ip_pose = np.array([-24.2, 20.0, -24.2, 72.4, -17.2])
+    c.loop_command("start")
+    run(c, clock, 1.2)
+    see_bricks(c, clock, 1)
+    clock.now += 3.0
+    run(c, clock, 0.1)
+    run(c, clock, 1.0, grip=5.6, cmd_grip=0.0)
+    assert c.L["step"] == "bring" and c.phase == "running"  # the VLA's own bring
+    vla_end = np.array([-7.9, 40.5, -45.1, 62.5, 2.2])
+    path = []
+    for _ in range(30 * 20):
+        clock.now += 1 / 30
+        c.measured[5], c.cmd[5] = 5.6, 0.0
+        if c.phase == "running" and c.L["step"] == "bring":  # the VLA holds the arm at its endpoint
+            c.measured[:5] = vla_end
+            c.cmd[:5] = vla_end
+        c.tick()
+        if c.phase in ("moving", "posing"):
+            path.append(c.cmd[:5].copy())
+        if c.L["step"] != "bring":
+            break
+    path = np.stack(path)
+    assert np.allclose(path[-1], c.ip_pose, atol=0.6)
+    assert path[:, 1].min() > 19.0  # straight there: never up through the ready pose (lift -51.8)
+    assert insp.done.wait(2.0) and c.L["cycles"][-1]["pose"] == [-24.2, 20.0, -24.2, 72.4, -17.2]
 

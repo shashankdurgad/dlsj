@@ -42,7 +42,7 @@ import perception as P  # noqa: E402
 import smolvla_control as S  # noqa: E402
 
 log = logging.getLogger("loop_control")
-LCFG = SimpleNamespace(bring_mode="vla_offset", use_inspect_pose=False, pose_speed=30.0, nudge_speed=15.0, hold_min=4.0, hold_max=9.0, lost_below=3.0, open_above=12.0, pick_timeout=45.0,
+LCFG = SimpleNamespace(bring_mode="vla_pose", use_inspect_pose=False, pose_speed=30.0, nudge_speed=15.0, hold_min=4.0, hold_max=9.0, lost_below=3.0, open_above=12.0, pick_timeout=45.0,
                        bring_timeout=25.0, place_timeout=40.0, max_cycles=12, max_attempts=3,
                        workspace=(0, 60, 560, 480), empty_seconds=2.0, perception_hz=4.0, held_min_px=150,
                        held_band=(0.25, 0.75), fg_frac=0.35,
@@ -247,6 +247,18 @@ def make_loop_controller_class(base):
             with self.lock:
                 if name in ("off_nudge", "off_save", "off_reset", "spin", "hold_on", "hold_off"):
                     return self._offset_command(name, *args)
+                if self.L["step"] == "tune" and name in ("nudge", "save", "reset"):  # tuning the pose at the camera
+                    if name == "nudge":
+                        self.ip_pose = IP.nudge(self.ip_pose, args[0], float(args[1]))
+                        self.ip_src, self.ip_msg = "edited (not saved)", f"{args[0]} {float(args[1]):+g} deg"
+                    elif name == "reset":
+                        self.ip_pose, self.ip_src = np.asarray(IP.DEMO_POSE, float), "demo (not saved)"
+                    else:
+                        path = IP.save(self.ip_pose, self.follower_id)
+                        self.ip_src, self.ip_msg = "saved", f"Saved to {path}"
+                        return self._event("inspect_pose_saved", pose=np.round(self.ip_pose, 1).tolist())
+                    self._mover, self.phase = IP.Mover([self.ip_pose], LCFG.nudge_speed), "posing"
+                    return
                 if self.L["mode"] == "running" or self.phase in ("running", "readying", "inspecting", "homing", "moving"):
                     self.ip_msg = "Stop the loop / wait for the arm before tuning the pose"
                     return
@@ -445,7 +457,7 @@ def make_loop_controller_class(base):
                     self._cycle(result="dropped while bringing")
                     return self._go_home("Brick dropped: going home, it will be picked again")
                 done = self._mover.step(self)
-                if self._held_for("posed", done, 0.5) and self.tune_hold and LCFG.bring_mode == "vla_offset":
+                if self._held_for("posed", done, 0.5) and self.tune_hold and LCFG.bring_mode in ("vla_offset", "vla_pose"):
                     self._mover, self.phase = None, "posed"
                     return self._goto("tune", "Holding at the camera: nudge the offset, then Spin now (Save to keep)")
                 if self._held_for("posed", done, 0.5):  # arrived and settled
@@ -473,6 +485,14 @@ def make_loop_controller_class(base):
             settled = (len(self._pose_hist) >= 60
                        and float(np.ptp(np.stack(self._pose_hist)[:, :5], axis=0).max()) < 2.5)
             arrived = (self._elapsed() > 4.0 and self._held_for("settled", settled, 0.5)) or self._elapsed() > LCFG.bring_timeout
+            if arrived and LCFG.bring_mode == "vla_pose":  # straight from the VLA's endpoint to the one saved pose
+                cur = np.asarray(self.measured if self.measured is not None else self.cmd, float)
+                self._bring_base = cur[:5].copy()
+                self._hold_here()
+                self.phase = "moving"
+                self._mover = IP.Mover([self.ip_pose], LCFG.pose_speed)
+                self._cycle(vla_end=np.round(self._bring_base, 1).tolist(), pose=np.round(self.ip_pose, 1).tolist())
+                return self._goto("bring", f"VLA at the camera: moving to the inspection pose ({self.ip_src})")
             if arrived and LCFG.bring_mode == "vla_offset" and (np.any(self.ip_offset) or self.tune_hold):
                 cur = np.asarray(self.measured if self.measured is not None else self.cmd, float)
                 self._bring_base = cur[:5].copy()  # where the arm actually stopped
@@ -698,7 +718,7 @@ def make_loop_controller_class(base):
                 d["perception"] = {k: v for k, v in self.perc.items() if k != "t"}
                 d["inspect_pose"] = {"pose": np.round(self.ip_pose, 1).tolist(), "source": self.ip_src,
                                      "joints": IP.JOINTS, "message": self.ip_msg, "mode": LCFG.bring_mode,
-                                     "enabled": LCFG.bring_mode == "fixed",
+                                     "enabled": LCFG.bring_mode in ("fixed", "vla_pose"),
                                      "offset": np.round(self.ip_offset, 1).tolist(), "offset_source": self.ip_off_src,
                                      "hold": self.tune_hold, "at_camera": self.L["step"] == "tune",
                                      "vla_end": None if self._bring_base is None else np.round(self._bring_base, 1).tolist()}
@@ -826,8 +846,9 @@ def main() -> None:
     ap.add_argument("--inspect-frames", type=int, default=12)
     ap.add_argument("--inspect-range", type=float, default=180.0)
     ap.add_argument("--inspect-speed", type=float, default=60.0)
-    ap.add_argument("--bring-mode", choices=("vla_offset", "vla", "fixed"), default="vla_offset",
-                    help="vla_offset (default): VLA bring + saved offset; vla: VLA bring only; fixed: scripted pose")
+    ap.add_argument("--bring-mode", choices=("vla_pose", "vla_offset", "vla", "fixed"), default="vla_pose",
+                    help="vla_pose (default): VLA bring, then straight to the saved inspection pose; vla_offset: VLA "
+                         "bring + saved offset; vla: VLA bring only; fixed: scripted move via the ready pose")
     ours, rest = ap.parse_known_args()
     LCFG.bring_mode = ours.bring_mode
     if ours.loop_help:
