@@ -7,16 +7,17 @@ them from a normal traversal). The prototype binds `tn__3d_printed_` (yellow) / 
 de-instance only the *visual* instance prims (the collision twins `<name>_1` are purpose=guide and stay instanced),
 then bind our own materials on their meshes.
 
-Real robot (phone photos + recorded frames): matte black printed body and servos, red / orange-red glossy jaws
-(fixed jaw = wrist_roll_follower_so101_v1 on gripper_link, moving jaw = moving_jaw_so101_v1), and an orange printed
-wrist-camera mount plate carrying a black camera board on the gripper. The URDF has no camera-mount mesh, so
-`add_wrist_camera_mount` adds a simple plate + board at the profile's wrist-camera pose (visual only, no collision).
+Real robot (phone photos + recorded frames): matte black printed body and servos, red TPU fin-ray fingers on black
+printed bases (sim/twin/gripper: the stock jaw visuals wrist_roll_follower_so101_v1 on gripper_link and
+moving_jaw_so101_v1 are swapped for them; with the stock jaw selected they are painted red instead), and an orange
+printed
+wrist-camera mount carrying a black camera board on the gripper. The URDF has no camera-mount mesh, so
+`add_wrist_camera_mount` builds the real one (sim/twin/robot/wrist_mount.py: flat orange frame + neck screwed to the
+follower, official 32x32 camera module mesh, USB lead) around the profile's wrist camera (visual only, no collision).
 """
 from __future__ import annotations
 
 from dataclasses import dataclass
-
-import numpy as np
 
 from sim.twin.visuals.materials import bind, preview_material
 
@@ -74,6 +75,7 @@ def paint_robot(num_envs: int = 1, look: RobotLook | None = None, robot: str = "
                                 clearcoat=look.jaw_clearcoat),
     }
     counts = {k: 0 for k in mats}
+    finray = _finray_model()
     for root in robot_roots(stage, num_envs, robot):
         visual = [p for p in Usd.PrimRange(root) if _is_visual_instance(p)]
         for p in visual:
@@ -85,52 +87,61 @@ def paint_robot(num_envs: int = 1, look: RobotLook | None = None, robot: str = "
                     bind(m, mats[kind])
             bind(p, mats[kind])
             counts[kind] += 1
+        if finray is not None:  # the real fingers: black printed bases + red TPU fins instead of the stock jaws
+            counts["finray_meshes"] = counts.get("finray_meshes", 0) + finray.replace_visuals(
+                stage, root, mats["body"], mats["jaw"], bind, extend=_finray_extend())
     return counts
 
 
-def _box_points(half, center, rot):
-    """8 corners of an oriented box: rot columns = box axes in the parent frame."""
-    s = np.array([[sx, sy, sz] for sx in (-1, 1) for sy in (-1, 1) for sz in (-1, 1)], float)
-    return (s * half) @ np.asarray(rot).T + center
+def _finray_extend() -> float:
+    """The physics layer's fin mount offset (params.json gripper.finray.extend; 0 = the CAD mount)."""
+    from sim.twin.physics import apply as phys
+
+    return float(phys.summary()["gripper"]["finray"].get("extend", 0.0))
+
+
+def _finray_model():
+    """sim/twin/gripper/model.py when the physics layer's active fingers are the fin-ray ones, else None (stock
+    jaw visuals, painted red)."""
+    try:
+        from sim.twin.gripper import model
+        from sim.twin.physics import apply as phys
+    except ImportError:
+        return None
+    return model if phys.finray() else None
 
 
 def add_wrist_camera_mount(num_envs: int, wrist_rows, look: RobotLook | None = None,
                            gripper_rel: str = "Robot/Geometry/base_link/shoulder_link/upper_arm_link/lower_arm_link/"
                                               "wrist_link/gripper_link",
-                           plate=(0.042, 0.050, 0.004), board=(0.032, 0.032, 0.003),
-                           plate_offset=(0.0, 0.004, 0.0), looks_root: str = "/World/Looks/Twin") -> int:
-    """Orange mount plate + black camera board behind the wrist camera (gripper_link frame, visual only).
+                           looks_root: str = "/World/Looks/Twin") -> int:
+    """The real wrist-camera mount (sim/twin/robot/wrist_mount.py) on gripper_link, visual only: orange printed frame
+    + bent neck + screw tab on the follower's M3 holes, black screws, the 32x32 camera module (official mesh), USB lead.
 
-    wrist_rows: the wrist camera's USD row matrix in the gripper_link frame (calib.Profile.wrist.rows): rows 0-2 =
-    camera x / y / -optical axes, row 3 = position. Plate and board lie in the camera's image plane, just behind the
-    lens (so they never enter the wrist camera's view): plate first, camera board on its back. plate_offset shifts the plate in camera (x, y_up) metres."""
+    wrist_rows: the rendered wrist camera's USD row matrix in gripper_link (calib.Profile.wrist.rows). The mount is
+    built around the physical camera behind it (the sim camera is a centred pinhole; the physical one is the same
+    pose rotated by wrist_mount.json's principal-point correction), and its neck is anchored to the screw holes, so it
+    stays attached for any profile / DR draw. Returns the number of meshes defined."""
     import omni.usd
-    from pxr import Gf, UsdGeom
 
-    from sim.twin.visuals.assets import box_mesh, define_mesh
+    from sim.twin.robot.wrist_mount import load, mount_parts, rows_to_cv
+    from sim.twin.visuals.assets import define_mesh
 
     look = look or RobotLook()
     stage = omni.usd.get_context().get_stage()
-    m_plate = preview_material(stage, f"{looks_root}/CamMount", look.mount, look.mount_roughness)
-    m_board = preview_material(stage, f"{looks_root}/CamBoard", look.board, 0.4)
-    R = np.asarray(wrist_rows, float)
-    ax, ay, az = R[0, :3], R[1, :3], R[2, :3]  # az = backwards (USD camera looks along -z)
-    rot = np.stack([ax, ay, az], 1)
-    c = R[3, :3]
+    mats = {"plate": preview_material(stage, f"{looks_root}/CamMount", look.mount, look.mount_roughness),
+            "board": preview_material(stage, f"{looks_root}/CamBoard", look.board, 0.4)}
+    mats["screws"] = mats["cable"] = mats["board"]
+    m = load()
+    R_sim, t = rows_to_cv(wrist_rows)
+    parts = mount_parts(m.R_cv @ m.R_sim.T @ R_sim, t, m.dims)
     n = 0
     for e in range(num_envs):
         g = stage.GetPrimAtPath(f"/World/envs/env_{e}/{gripper_rel}")
         if not g:
             continue
-        # real mount (photos): the lens looks through the orange plate, the black camera board sits on the plate's
-        # back (visible from above). Plate from 1 mm behind the lens, board behind the plate.
-        cp = c + az * (0.001 + plate[2] / 2) + ax * plate_offset[0] + ay * plate_offset[1]
-        cb = c + az * (0.001 + plate[2] + board[2] / 2)
-        for name, size, ctr, mat in (("CamBoard", board, cb, m_board), ("CamMountPlate", plate, cp, m_plate)):
-            pts, nrm, counts, idx = box_mesh(size)
-            pts = pts @ rot.T + ctr
-            nrm = nrm @ rot.T
-            mesh = define_mesh(stage, f"{g.GetPath()}/{name}", pts, nrm, counts, idx)
-            bind(mesh.GetPrim(), mat)
+        for name, (pts, nrm, counts, idx) in parts.items():
+            mesh = define_mesh(stage, f"{g.GetPath()}/WristMount_{name}", pts, nrm, counts, idx)
+            bind(mesh.GetPrim(), mats[name])
             n += 1
     return n

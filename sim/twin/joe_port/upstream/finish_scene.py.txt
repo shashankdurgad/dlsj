@@ -1,0 +1,17 @@
+lower_limits,upper_limits=robot.get_dof_limits()
+limits=np.stack([lower_limits.numpy()[0],upper_limits.numpy()[0]],axis=-1)
+print('DOF_INDICES',indices,'LIMITS',limits.tolist())
+initial=np.zeros((1,len(limits)),dtype=np.float32)
+initial[0,indices[-1]]=0.8
+robot.set_dof_positions(initial)
+robot.set_dof_position_targets(initial)
+await app_utils.update_app_async(steps=120)
+timeline.pause()
+stage.GetRootLayer().Export(str(OUT/'scene.usda'))
+from PIL import Image
+for name,ann in annotators.items():
+    pixels=np.asarray(ann.get_data())[:,:,:3]
+    assert pixels.size and np.std(pixels)>1, (name,pixels.shape)
+    Image.fromarray(pixels).save(OUT/f'initial-{name}.png')
+(OUT/'scene-ready.json').write_text(json.dumps({'usd':str(usd_path),'camera_paths':camera_paths,'joint_indices':indices,'limits':limits.tolist(),'calibration':'URDF new midpoint convention; real-unit alignment unverified'},indent=2))
+print('SCENE_READY',flush=True)

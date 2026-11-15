@@ -1,0 +1,91 @@
+"""Record successful physical pick-and-inspect episodes, keeping rejected attempts separate."""
+import json,time,subprocess,traceback,hashlib
+from pathlib import Path
+import numpy as np
+from PIL import Image
+from isaacsim.core.experimental.prims import RigidPrim
+SYN=ROOT/'synthetic';plans=json.loads((SYN/'plans.json').read_text());config=json.loads((SYN/'batch-config.json').read_text())
+assert json.loads((SYN/'repeatability.json').read_text())['passed'],'Repeatability gate has not passed'
+RAW=SYN/'raw';RAW.mkdir(exist_ok=True);started=time.monotonic();report=[]
+for path in sorted(RAW.glob('candidate-*/result.json'),key=lambda p:int(p.parent.name.split('-')[1])):report.append(json.loads(path.read_text()))
+counts={s:sum(r['success'] and r['split']==s for r in report) for s in ['train','validation']}
+completed={r['candidate'] for r in report}
+rep.orchestrator.set_capture_on_play(False)
+render_products['overview'].hydra_texture.set_updates_enabled(False)
+# Warm up Replicator before resetting the first episode.
+await rep.orchestrator.step_async(rt_subframes=1,pause_timeline=False,delta_time=0.,wait_for_render=True)
+distractors={}
+for name,yaw in [('blue_brick',120),('yellow_brick',77),('cream_brick',50)]:
+ distractors[name]=(RigidPrim('/World/ReferenceProps/'+name),reference['objects'][name]['position'],np.deg2rad(yaw))
+
+def canonical(q):
+ state=np.rad2deg(np.asarray(q)-joint_offsets);state[-1]=q[-1]/limits[indices[-1],1]*100;return state.astype(np.float32)
+
+def pose_reset(view,position,yaw):
+ view.set_world_poses(positions=[position],orientations=[[np.cos(yaw/2),0,0,np.sin(yaw/2)]])
+ view.set_velocities(linear_velocities=[[0,0,0]],angular_velocities=[[0,0,0]])
+
+def encoder(path):
+ return subprocess.Popen([str(Path.home()/'.local/bin/ffmpeg'),'-hide_banner','-loglevel','error','-y','-f','rawvideo','-pixel_format','rgb24','-video_size','640x480','-framerate','30','-i','-','-an','-c:v','libx264','-threads','1','-g','2','-pix_fmt','yuv420p','-crf','18',str(path)],stdin=subprocess.PIPE)
+
+def progress(status,candidate=None,frame=None):
+ (SYN/'generation-progress.json').write_text(json.dumps({'status':status,'counts':counts,'targets':config,'attempts':len(report),'current_candidate':candidate,'frame':frame,'elapsed_s':time.monotonic()-started},indent=2))
+
+try:
+ for plan in plans:
+  candidate=plan['candidate'];split=plan['split']
+  if candidate in completed or counts[split]>=config[split]:continue
+  directory=RAW/f'candidate-{candidate:03d}';directory.mkdir(exist_ok=True)
+  timeline.play();q0=np.asarray(plan['initial_q'],np.float32)
+  robot.set_dof_positions(q0[None],dof_indices=indices);robot.set_dof_velocities(np.zeros((1,6)),dof_indices=indices);robot.set_dof_position_targets(q0[None],dof_indices=indices)
+  pose_reset(brick_view,plan['target_position'],np.deg2rad(plan['target_yaw_deg']))
+  for view,position,yaw in distractors.values():pose_reset(view,position,yaw)
+  light.GetIntensityAttr().Set(700*plan['light_scale'])
+  UsdLux.DistantLight(stage.GetPrimAtPath('/World/Sun')).GetIntensityAttr().Set(600*plan['light_scale'])
+  SimulationManager.step(steps=30)
+  await rep.orchestrator.step_async(rt_subframes=1,pause_timeline=False,delta_time=0.,wait_for_render=True)
+  initial=brick_view.get_world_poses()[0].numpy()[0].copy();dist_initial={k:v[0].get_world_poses()[0].numpy()[0].copy() for k,v in distractors.items()};max_dist_disp={k:0. for k in distractors};positions=[];observations=[];actions=[];raw_q=[];arm_errors=[];camera_std={c:[] for c in ['wrist','top','inspect']};extra_steps=0
+  encoders={c:encoder(directory/f'{c}.mp4') for c in ['wrist','top','inspect']}
+  first_step=SimulationManager.get_num_physics_steps()
+  try:
+   for i,(action,phase) in enumerate(zip(plan['actions'],plan['phases'])):
+    before=SimulationManager.get_num_physics_steps()
+    await rep.orchestrator.step_async(rt_subframes=1,pause_timeline=False,delta_time=0.,wait_for_render=True)
+    extra_steps+=SimulationManager.get_num_physics_steps()-before
+    assert extra_steps==0,f'Rendering advanced physics by {extra_steps} steps'
+    q=robot.get_dof_positions().numpy()[0,indices].copy()
+    observations.append(canonical(q));actions.append(canonical(action));raw_q.append(q)
+    for camera,e in encoders.items():
+     pixels=np.asarray(annotators[camera].get_data())[:,:,:3].copy();assert pixels.shape==(480,640,3)
+     camera_std[camera].append(float(pixels.std()));e.stdin.write(pixels.tobytes())
+     if i in [0,len(plan['actions'])-1]:Image.fromarray(pixels).save(directory/f'{camera}-{i:03d}.jpg')
+    robot.set_dof_position_targets(np.asarray(action,np.float32)[None],dof_indices=indices)
+    SimulationManager.step(steps=2)
+    positions.append(brick_view.get_world_poses()[0].numpy()[0].copy())
+    actual=robot.get_dof_positions().numpy()[0,indices];arm_errors.append(float(np.max(np.abs(actual[:5]-action[:5]))))
+    for k,v in distractors.items():
+     cur=v[0].get_world_poses()[0].numpy()[0];max_dist_disp[k]=max(max_dist_disp[k],float(np.linalg.norm(cur-dist_initial[k])))
+    if i%60==0:progress('recording',candidate,i)
+  finally:
+   for e in encoders.values():
+    e.stdin.close();assert e.wait()==0,'Video encoding failed'
+  positions=np.asarray(positions);hold_min=float(positions[-30:,2].min()-initial[2]);distance=float(np.max(np.linalg.norm(positions[-30:,:2]-[.20,.05],axis=1)))
+  final_q=robot.get_dof_positions().numpy()[0,indices].copy();grip=float(final_q[-1]);steps=SimulationManager.get_num_physics_steps()-first_step
+  held_z=float(positions[-1,2]);release=final_q.copy();release[-1]=1.
+  robot.set_dof_position_targets(release[None],dof_indices=indices);SimulationManager.step(steps=60)
+  released_z=float(brick_view.get_world_poses()[0].numpy()[0,2]);release_drop=held_z-released_z
+  checks={'lift_and_hold':hold_min>.05,'inspection_region':distance<.04,'gripper_contact_stall':.12<grip<.38,'release_drop':release_drop>.03,'arm_tracking':max(arm_errors)<.2,'table_penetration':float(positions[:,2].min())>.0046,'distractor_stationary':max(max_dist_disp.values())<.002,'camera_content':all(np.median(v)>3 for v in camera_std.values()),'physics_steps':steps==2*len(plan['actions'])}
+  success=all(checks.values())
+  result={'candidate':candidate,'split':split,'success':success,'checks':checks,'seed':plan['seed'],'frames':len(plan['actions']),'fps':30,'instruction':'pick up the brick and hold it in front of the inspection camera','minimum_hold_lift_m':hold_min,'inspection_xy_error_m':distance,'release_drop_m':release_drop,'gripper_stalled_rad':grip,'max_arm_tracking_error_rad':max(arm_errors),'max_distractor_displacement_m':max_dist_disp,'initial_brick':initial.tolist(),'final_brick':positions[-1].tolist(),'physics_steps':steps,'extra_capture_steps':extra_steps,'target_position':plan['target_position'],'target_yaw_deg':plan['target_yaw_deg'],'light_scale':plan['light_scale'],'camera_std_median':{k:float(np.median(v)) for k,v in camera_std.items()}}
+  np.savez_compressed(directory/'trajectory.npz',state=np.asarray(observations),action=np.asarray(actions),joint_radians=np.asarray(raw_q),applied_radians=np.asarray(plan['actions']),post_brick=positions,timestamp=np.arange(len(positions),dtype=np.float64)/30,phase=np.asarray(plan['phases']))
+  (directory/'result.json').write_text(json.dumps(result,indent=2));report.append(result)
+  if success:counts[split]+=1
+  progress('recording');print('EPISODE_RESULT',json.dumps(result),flush=True)
+  if all(counts[s]>=config[s] for s in counts):break
+ timeline.pause();progress('complete' if all(counts[s]>=config[s] for s in counts) else 'insufficient_successes')
+ (SYN/'generation-results.json').write_text(json.dumps({'counts':counts,'targets':config,'attempts':len(report),'episodes':report},indent=2))
+ print('GENERATION_DONE',counts,flush=True)
+except BaseException:
+ timeline.pause();(SYN/'generation-error.txt').write_text(traceback.format_exc());progress('error');raise
+finally:
+ render_products['overview'].hydra_texture.set_updates_enabled(True)

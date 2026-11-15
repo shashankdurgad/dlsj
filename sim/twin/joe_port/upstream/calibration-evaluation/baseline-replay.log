@@ -1,0 +1,3 @@
+DEMO_REPLAY_RESULT ep0-pick-hold-142f {"pickup_achieved": false, "hold_at_end_achieved": false, "max_lift_m": 0.0, "final_lift_m": 0.0, "max_disp_m": 0.0, "release_drop_m": 0.0, "lowest_fk_xyz": [0.2323, -0.1078, 0.0236], "frame60_fk_xyz": [0.2323, -0.1078, 0.0236]}
+DEMO_REPLAY_RESULT ep0-full-159f {"pickup_achieved": false, "hold_at_end_achieved": false, "max_lift_m": 0.0, "final_lift_m": 0.0, "max_disp_m": 0.0, "release_drop_m": 0.0, "lowest_fk_xyz": [0.2323, -0.1078, 0.0236], "frame60_fk_xyz": [0.2323, -0.1078, 0.0236]}
+ALL_DEMO_REPLAYS_COMPLETE 2

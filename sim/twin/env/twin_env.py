@@ -25,6 +25,13 @@ Conventions (the team's runtime LeRobot units, exactly the recorded `observation
 
 Randomisation: the residual env's own layout sampling (target brick where the gripper grasped in the data,
 distractors, plate layout, start pose; seeded by `seed`) runs on every reset unless `cfg.layout="nominal"`.
+Scene content (sim/twin/scene): with `cfg.bricks="data"` (default) the bricks are a pool of real Duplo kinds (2x2,
+2x4, curved 2x3; LDraw geometry) and every reset draws the target / distractor kinds, colours, count, on-plate
+placement and the number of plates on the table from the real-data statistics (scene/scene_stats.json);
+`bricks="legacy"` keeps the residual env's 2x2 target + three distractors. A reset with an explicit `brick_pose`
+(open-loop replays) uses a 2x2 target. `reset(layout=layout_from_episode(ep))` reproduces a recorded episode's first
+frame: plates, target (colour, kind, pose), distractors, start pose and target bowl. `cfg.props` adds the station's
+static props (inspection camera on its tripod, cables, white box, overhead tripod, table edge / floor, base clamp).
 `randomize=True` additionally calls every hook in `cfg.randomizers` as `f(env, rng)` after the layout reset and
 before the settle / render (default: `[TwinRandomizer()]` from sim/twin/env/randomize.py when that file exists).
 Physics hooks: sim/twin/physics/apply.py `patch_scene_cfg(scene_cfg, profile)` before the InteractiveScene and
@@ -33,9 +40,7 @@ Physics hooks: sim/twin/physics/apply.py `patch_scene_cfg(scene_cfg, profile)` b
 from __future__ import annotations
 
 import importlib
-import math
 import sys
-import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable
@@ -84,6 +89,12 @@ class TwinEnvCfg:
     target_size: tuple | None = None  # e.g. (0.0636, 0.0318, 0.0192) for a 2x4 target
     look: Any = None  # visuals.twin_scene.TwinLook (None = default)
     finger_pads: bool = True  # the residual env's box finger pads (its grasp model)
+    bricks: str = "data"  # "data": brick pool, kinds / colours / counts from the real data | "legacy"
+    brick_pool: dict | None = None  # {"2x2": n, "2x4": n, "curved_2x3": n} incl. the target (None = scene default)
+    scene_stats: str = str(REPO / "sim/twin/scene/scene_stats.json")
+    drop_plates: bool = True  # "data" sampling: as often as in the real frames only 2 plates are on the table
+    real_plates: bool = True  # "data" sampling: plate arrangements of real first frames (+ 1 cm jitter)
+    props: bool = True  # static props (sim/twin/scene/props.py)
     instructions: dict = field(default_factory=lambda: {"grasp": PICK_TASK, "present": PICK_TASK,
                                                         "place": PLACE_TASK})
     task: str | None = None  # fixed task string (overrides the phase-dependent one)
@@ -168,13 +179,13 @@ class TwinEnv:
                   "camera renders. Decode videos in a subprocess instead.", flush=True)
         self.app, self._own_app = launch_app(cfg.headless, cameras=True)
 
+        import app as rapp
         import isaaclab.sim as sim_utils
         import omni.usd
+        import scene as rscene
         import torch
         from isaaclab.scene import InteractiveScene
 
-        import app as rapp
-        import scene as rscene
         from env import EnvCfg, ResidualEnv, _cam_from_rows
         from sim.twin.calib.profile import twin_profile
         from sim.twin.visuals.twin_scene import TwinLook, apply_twin_visuals, twin_scene_cfg, wrist_cam_rel
@@ -193,6 +204,10 @@ class TwinEnv:
             sx, sy, sz = cfg.target_size
             mass = t.mass * (sx * sy * sz) / (t.size[0] * t.size[1] * t.size[2])
             layout.target = rscene.Brick(t.name, tuple(cfg.target_size), t.pos, t.color, mass)
+        if cfg.bricks == "data" and not cfg.target_size:
+            from sim.twin.scene.bricks import pool_specs
+
+            layout.distractors = pool_specs(rscene.Brick, cfg.brick_pool)
         st = START_CAL2
         layout.start_joint = tuple(tuple(st[k]) for k in ("median", "std", "p5", "p95"))
         layout.init_joint_deg = tuple(st["median"])
@@ -226,6 +241,14 @@ class TwinEnv:
         self.visuals = apply_twin_visuals(cfg.num_envs, layout, self.profile, self.look)
         if cfg.finger_pads:
             rapp.finger_pads(cfg.num_envs)
+        self.props_info = None
+        self._keep_out = np.zeros((0, 2))  # prop footprints plates must clear (tripod feet / hub, white box)
+        if cfg.props:
+            from sim.twin.scene.props import PROPS, add_props, tripod_geometry
+
+            self.props_info = add_props(cfg.num_envs, self.profile)
+            g = tripod_geometry(self.profile)
+            self._keep_out = np.r_[g["feet"], [g["hub_xy"]], [PROPS["box_center"]]]
         self.residual = None
         self.physics_info = None
         if self._physics is not None and hasattr(self._physics, "post_spawn"):
@@ -249,6 +272,13 @@ class TwinEnv:
         ins = self.profile.inspect
         self.residual.inspect_cam = _cam_from_rows(np.array(ins.rows), device=cfg.device, f_px=ins.f_px)
 
+        self.bricks = None
+        if cfg.bricks == "data" and not cfg.target_size:
+            from sim.twin.scene.bricks import BrickPool, load_stats
+
+            self.bricks = BrickPool(self)
+            self.scene_stats = load_stats(Path(cfg.scene_stats))
+        self.scene_plan: dict = {}
         if cfg.randomizers is None:
             self.randomizers: list[Callable] = []
             rmod = _optional("sim.twin.env.randomize")
@@ -331,9 +361,11 @@ class TwinEnv:
 
     # ------------------------------------------------------------------ reset / step
     def reset(self, seed: int | None = None, randomize: bool | None = None, *, joint_deg=None, brick_pose=None,
-              bowl: str | None = None, render: bool = True) -> dict:
+              bowl: str | None = None, render: bool = True, layout: dict | None = None) -> dict:
         """New episode. seed: seeds the layout sampling (residual env generator) and the randomizers' rng.
-        joint_deg (6,) start pose in LeRobot units, brick_pose (x, y, yaw) env frame, bowl: target bowl name."""
+        joint_deg (6,) start pose in LeRobot units, brick_pose (x, y, yaw) env frame, bowl: target bowl name.
+        layout: a real-episode layout (sim/twin/scene/layout.layout_from_episode): plates, target, distractors, start
+        pose and bowl from the recorded first frame (explicit joint_deg / brick_pose / bowl still win)."""
         torch = self.torch
         r = self.residual
         if seed is not None:
@@ -341,6 +373,15 @@ class TwinEnv:
             self.rng = np.random.default_rng(int(seed))
         dev = self.device
         n = self.cfg.num_envs
+        if layout is not None:
+            if joint_deg is None and layout.get("start_state") is not None:
+                joint_deg = layout["start_state"]
+            t = layout.get("target")
+            if brick_pose is None and t:
+                brick_pose = (t["x"], t["y"], t.get("yaw", 0.0))
+            if bowl is None and layout.get("bowl") in r.bowl_names:
+                bowl = layout["bowl"]
+        plan = self._brick_plan(layout, replay=brick_pose is not None and layout is None)
         jd = bp = None
         if joint_deg is not None:
             jd = torch.as_tensor(np.asarray(joint_deg, np.float32), device=dev).reshape(-1, 6).expand(n, 6).clone()
@@ -356,10 +397,23 @@ class TwinEnv:
         elif self.cfg.layout == "nominal":
             bp = torch.tensor([[*self.layout.target.pos, 0.0]], dtype=torch.float32, device=dev).expand(n, 3).clone()
         r.reset(joint_deg=jd, brick_pose=bp)
-        if self.cfg.layout == "sample" and self.cfg.spread_plates:
-            self._spread_plates()
         if bowl is not None:
             r.bowl[:] = r.bowl_names.index(bowl)
+        real_arrangement = False
+        if layout is not None:
+            self._layout_plates(layout)
+        elif self.cfg.layout == "sample" and self.cfg.spread_plates:
+            real_arrangement = bool(plan) and self.cfg.real_plates and self._real_plates()
+            if not real_arrangement:
+                self._spread_plates()
+        if plan:
+            if layout is None and not real_arrangement and self.cfg.drop_plates and \
+                    plan.get("n_plates", 3) < len(r.bowl_objs):
+                self._drop_plates(len(r.bowl_objs) - max(1, plan["n_plates"]))
+            self.bricks.place(plan, self.rng, exact=layout is not None)
+            self.scene_plan = dict(self.bricks.describe(), plates_on_table=[
+                nm for k, nm in enumerate(r.bowl_names) if abs(float(r.bowl_xy_env[0, k, 0])) < 1.0],
+                source=f"episode {layout.get('episode')}" if layout is not None else "sampled")
         do_dr = self.cfg.randomize if randomize is None else bool(randomize)
         if not do_dr and self._dr_active:  # evaluation reset after DR episodes: back to the nominal twin
             for f in self.randomizers:
@@ -385,6 +439,88 @@ class TwinEnv:
         self.last_info = {}
         return self._obs(render)
 
+    def _brick_plan(self, layout: dict | None, replay: bool) -> dict:
+        """The brick pool assignment for this reset (empty with cfg.bricks="legacy")."""
+        if self.bricks is None:
+            return {}
+        from sim.twin.scene.bricks import plan_from_layout, sample_plan
+
+        if layout is not None:
+            plan = plan_from_layout(layout)
+        elif replay or self.cfg.layout == "nominal":  # open-loop replays / nominal: the residual env's 2x2 target
+            plan = sample_plan(self.rng, self.scene_stats, self.bricks.counts)
+            plan["target"] = {"kind": "2x2", "color": "light_blue"}
+            if self.cfg.layout == "nominal":
+                plan["distractors"] = [{"kind": "2x4", "color": "light_blue", "on_plate": False},
+                                       {"kind": "2x4", "color": "yellow", "on_plate": False},
+                                       {"kind": "2x2", "color": "cream", "on_plate": False}]
+                plan["n_plates"] = 3
+        else:
+            plan = sample_plan(self.rng, self.scene_stats, self.bricks.counts)
+        self.bricks.assign(plan)
+        return plan
+
+    def _set_plate(self, k: int, xy):
+        torch = self.torch
+        r = self.residual
+        o = self.scene.env_origins
+        xy_t = torch.as_tensor(np.asarray(xy, np.float32), device=self.device)
+        r.bowl_xy_env[:, k] = xy_t
+        pose = torch.cat([o[:, :2] + xy_t, o[:, 2:] + r.table_z + 0.003,
+                          torch.tensor([[0.0, 0.0, 0.0, 1.0]], device=self.device).expand(len(o), 4)], -1)
+        r.bowl_objs[k].write_root_pose_to_sim(pose)
+
+    def _park_plate(self, k: int):
+        """Plate off the table and out of every camera (kinematic body; the reward only uses the target bowl)."""
+        self._set_plate(k, (2.0 + 0.3 * k, 2.0))
+
+    def _layout_plates(self, layout: dict):
+        """Plates where the recorded first frame shows them; plates not seen are parked."""
+        r = self.residual
+        for k, name in enumerate(r.bowl_names):
+            p = layout.get("plates", {}).get(name)
+            if p is not None:
+                self._set_plate(k, (p["x"], p["y"]))
+            else:
+                self._park_plate(k)
+
+    def _real_plates(self, tries: int = 40, jitter: float = 0.01) -> bool:
+        """Plates as in a random real first frame that has the target bowl (layout statistics), jittered; must clear
+        the target brick, the gripper, the props and each other. Plates not in that frame are parked."""
+        r = self.residual
+        lays = [L for L in self.scene_stats.get("plate_layouts", []) if r.bowl_names[int(r.bowl[0])] in L]
+        if not lays:
+            return False
+        rad = dict(zip(r.bowl_names, r.bowl_r.detach().cpu().numpy(), strict=True))
+        o0 = self.scene.env_origins[0]
+        brick = r.brick_local()[0, :2].detach().cpu().numpy()
+        tip = (r.tip_w()[0] - o0)[:2].detach().cpu().numpy()
+        for _ in range(tries):
+            L = lays[int(self.rng.integers(len(lays)))]
+            pos = {k: np.asarray(v, float) + self.rng.normal(0.0, jitter, 2) for k, v in L.items() if k in rad}
+            ok = all(np.linalg.norm(p - brick) > rad[k] + 0.03 and np.linalg.norm(p - tip) > rad[k] + 0.02 and
+                     np.linalg.norm(p) > rad[k] + 0.09 and
+                     all(np.linalg.norm(p - q) > rad[k] + 0.03 for q in self._keep_out) for k, p in pos.items())
+            ks = list(pos)
+            ok &= all(np.linalg.norm(pos[a] - pos[b]) > rad[a] + rad[b] + 0.003
+                      for i, a in enumerate(ks) for b in ks[i + 1:])
+            if ok:
+                for k, name in enumerate(r.bowl_names):
+                    if name in pos:
+                        self._set_plate(k, pos[name])
+                    else:
+                        self._park_plate(k)
+                return True
+        return False
+
+    def _drop_plates(self, n_drop: int):
+        """Park `n_drop` random non-target plates."""
+        r = self.residual
+        tgt = int(r.bowl[0])
+        others = [k for k in range(len(r.bowl_objs)) if k != tgt]
+        for k in self.rng.permutation(others)[:n_drop]:
+            self._park_plate(int(k))
+
     def _spread_plates(self, tries: int = 4000, margin: float = 0.04):
         """Non-overlapping plate centres (as on the real table: >= r1 + r2 apart) inside the data's plate-centre box
         (+ margin), clear of the target brick and the robot base; keeps the residual env's draw if none fits."""
@@ -403,6 +539,8 @@ class TwinEnv:
         ok = (np.linalg.norm(c - brick, axis=-1) > rad + 0.03).all(1)
         ok &= (np.linalg.norm(c, axis=-1) > rad + 0.09).all(1)  # robot base
         ok &= (np.linalg.norm(c - tip, axis=-1) > rad + 0.02).all(1)  # gripper at the start pose
+        for q in self._keep_out:  # inspection tripod, white box
+            ok &= (np.linalg.norm(c - q, axis=-1) > rad + 0.03).all(1)
         for i in range(len(rad)):
             for j in range(i + 1, len(rad)):
                 ok &= np.linalg.norm(c[:, i] - c[:, j], axis=-1) > rad[i] + rad[j] + 0.005

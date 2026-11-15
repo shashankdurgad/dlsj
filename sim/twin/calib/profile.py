@@ -34,25 +34,24 @@ DR = {"top": (0.01, 1.0, 0.01), "inspect": (0.05, 5.0, 0.02), "wrist": (0.005, 3
 
 
 def _cams() -> dict:
-    ref = json.loads((REPO / "sim/residual_env/assets/joe_cal2/reference-cal2.json").read_text())
-    intr = json.loads((HERE / "realsense_intrinsics.json").read_text())
     mea = json.loads((HERE / "cameras_measured.json").read_text())
+    fit = json.loads((HERE / "cameras_fit.json").read_text())
+    from sim.twin.robot import wrist_mount  # imported here to avoid an import cycle
+
     return {
+        # top: pose fitted to arm silhouettes with the factory intrinsics (best held-out fit, cameras_fit.json)
         "top": (
-            np.array(ref["camera"]["world_to_cv"]),
-            np.array(ref["camera"]["position"]),
-            (intr["top"]["fx"] + intr["top"]["fy"]) / 2,
+            np.array(fit["top"]["world_to_cv"]),
+            np.array(fit["top"]["position"]),
+            (fit["top"]["fx"] + fit["top"]["fy"]) / 2,
         ),
         "inspect": (
             np.array(mea["inspect"]["world_to_cv"]),
             np.array(mea["inspect"]["position"]),
             (mea["inspect"]["fx"] + mea["inspect"]["fy"]) / 2,
         ),
-        "wrist": (
-            np.array(ref["wrist_camera"]["local_to_cv"]),
-            np.array(ref["wrist_camera"]["position_local"]),
-            (mea["wrist"]["fx"] + mea["wrist"]["fy"]) / 2,
-        ),
+        # wrist: mount pose fitted from rigid gripper evidence (fin silhouette, held bricks), sim/twin/robot/
+        "wrist": wrist_mount.cams_entry(),
     }
 
 

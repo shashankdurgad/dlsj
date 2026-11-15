@@ -1,0 +1,25 @@
+"""Load the generated data through Physical AI Studio's actual training adapter."""
+import json,sys
+import torch
+from pathlib import Path
+from physicalai.data.lerobot.dataset import _LeRobotDatasetAdapter
+root=Path(sys.argv[1]);manifest=json.loads((root/'manifest.json').read_text());splits_checked={}
+for split in ['train','validation']:
+ if not manifest['counts'].get(split):continue
+ repo_id=f'w3joe/so101-synthetic-pick-inspect-{split}'
+ adapter=_LeRobotDatasetAdapter(repo_id=repo_id,root=root/split,video_backend='pyav',delta_timestamps={'action':[i/30 for i in range(50)]})
+ x=adapter[0]
+ assert tuple(x.state.shape)==(6,),x.state.shape
+ assert tuple(x.action.shape)==(50,6),x.action.shape
+ assert set(x.images)=={'wrist','top','inspect'},set(x.images)
+ for v in x.images.values():assert tuple(v.shape)==(3,480,640),v.shape
+ ep0_frames=next(e['frames'] for e in manifest['episodes'] if e['split']==split and e['episode_index']==0)
+ boundary=adapter[ep0_frames-1]
+ assert tuple(boundary.action.shape)==(50,6)
+ assert torch.allclose(boundary.action,boundary.action[0].expand_as(boundary.action)),f'Future actions crossed episode 0->1 boundary in {split}'
+ last=adapter[len(adapter)-1]
+ assert tuple(last.action.shape)==(50,6)
+ assert torch.allclose(last.action,last.action[0].expand_as(last.action)),f'Future actions crossed final episode boundary in {split}'
+ splits_checked[split]={'frames':len(adapter),'episode0_boundary_checked':True,'last_episode_boundary_checked':True}
+result={'passed':True,'last_episode_action_padding_checked':True,'internal_episode_boundary_padding_checked':True,'splits_checked':splits_checked,'adapter':'Physical AI Studio _LeRobotDatasetAdapter','state_shape':list(x.state.shape),'action_chunk_shape':list(x.action.shape),'image_shapes':{k:list(v.shape) for k,v in x.images.items()},'task':x.task}
+(root/'training-smoke.json').write_text(json.dumps(result,indent=2));print('TRAINING_SMOKE',json.dumps(result),flush=True)

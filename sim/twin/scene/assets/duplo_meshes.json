@@ -1,0 +1,55 @@
+{
+ "2x2": {
+  "part": "3437.dat",
+  "triangles_ldraw": 572,
+  "triangles_welded": 572,
+  "removed_outer_wall_tris": 8,
+  "removed_top_deck_tris": 2,
+  "points": 777,
+  "faces": 750,
+  "body_size_m": [
+   0.0317,
+   0.0317,
+   0.0192
+  ],
+  "total_height_m": 0.0236,
+  "normals_agree_with_winding": 1.0,
+  "outer_faces_point_outward": 1.0,
+  "stud_height_m": 0.0044
+ },
+ "2x4": {
+  "part": "3011.dat",
+  "triangles_ldraw": 1180,
+  "triangles_welded": 1180,
+  "removed_outer_wall_tris": 8,
+  "removed_top_deck_tris": 2,
+  "points": 1417,
+  "faces": 1358,
+  "body_size_m": [
+   0.0637,
+   0.0317,
+   0.0192
+  ],
+  "total_height_m": 0.0236,
+  "normals_agree_with_winding": 1.0,
+  "outer_faces_point_outward": 1.0,
+  "stud_height_m": 0.0044
+ },
+ "curved_2x3": {
+  "part": "2302b.dat",
+  "triangles_ldraw": 870,
+  "triangles_welded": 870,
+  "rotated_90deg_z": true,
+  "points": 983,
+  "faces": 870,
+  "body_size_m": [
+   0.0477,
+   0.0317,
+   0.0192
+  ],
+  "total_height_m": 0.0236,
+  "normals_agree_with_winding": 1.0,
+  "outer_faces_point_outward": 1.0,
+  "stud_height_m": 0.0044
+ }
+}

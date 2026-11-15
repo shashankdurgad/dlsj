@@ -1,0 +1,8 @@
+{
+  "step": 6115,
+  "epoch": 2,
+  "elapsed_seconds": 5420.808868385,
+  "bytes": 12180880457,
+  "normalization": "TRAIN-NORMALIZATION.json",
+  "checkpoint": "time-step00006115.ckpt"
+}

@@ -1,0 +1,11 @@
+import inspect
+from pxr import PhysxSchema
+print('CONTEXT',ROOT,SimulationManager.get_active_physics_engine())
+print('GRIPPER',gripper_paths)
+for p in stage.Traverse():
+ if ('gripper_link' in str(p.GetPath())) and (p.IsA(UsdGeom.Mesh) or p.HasAPI(UsdPhysics.CollisionAPI)):
+  print('SHAPE',str(p.GetPath()),'collision',p.HasAPI(UsdPhysics.CollisionAPI),p.GetAttribute('physics:approximation').Get())
+  if p.IsA(UsdGeom.Mesh):
+   pts=np.array(UsdGeom.Mesh(p).GetPointsAttr().Get());print('BOUNDS',pts.min(0).tolist(),pts.max(0).tolist())
+print('METHODS', [m for m in dir(robot) if any(k in m for k in ['stiffness','damping','effort','velocity','force'])])
+print('PHYSICS',[(str(p.GetPath()),p.GetTypeName()) for p in stage.Traverse() if p.IsA(UsdPhysics.Scene)])

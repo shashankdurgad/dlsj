@@ -1,0 +1,26 @@
+"""Twenty fresh resets using the same physical controller, without rendering each step."""
+import time,json
+plan=json.loads((SYN/'trial-plan.json').read_text())
+q0=np.asarray(plan['initial_q'],np.float32);yaw=np.deg2rad(plan['target_yaw_deg'])
+gate=[];started=time.monotonic()
+for ep in range(20):
+ timeline.play()
+ robot.set_dof_positions(q0[None],dof_indices=indices);robot.set_dof_position_targets(q0[None],dof_indices=indices);robot.set_dof_velocities(np.zeros((1,6)),dof_indices=indices)
+ brick_view.set_world_poses(positions=[plan['target_position']],orientations=[[np.cos(yaw/2),0,0,np.sin(yaw/2)]])
+ brick_view.set_velocities(linear_velocities=[[0,0,0]],angular_velocities=[[0,0,0]])
+ SimulationManager.step(steps=30)
+ initial=brick_view.get_world_poses()[0].numpy()[0].copy();positions=[];max_error=0
+ step_start=SimulationManager.get_num_physics_steps()
+ for i,action in enumerate(plan['actions']):
+  robot.set_dof_position_targets(np.asarray(action,np.float32)[None],dof_indices=indices)
+  SimulationManager.step(steps=2)
+  positions.append(brick_view.get_world_poses()[0].numpy()[0].copy())
+  max_error=max(max_error,float(np.max(np.abs(robot.get_dof_positions().numpy()[0,:5]-np.asarray(action[:5])))))
+ positions=np.asarray(positions);min_lift=float(positions[-30:,2].min()-initial[2]);distance=float(np.linalg.norm(positions[-1,:2]-[.20,.05]))
+ result={'episode':ep,'success':bool(min_lift>.05 and distance<.04),'minimum_hold_lift_m':min_lift,'inspection_xy_error_m':distance,'physics_steps':SimulationManager.get_num_physics_steps()-step_start,'max_arm_tracking_error_rad':max_error}
+ gate.append(result);(SYN/'repeatability-progress.json').write_text(json.dumps({'episodes':gate,'elapsed_s':time.monotonic()-started},indent=2))
+ timeline.pause();await app_utils.update_app_async(steps=2)
+ print('REPEATABILITY',json.dumps(result),flush=True)
+ if not result['success']:break
+summary={'passed':len(gate)==20 and all(x['success'] for x in gate),'successes':sum(x['success'] for x in gate),'attempts':len(gate),'elapsed_s':time.monotonic()-started,'episodes':gate}
+(SYN/'repeatability.json').write_text(json.dumps(summary,indent=2));print('GATE',json.dumps(summary),flush=True)

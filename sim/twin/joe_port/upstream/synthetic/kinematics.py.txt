@@ -1,0 +1,50 @@
+"""URDF forward kinematics and position/tool-axis IK for the SO-101."""
+from pathlib import Path
+import xml.etree.ElementTree as ET
+import numpy as np
+from scipy.spatial.transform import Rotation
+from scipy.optimize import least_squares
+
+JOINTS=['shoulder_pan','shoulder_lift','elbow_flex','wrist_flex','wrist_roll','gripper']
+class Kinematics:
+ def __init__(self,urdf):
+  self.nodes=ET.parse(urdf).findall('joint');self.spec=[];self.bounds=[]
+  for name in JOINTS:
+   n=next(x for x in self.nodes if x.get('name')==name);limit=n.find('limit');self.bounds.append([float(limit.get('lower')),float(limit.get('upper'))])
+  self.bounds=np.asarray(self.bounds)
+  for n in self.nodes:
+   o=n.find('origin');T=np.eye(4)
+   if o is not None:
+    T[:3,3]=np.fromstring(o.get('xyz','0 0 0'),sep=' ')
+    T[:3,:3]=Rotation.from_euler('xyz',np.fromstring(o.get('rpy','0 0 0'),sep=' ')).as_matrix()
+   axis=n.find('axis');axis=np.fromstring(axis.get('xyz','0 0 1'),sep=' ') if axis is not None else np.array([0,0,1])
+   self.spec.append((n.find('parent').get('link'),n.find('child').get('link'),T,axis,JOINTS.index(n.get('name')) if n.get('name') in JOINTS else None))
+ def fk(self,q):
+  poses={'base_link':np.eye(4)}
+  for _ in range(12):
+   for parent,child,T,axis,index in self.spec:
+    if parent not in poses or child in poses:continue
+    R=np.eye(4)
+    if index is not None:R[:3,:3]=Rotation.from_rotvec(axis*q[index]).as_matrix()
+    poses[child]=poses[parent]@T@R
+  return poses
+ def grasp(self,q,point=(.014,0,-.098)):
+  T=self.fk(q)['gripper_link'];return T[:3,:3]@point+T[:3,3],T[:3,:3]
+ def ik(self,xyz,yaw,seed=None):
+  xyz=np.asarray(xyz);normal=np.array([np.cos(yaw),np.sin(yaw),0.]);seed=np.array(seed if seed is not None else [0,-.7,1.,1.,0.])[:5]
+  def residual(q):
+   p,R=self.grasp(np.r_[q,0]);return np.r_[(p-xyz)*30,(R[:,2]-[0,0,1])*2,(R[:,0]-normal)*1.]
+  seeds=[seed,[np.arctan2(-xyz[1],xyz[0]),-.7,1.,1.,0.],[0,-1.,1.5,.4,1.],[0,.5,-1.5,-.5,0.]]
+  best=None
+  for s in seeds:
+   fit=least_squares(residual,np.clip(s,self.bounds[:5,0]+1e-5,self.bounds[:5,1]-1e-5),bounds=(self.bounds[:5,0],self.bounds[:5,1]),max_nfev=150)
+   if best is None or np.linalg.norm(fit.fun)<np.linalg.norm(best.fun):best=fit
+   if np.linalg.norm(best.fun)<.02:break
+  p,R=self.grasp(np.r_[best.x,0]);error=np.linalg.norm(p-xyz)
+  if error>.003 or R[2,2]<.98:raise ValueError(f'Unreachable IK target {xyz}: error {error}, vertical {R[2,2]}')
+  return best.x
+
+if __name__=='__main__':
+ k=Kinematics(Path(__file__).parent/'robot-assets/so101_new_calib.urdf')
+ for z in [.08,.04,.011,.081]:
+  q=k.ik([.171897,-.106365,z],np.deg2rad(58));print('IK',z,np.rad2deg(q),k.grasp(np.r_[q,0])[0])

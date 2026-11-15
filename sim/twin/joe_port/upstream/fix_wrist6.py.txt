@@ -1,0 +1,16 @@
+wr=reference['wrist_camera']
+eye=np.array([.0,-.073,.0066])
+g=np.array(UsdGeom.Xformable(stage.GetPrimAtPath(gripper_paths[0])).ComputeLocalToWorldTransform(Usd.TimeCode.Default()))
+target=np.array(reference['objects']['target']['position'])+[0,0,.014]
+targetlocal=(target-g[3,:3])@g[:3,:3].T
+worldrays=np.array([targetlocal-eye,np.array([0,0,0])-eye])
+worldrays/=np.linalg.norm(worldrays,axis=1)[:,None]
+cv=np.array([[85/350,1/350,1],[10/350,500/350,1]])
+cv/=np.linalg.norm(cv,axis=1)[:,None]
+u,s,v=np.linalg.svd((cv*np.array([10,1])[:,None]).T@worldrays)
+r=u@np.diag([1,1,np.linalg.det(u@v)])@v
+wr.update(position_local=eye.tolist(),local_to_cv=r.tolist())
+set_camera(camera_paths['wrist'],wr,True)
+await app_utils.update_app_async(steps=40)
+Image.fromarray(np.asarray(annotators['wrist'].get_data())[:,:,:3]).save(OUT/'fix-wrist6.png')
+print('WRIST3',wr)

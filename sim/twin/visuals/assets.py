@@ -7,10 +7,14 @@ Dimensions
   studs 9.4 mm diameter x 4.4 mm high (hollow top recess on real studs is ignored). The residual env's colliders are
   boxes of exactly the body size (31.8 x 31.8 x 19.2 mm / 63.6 x 31.8 x 19.2 mm) without studs, so the visual body
   matches the collider and the studs stick out on top (+z of the brick).
-* Brick variants on the real table (sim/twin/data/photos/table_topdown.jpg): 2x2 (31.7 x 31.7 mm), 2x4
-  (63.6 x 31.7 mm) and the curved-slope 2x2 (cream / yellow: one stud row, the other half rounds down to ~6 mm at the
-  front edge). `brick_mesh(kind)`; `brick_hull_points(kind)` is the matching convex collider (the curved slope is
-  convex, so its convex hull is exact; the others are boxes). Hollow underside / stud recesses not modelled.
+* Brick variants on the real table (sim/twin/data/photos/table_topdown.jpg): 2x2 (LDraw 3437), 2x4 (3011) and the
+  curved brick, which is the Duplo "Brick 2 x 3 with Curved Top" (LDraw 2302b: 2 x 2 studs on the flat part, a
+  stud-less quarter-round end, 47.7 x 31.7 x 19.2 mm body). `brick_mesh(kind)` returns the LDraw geometry converted by
+  sim/twin/scene/ldraw.py (hollow studs, underside walls and tubes, 0.4 mm rounded outer edges on the box bricks,
+  crease-angle normals; real size = LDraw nominal minus 0.15 mm play per side: 2x2 31.7 mm, 2x4 63.7 mm), falling back
+  to the procedural meshes below when the converted .npz files are missing. `brick_hull_points(kind)` is the matching
+  convex collider without studs (boxes for 2x2 / 2x4, the convex body of the curved brick). "curved_2x2" is kept as an
+  alias of "curved_2x3" (the earlier name; there is no curved 2x2 on the station).
 * Plates: user's measurement (14 Nov): radius 9.2 cm (0.184 m outer diameter; the top camera gave 0.182-0.189 m),
   total height ~23 mm, ~2 mm plastic. Profile: flat floor (faint concentric ripples, the photo shows them over ~3/4
   of the radius) whose top is 3 mm above the table (2 mm shell on a ~1 mm foot: assumed), sloping wall up to a
@@ -21,8 +25,12 @@ Dimensions
 from __future__ import annotations
 
 import math
+from functools import lru_cache
+from pathlib import Path
 
 import numpy as np
+
+LDRAW_MESHES = Path(__file__).resolve().parents[1] / "scene/assets"  # duplo_<kind>.npz from scene/ldraw.py
 
 DUPLO_PITCH = 0.016
 DUPLO_BODY_H = 0.0192
@@ -32,10 +40,12 @@ DUPLO_2X2 = (0.0317, 0.0317, DUPLO_BODY_H)
 DUPLO_2X4 = (0.0636, 0.0317, DUPLO_BODY_H)
 CURVED_LOW_H = 0.0064  # curved-slope 2x2: height of the rounded front edge (estimated from the photo)
 PLATE_RADIUS = 0.092  # m, outer (user's measurement)
-PLATE_RIM_H = 0.023  # m above the table (total height)
+PLATE_RIM_H = 0.0238  # m above the table (total height; user 23 mm, inspect-silhouette fit 23.8 mm)
 PLATE_WALL = 0.002  # m plastic thickness
 PLATE_FLOOR_H = 0.003  # m, floor top above the table (assumed: 2 mm shell + ~1 mm foot)
-PLATE_FLOOR_FRAC = 0.75  # flat floor out to this fraction of the radius (photo: rings over ~3/4 of the plate)
+PLATE_FLOOR_FRAC = 0.75  # flat floor out to this fraction of the radius (photo: rings over ~3/4; fit 0.748)
+PLATE_WALL_POW = 3.0  # wall rise t ** p from the floor edge to the lip (inspect-silhouette fit, scene/plate_fit.py)
+PLATE_FOOT_W = 0.004  # m, width of the foot ring the plate stands on
 
 
 # ----------------------------------------------------------------------------------------------- mesh builders
@@ -98,7 +108,8 @@ def cylinder_mesh(r, h, center=(0, 0, 0), seg=24, bevel=0.0006) -> tuple:
     buf.add(pts, nrm, [[k, (k + 1) % seg, seg + (k + 1) % seg, seg + k] for k in range(seg)])
     # bevel ring
     rb = r - bevel
-    pts = np.r_[np.c_[cx + r * ca, cy + r * sa, np.full(seg, z1)], np.c_[cx + rb * ca, cy + rb * sa, np.full(seg, z1 + bevel)]]
+    pts = np.r_[np.c_[cx + r * ca, cy + r * sa, np.full(seg, z1)],
+                np.c_[cx + rb * ca, cy + rb * sa, np.full(seg, z1 + bevel)]]
     nb = np.c_[ca, sa, np.ones(seg)]
     buf.add(pts, np.r_[nb, nb], [[k, (k + 1) % seg, seg + (k + 1) % seg, seg + k] for k in range(seg)])
     # top cap (fan)
@@ -108,7 +119,21 @@ def cylinder_mesh(r, h, center=(0, 0, 0), seg=24, bevel=0.0006) -> tuple:
 
 
 def duplo_mesh(nx: int, ny: int, size=None, stud_seg: int = 24) -> tuple:
-    """Duplo brick nx x ny studs, centred on its body centre (the collider's centre); studs on +z."""
+    """Duplo brick nx x ny studs, centred on its body centre (the collider's centre); studs on +z. Known Duplo
+    footprints use the LDraw geometry (2x2, 4x2 = 2x4, 3x2 = the curved 2x3; 2x4 / 2x3 along y are rotated), others
+    the procedural box + studs."""
+    key = {(2, 2): "2x2", (4, 2): "2x4", (2, 4): "2x4", (3, 2): "curved_2x3", (2, 3): "curved_2x3"}.get((nx, ny))
+    if key is not None and _ldraw(key) is not None:
+        sz = None if size is None else (tuple(size) if nx >= ny else (size[1], size[0], size[2]))
+        p, n, c, i = ldraw_mesh(key, sz)
+        if ny > nx:  # long side along y: rotate +90 deg about z
+            p = np.c_[-p[:, 1], p[:, 0], p[:, 2]]
+            n = np.c_[-n[:, 1], n[:, 0], n[:, 2]]
+        return p, n, c, i
+    return _procedural_duplo(nx, ny, size, stud_seg)
+
+
+def _procedural_duplo(nx: int, ny: int, size=None, stud_seg: int = 24) -> tuple:
     sx, sy, sz = size if size is not None else (nx * DUPLO_PITCH - 0.0003, ny * DUPLO_PITCH - 0.0003, DUPLO_BODY_H)
     parts = [box_mesh((sx, sy, sz))]
     px, py = sx / nx, sy / ny
@@ -161,62 +186,116 @@ def curved_slope_profile(size=DUPLO_2X2, low_h: float = CURVED_LOW_H, n_arc: int
     return np.r_[[[-hy, hz]], np.c_[ys, zs]]
 
 
-BRICK_KINDS = {"2x2": DUPLO_2X2, "2x4": DUPLO_2X4, "curved_2x2": DUPLO_2X2}
+DUPLO_CURVED_2X3 = (0.0477, 0.0317, DUPLO_BODY_H)
+BRICK_KINDS = {"2x2": DUPLO_2X2, "2x4": DUPLO_2X4, "curved_2x3": DUPLO_CURVED_2X3, "curved_2x2": DUPLO_CURVED_2X3}
+KIND_ALIASES = {"curved_2x2": "curved_2x3"}
 
 
-def brick_mesh(kind: str = "2x2", size=None) -> tuple:
-    """Visual mesh of a brick variant ('2x2' | '2x4' | 'curved_2x2'), centred on its body-box centre."""
+def brick_kind_from_size(size) -> str:
+    """'2x2' | '2x4' | 'curved_2x3' from a body size (m): the long side decides (2x2 32, 2x3 48, 2x4 64 mm)."""
+    long_ = max(size[0], size[1])
+    return "2x2" if long_ < 0.040 else ("curved_2x3" if long_ < 0.056 else "2x4")
+
+
+@lru_cache(maxsize=8)
+def _ldraw(kind: str):
+    kind = KIND_ALIASES.get(kind, kind)
+    p = LDRAW_MESHES / f"duplo_{kind}.npz"
+    if not p.exists():
+        return None
+    z = np.load(p)
+    return {k: z[k] for k in z.files}
+
+
+def ldraw_mesh(kind: str, size=None):
+    """(points, normals, face counts, indices) of the converted LDraw brick, or None. With `size` (body x, y, z, m)
+    that differs from the real body by more than 1 mm the mesh is scaled per axis (else used as is)."""
+    m = _ldraw(kind)
+    if m is None:
+        return None
+    p, n = m["points"].astype(float), m["normals"].astype(float)
+    if size is not None:
+        s = np.asarray(size, float) / m["body_size"]
+        if np.any(np.abs(np.asarray(size) - m["body_size"]) > 0.001):
+            p = p * s
+            n = n / s
+            n /= np.linalg.norm(n, axis=1, keepdims=True).clip(1e-12)
+    f = m["faces"]
+    return p, n, np.full(len(f), 3, np.int32), f.reshape(-1).astype(np.int32)
+
+
+def brick_mesh(kind: str = "2x2", size=None, source: str = "ldraw") -> tuple:
+    """Visual mesh of a brick variant ('2x2' | '2x4' | 'curved_2x3'), centred on its body-box centre, studs on +z,
+    long side along x. source='ldraw' (default; falls back to 'procedural' if the .npz files are missing)."""
+    if source == "ldraw":
+        m = ldraw_mesh(kind, size)
+        if m is not None:
+            return m
     size = tuple(size) if size is not None else BRICK_KINDS[kind]
-    if kind == "curved_2x2":
+    if KIND_ALIASES.get(kind, kind) == "curved_2x3":
         return curved_slope_mesh(size)
     nx = max(1, round(size[0] / DUPLO_PITCH))
     ny = max(1, round(size[1] / DUPLO_PITCH))
-    return duplo_mesh(nx, ny, size=size)
+    return _procedural_duplo(nx, ny, size=size)
 
 
 def brick_hull_points(kind: str = "2x2", size=None) -> np.ndarray:
     """Vertices of the brick's convex collider (studs excluded, as for the box colliders): the body box, or for the
-    curved slope the extruded profile (convex, so its hull is exact)."""
+    curved brick the convex hull of its LDraw body."""
     sx, sy, sz = tuple(size) if size is not None else BRICK_KINDS[kind]
     hx, hy, hz = sx / 2, sy / 2, sz / 2
-    if kind == "curved_2x2":
+    if KIND_ALIASES.get(kind, kind) == "curved_2x3":
+        m = _ldraw("curved_2x3")
+        if m is not None:
+            return m["hull"].astype(float) * (np.array([sx, sy, sz]) / m["body_size"])
         prof = curved_slope_profile((sx, sy, sz))
         yz = np.r_[prof, [[hy, -hz], [-hy, -hz]]]
         return np.r_[np.c_[np.full(len(yz), -hx), yz], np.c_[np.full(len(yz), hx), yz]]
     return np.array([[x, y, z] for x in (-hx, hx) for y in (-hy, hy) for z in (-hz, hz)])
 
 
+def _offset_polyline(P: np.ndarray, d: float) -> np.ndarray:
+    """Offset an (r, z) polyline by d to its right-hand side (outward-down for a centre -> rim top surface)."""
+    t = np.gradient(P, axis=0)
+    t /= np.linalg.norm(t, axis=1, keepdims=True).clip(1e-12)
+    return P + d * np.c_[t[:, 1], -t[:, 0]]
+
+
 def plate_profile(radius: float = PLATE_RADIUS, floor_z: float = 0.0, rim_h: float = PLATE_RIM_H,
                   wall: float = PLATE_WALL, floor_frac: float = PLATE_FLOOR_FRAC, rings: int = 7,
-                  ring_amp: float = 0.00025, n: int = 90, floor_h: float = PLATE_FLOOR_H):
+                  ring_amp: float = 0.00025, n: int = 90, floor_h: float = PLATE_FLOOR_H,
+                  wall_pow: float = PLATE_WALL_POW, foot_w: float = PLATE_FOOT_W):
     """(r, z) polyline of the plate's cross-section, going over the top surface from the centre to the rim lip and
     back underneath. z is relative to the plate frame (the env's bowl body origin, 3 mm above the table): floor top
-    at z = floor_z, table at z = floor_z - floor_h, rim top at table + rim_h."""
+    at z = floor_z, table at z = floor_z - floor_h, rim top at table + rim_h.
+
+    Top surface: flat floor (faint concentric ripples) out to floor_frac * radius, then the wall rises as
+    t ** wall_pow (t = 0 at the floor edge, 1 at the lip; wall_pow > 1 leaves the floor tangentially and steepens
+    towards the rim), then a rounded lip of diameter 1.5 * wall. Underside: the top surface offset by the shell
+    thickness `wall` down to the foot ring (at floor_h - wall above the table), a foot ring of width foot_w standing
+    on the table, and the flat underside of the floor inside it."""
     table = floor_z - floor_h
-    top_rim = table + rim_h - wall * 0.75  # inner top of the wall; the rounded lip adds wall * 0.75 -> table + rim_h
+    lip_r = wall * 0.75
+    top_rim = table + rim_h - lip_r  # centre height of the rounded lip
+    r_in = radius - lip_r  # lip centre radius (outer edge of the lip = radius)
     rf = radius * floor_frac
-    r_in = radius - wall * 1.5
-    pts = []
-    # floor with faint concentric ripples
-    for r in np.linspace(0.0, rf, n // 2):
-        pts.append((r, floor_z + ring_amp * math.sin(2 * math.pi * rings * r / rf) * (r / rf)))
-    # wall: smooth (cosine) rise from the floor to the lip
-    for t in np.linspace(0, 1, n // 2)[1:]:
-        r = rf + (r_in - rf) * t
-        z = floor_z + (top_rim - floor_z) * (0.5 - 0.5 * math.cos(math.pi * t)) ** 0.8
-        pts.append((r, z))
-    # rounded lip
-    for a in np.linspace(math.pi, 0, 7)[1:]:
-        pts.append((r_in + wall * 0.75 * (1 + math.cos(a)), top_rim + wall * 0.75 * math.sin(a)))
-    # outer wall down to the foot (offset by the wall thickness)
-    for t in np.linspace(1, 0, n // 3)[1:]:
-        r = rf + (radius - rf) * t
-        z = floor_z - wall + (top_rim - floor_z) * (0.5 - 0.5 * math.cos(math.pi * t)) ** 0.8
-        pts.append((r, max(z, table + 0.001)))
-    pts.append((rf * 0.9, table + 0.001))
-    pts.append((rf * 0.9, table))
-    pts.append((0.0, table))
-    return np.array(pts)
+    m = max(n // 2, 8)
+    floor = [(r, floor_z + ring_amp * math.sin(2 * math.pi * rings * r / rf) * (r / rf))
+             for r in np.linspace(0.0, rf, m)]
+    t = np.linspace(0, 1, m)[1:]
+    wall_pts = np.c_[rf + (r_in - lip_r - rf) * t, floor_z + (top_rim - floor_z) * t ** wall_pow]
+    lip = [(r_in + lip_r * math.cos(a), top_rim + lip_r * math.sin(a)) for a in np.linspace(math.pi, 0, 9)[1:]]
+    top = np.r_[np.asarray(floor), wall_pts, np.asarray(lip)]
+    # outer (under) side of the wall: the top surface (floor edge -> lip start) offset by the shell thickness
+    inner = np.r_[np.c_[np.linspace(rf * 0.75, rf, m // 4), np.full(m // 4, floor_z)][:-1], wall_pts]
+    outer = _offset_polyline(inner, wall)[::-1]
+    foot_z = table + max(floor_h - wall, 0.0005)
+    outer = outer[(outer[:, 1] > foot_z + 1e-5) & (outer[:, 0] <= radius)]
+    r_foot = float(outer[-1, 0]) if len(outer) else rf
+    under = [(r_foot, table), (max(r_foot - foot_w, 0.0), table), (max(r_foot - foot_w, 0.0), foot_z), (0.0, foot_z)]
+    prof = np.r_[top, [(radius, top_rim)], outer, np.asarray(under)]
+    keep = np.r_[True, np.linalg.norm(np.diff(prof, axis=0), axis=1) > 1e-9]  # no zero-length segments
+    return prof[keep]
 
 
 def lathe_mesh(profile_rz: np.ndarray, seg: int = 96) -> tuple:

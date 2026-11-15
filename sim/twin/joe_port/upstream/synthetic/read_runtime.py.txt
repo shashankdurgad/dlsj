@@ -1,0 +1,1 @@
+print('PHYSICS_DT',SimulationManager.get_physics_dt(),'STEPS',SimulationManager.get_num_physics_steps(),'ENGINE',SimulationManager.get_active_physics_engine())

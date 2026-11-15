@@ -1,0 +1,49 @@
+"""Execute one physical-grasp trial in the existing Isaac named context."""
+import json,time,subprocess
+from pxr import PhysxSchema,UsdShade,Sdf
+from isaacsim.core.experimental.prims import RigidPrim
+SYN=ROOT/'synthetic';SYN.mkdir(exist_ok=True)
+plan=json.loads((SYN/'trial-plan.json').read_text())
+trial_dir=SYN/('trial-'+time.strftime('%Y%m%dT%H%M%S'));trial_dir.mkdir()
+timeline.pause()
+physics_mat=UsdShade.Material.Define(stage,'/World/SyntheticGripMaterial')
+mp=UsdPhysics.MaterialAPI.Apply(physics_mat.GetPrim());mp.CreateStaticFrictionAttr(1.);mp.CreateDynamicFrictionAttr(.8);mp.CreateRestitutionAttr(0.)
+for prim in stage.Traverse():
+ if prim.HasAPI(UsdPhysics.CollisionAPI):
+  pc=PhysxSchema.PhysxCollisionAPI.Apply(prim);pc.CreateContactOffsetAttr(.001);pc.CreateRestOffsetAttr(0.)
+  if 'gripper_link' in str(prim.GetPath()) or str(prim.GetPath()).startswith('/World/Brick'):
+   UsdShade.MaterialBindingAPI.Apply(prim).Bind(physics_mat,UsdShade.Tokens.weakerThanDescendants,'physics')
+ if prim.HasAPI(UsdPhysics.RigidBodyAPI):
+  rb=PhysxSchema.PhysxRigidBodyAPI.Apply(prim);rb.CreateSolverPositionIterationCountAttr(32);rb.CreateSolverVelocityIterationCountAttr(8)
+timeline.stop();await app_utils.update_app_async(steps=3)
+SimulationManager.setup_simulation(dt=1/60,device='cpu')
+timeline.play();await app_utils.update_app_async(steps=30)
+robot=Articulation('/World/SO101')
+brick_view=RigidPrim('/World/Brick')
+q0=np.asarray(plan['initial_q'],dtype=np.float32)
+robot.set_dof_gains(stiffnesses=[[200]*5+[40]],dampings=[[10]*5+[1]],dof_indices=indices)
+robot.set_dof_max_efforts([[10]*5+[.3]],dof_indices=indices)
+robot.set_dof_positions(q0[None],dof_indices=indices);robot.set_dof_position_targets(q0[None],dof_indices=indices);robot.set_dof_velocities(np.zeros((1,6)),dof_indices=indices)
+yaw=np.deg2rad(plan['target_yaw_deg']);brick_view.set_world_poses(positions=[plan['target_position']],orientations=[[np.cos(yaw/2),0,0,np.sin(yaw/2)]])
+brick_view.set_velocities(linear_velocities=[[0,0,0]],angular_velocities=[[0,0,0]])
+timeline.play();await app_utils.update_app_async(steps=30)
+initial_position=brick_view.get_world_poses()[0].numpy()[0].copy()
+encoder=subprocess.Popen([str(Path.home()/'.local/bin/ffmpeg'),'-hide_banner','-loglevel','error','-y','-f','rawvideo','-pixel_format','rgb24','-video_size','640x480','-framerate','10','-i','-','-an','-c:v','libx264','-threads','2','-pix_fmt','yuv420p','-crf','20',str(trial_dir/'overview.mp4')],stdin=subprocess.PIPE)
+records=[]
+try:
+ for i,(action,phase) in enumerate(zip(plan['actions'],plan['phases'])):
+  robot.set_dof_position_targets(np.asarray(action,dtype=np.float32)[None],dof_indices=indices)
+  await app_utils.update_app_async(steps=2)
+  pos,quat=brick_view.get_world_poses();pos=pos.numpy()[0].copy();q=robot.get_dof_positions().numpy()[0,indices].copy()
+  records.append({'frame':i,'phase':phase,'brick':pos.tolist(),'q':q.tolist(),'target':action})
+  if i%3==0:encoder.stdin.write(np.asarray(annotators['overview'].get_data())[:,:,:3].copy().tobytes())
+  if i%30==0:print('TRIAL',i,phase,'brick',pos.tolist(),'grip',float(q[-1]),flush=True)
+ timeline.pause()
+finally:
+ encoder.stdin.close();encoder.wait();timeline.pause()
+for name,ann in annotators.items():Image.fromarray(np.asarray(ann.get_data())[:,:,:3]).save(trial_dir/f'final-{name}.png')
+peak=max(r['brick'][2] for r in records);last=np.asarray([r['brick'] for r in records[-30:]])
+summary={'trial_dir':str(trial_dir),'peak_lift_m':peak-float(initial_position[2]),'final_lift_m':float(last[-1,2]-initial_position[2]),'hold_min_lift_m':float(last[:,2].min()-initial_position[2]),'success':bool(last[:,2].min()-initial_position[2]>.05),'records':records}
+(trial_dir/'result.json').write_text(json.dumps(summary))
+(SYN/'latest-trial.json').write_text(json.dumps({k:v for k,v in summary.items() if k!='records'},indent=2))
+print('TRIAL_RESULT',json.dumps({k:v for k,v in summary.items() if k!='records'}),flush=True)

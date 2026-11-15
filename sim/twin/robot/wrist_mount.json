@@ -1,0 +1,137 @@
+{
+ "frame": "gripper_link (SO-101 so101_new_calib.urdf); rows = OpenCV camera axes (x right, y down, z optical)",
+ "camera": {
+  "local_to_cv": [
+   [
+    0.975102,
+    -0.041203,
+    0.217897
+   ],
+   [
+    -0.156161,
+    -0.825226,
+    0.542786
+   ],
+   [
+    0.15745,
+    -0.563298,
+    -0.811113
+   ]
+  ],
+  "local_to_cv_sim": [
+   [
+    0.980856,
+    -0.065244,
+    0.183481
+   ],
+   [
+    -0.157539,
+    -0.819702,
+    0.5507
+   ],
+   [
+    0.11447,
+    -0.569062,
+    -0.814288
+   ]
+  ],
+  "position_local": [
+   -0.004027,
+   0.053296,
+   -0.04946
+  ],
+  "focal_px": 341.849,
+  "intrinsics_measured": {
+   "fx": 343.0686589401076,
+   "fy": 340.63022488177603,
+   "cx": 339.26142395487193,
+   "cy": 236.01045040972252,
+   "dist": [
+    0.05430527410096403,
+    -0.06627378330976615,
+    -0.0003352643224875529,
+    -0.00022849638552169453,
+    0.0019670978061707674
+   ]
+  },
+  "sim_model": "centred pinhole f=341.8; local_to_cv_sim reproduces the physical camera's pixels within 4.6 px rms (principal point (339, 236) as a 2.5 deg rotation; distortion not modelled)",
+  "optical_axis_tilt_from_gripper_axis_deg": 35.8
+ },
+ "mount": {
+  "thickness": 0.003,
+  "frame": 0.046,
+  "window": 0.026,
+  "neck_width": 0.02,
+  "tab_length": 0.014,
+  "board_hole": 0.028,
+  "connector_offset": 0.008,
+  "cable_to": [
+   0.0,
+   0.026,
+   0.012
+  ]
+ },
+ "fit": {
+  "fin_chamfer_px": 3.37,
+  "terms": {
+   "fin": 2.85,
+   "landmark": 4.43,
+   "photo": 1.82,
+   "bricks": 7.1
+  },
+  "frame_back_minus_landmark_mm": [
+   8.3,
+   10.7,
+   11.2
+  ],
+  "bricks_gripper_frame": [
+   {
+    "episode": 18,
+    "frame": 109,
+    "centre_x": 0.0023,
+    "centre_y": 0.0005,
+    "bottom_z": -0.0974
+   },
+   {
+    "episode": 122,
+    "frame": 100,
+    "centre_x": 0.0052,
+    "centre_y": 0.001,
+    "bottom_z": -0.1007
+   }
+  ]
+ },
+ "compare": {
+  "joe_cal2": {
+   "position_local": [
+    0.003,
+    0.06005,
+    -0.0491
+   ],
+   "optical_axis": [
+    0.0813,
+    -0.6213,
+    -0.7793
+   ],
+   "d_position_mm": 9.8,
+   "d_rotation_deg_vs_physical": 19.44,
+   "fin_chamfer_px": 18.79
+  },
+  "urdf_hexnut_variant": {
+   "position_local": [
+    0.0025,
+    0.06327,
+    -0.01515
+   ],
+   "optical_axis": [
+    -0.0,
+    -0.4238,
+    -0.9058
+   ],
+   "d_position_mm": 36.3,
+   "d_rotation_deg_vs_physical": 15.64,
+   "fin_chamfer_px": 4.05
+  }
+ },
+ "provenance": "sim/twin/robot/fit_wrist_mount.py (evidence in its docstring)"
+}

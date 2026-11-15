@@ -1,0 +1,68 @@
+[
+  {
+    "trial_name": "training-prompt",
+    "instruction": "pick up the brick and hold it in front of the inspection camera",
+    "action_steps": 300,
+    "simulated_seconds": 10.0,
+    "pickup_achieved": false,
+    "task_success": false,
+    "maximum_target_lift_m": 0.0,
+    "maximum_target_displacement_m": 0.0,
+    "gripper_final_rad": 0.4546976387500763,
+    "checks": {
+      "lift_over_2cm": false,
+      "lift_and_hold_5cm": false,
+      "inspection_region_4cm": false,
+      "gripper_contact_stall": false,
+      "release_drop_3cm": false,
+      "table_penetration": true,
+      "distractor_stationary": true,
+      "physics_steps": true,
+      "zero_capture_physics_steps": true
+    }
+  },
+  {
+    "trial_name": "short-prompt",
+    "instruction": "pick up the brick",
+    "action_steps": 300,
+    "simulated_seconds": 10.0,
+    "pickup_achieved": false,
+    "task_success": false,
+    "maximum_target_lift_m": 0.0,
+    "maximum_target_displacement_m": 0.0,
+    "gripper_final_rad": 0.4147411584854126,
+    "checks": {
+      "lift_over_2cm": false,
+      "lift_and_hold_5cm": false,
+      "inspection_region_4cm": false,
+      "gripper_contact_stall": false,
+      "release_drop_3cm": false,
+      "table_penetration": true,
+      "distractor_stationary": true,
+      "physics_steps": true,
+      "zero_capture_physics_steps": true
+    }
+  },
+  {
+    "trial_name": "short-prompt-single-brick",
+    "instruction": "pick up the brick",
+    "action_steps": 300,
+    "simulated_seconds": 10.0,
+    "pickup_achieved": false,
+    "task_success": false,
+    "maximum_target_lift_m": 0.0,
+    "maximum_target_displacement_m": 0.0,
+    "gripper_final_rad": 0.5049058198928833,
+    "checks": {
+      "lift_over_2cm": false,
+      "lift_and_hold_5cm": false,
+      "inspection_region_4cm": false,
+      "gripper_contact_stall": false,
+      "release_drop_3cm": false,
+      "table_penetration": true,
+      "distractor_stationary": false,
+      "physics_steps": true,
+      "zero_capture_physics_steps": true
+    }
+  }
+]

@@ -1,0 +1,5 @@
+print('RP',type(render_products['top']),str(render_products['top']))
+print('RPDIR',[n for n in dir(render_products['top']) if any(x in n.lower() for x in ['hydra','update','texture','destroy','path'])])
+print('SIMSTEP',[n for n in dir(SimulationManager) if any(x in n.lower() for x in ['step','dt'])])
+import omni.physx
+print('PHYSX',[n for n in dir(omni.physx.get_physx_interface()) if n in ['update_simulation','update_transformations','simulate','fetch_results']])

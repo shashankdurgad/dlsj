@@ -1,0 +1,287 @@
+"""Replay original recorded ACTION commands from a real demonstration in Isaac Sim."""
+import json
+import subprocess
+import time
+import traceback
+from pathlib import Path
+import numpy as np
+from PIL import Image
+from isaacsim.core.experimental.prims import RigidPrim
+import sys
+
+if str(ROOT / 'synthetic') not in sys.path:
+    sys.path.insert(0, str(ROOT / 'synthetic'))
+from kinematics import Kinematics
+
+CAL_ROOT = ROOT / 'calibration-evaluation'
+CFG = json.loads((CAL_ROOT / 'active-replay-config.json').read_text())
+OUT = CAL_ROOT / CFG['output_subdir']
+OUT.mkdir(parents=True, exist_ok=True)
+
+kin = Kinematics(ROOT / 'synthetic/robot-assets/so101_new_calib.urdf')
+ffmpeg_bin = str(Path.home() / '.local/bin/ffmpeg')
+
+offsets_rad = np.asarray(CFG['joint_offsets_rad'], np.float32)
+signs = np.asarray(CFG.get('joint_signs', [1.0, 1.0, 1.0, 1.0, 1.0, 1.0]), np.float32)
+grip_mode = CFG.get('gripper_mode', 'linear_upper_limit')
+grip_scale = float(CFG.get('gripper_scale', 1.0))
+grip_bias_rad = float(CFG.get('gripper_bias_rad', 0.0))
+
+distractors = {}
+dist_cfg = CFG.get('distractors', {})
+for name, default_yaw in [('blue_brick', 120.0), ('yellow_brick', 77.0), ('cream_brick', 50.0)]:
+    pos = dist_cfg.get(name, {}).get('position', reference['objects'][name]['position'])
+    yaw = dist_cfg.get(name, {}).get('yaw_deg', default_yaw)
+    distractors[name] = (
+        RigidPrim('/World/ReferenceProps/' + name),
+        np.asarray(pos, np.float32),
+        np.deg2rad(float(yaw)),
+    )
+
+def real_deg_to_sim_rad(deg_vec):
+    v = np.asarray(deg_vec, np.float32)
+    rad = np.deg2rad(v * signs) + offsets_rad
+    if grip_mode == 'linear_upper_limit':
+        rad[-1] = np.clip(v[-1] / 100.0, 0.0, 1.0) * limits[indices[-1], 1] * grip_scale + grip_bias_rad
+    elif grip_mode == 'affine_rad':
+        rad[-1] = (v[-1] / 100.0) * grip_scale + grip_bias_rad
+    return np.clip(rad, limits[indices, 0], limits[indices, 1]).astype(np.float32)
+
+def sim_rad_to_real_deg(rad_vec):
+    r = np.asarray(rad_vec, np.float32)
+    deg = np.rad2deg(r - offsets_rad) * signs
+    if grip_mode == 'linear_upper_limit':
+        deg[-1] = (r[-1] - grip_bias_rad) / (limits[indices[-1], 1] * grip_scale) * 100.0
+    elif grip_mode == 'affine_rad':
+        deg[-1] = (r[-1] - grip_bias_rad) / grip_scale * 100.0
+    return deg.astype(np.float32)
+
+def pose_reset(view, position, yaw):
+    view.set_world_poses(
+        positions=[np.asarray(position, np.float32)],
+        orientations=[[np.cos(yaw / 2.0), 0.0, 0.0, np.sin(yaw / 2.0)]],
+    )
+    view.set_velocities(linear_velocities=[[0.0, 0.0, 0.0]], angular_velocities=[[0.0, 0.0, 0.0]])
+
+def open_video_encoder(path, width=640, height=480, crf=18):
+    return subprocess.Popen(
+        [
+            ffmpeg_bin, '-hide_banner', '-loglevel', 'error', '-y',
+            '-f', 'rawvideo', '-pixel_format', 'rgb24',
+            '-video_size', f'{width}x{height}', '-framerate', '30',
+            '-i', '-', '-an', '-c:v', 'libx264', '-threads', '1',
+            '-g', '2', '-pix_fmt', 'yuv420p', '-crf', str(crf), str(path),
+        ],
+        stdin=subprocess.PIPE,
+    )
+
+rep.orchestrator.set_capture_on_play(False)
+render_products['overview'].hydra_texture.set_updates_enabled(True)
+
+try:
+    all_runs = []
+    for run_spec in CFG['runs']:
+        r_name = run_spec['name']
+        r_dir = OUT / r_name
+        r_dir.mkdir(parents=True, exist_ok=True)
+
+        rec_states = np.asarray(run_spec['recorded_states'], np.float32)
+        rec_actions = np.asarray(run_spec['recorded_actions'], np.float32)
+        assert len(rec_states) == len(rec_actions)
+        n_frames = len(rec_actions)
+
+        timeline.play()
+        q0 = real_deg_to_sim_rad(rec_states[0])
+        robot.set_dof_positions(q0[None], dof_indices=indices)
+        robot.set_dof_velocities(np.zeros((1, 6)), dof_indices=indices)
+        robot.set_dof_position_targets(q0[None], dof_indices=indices)
+        pose_reset(brick_view, run_spec['target_position'], np.deg2rad(float(run_spec['target_yaw_deg'])))
+        for view, pos, yaw in distractors.values():
+            pose_reset(view, pos, yaw)
+        light.GetIntensityAttr().Set(700.0)
+        UsdLux.DistantLight(stage.GetPrimAtPath('/World/Sun')).GetIntensityAttr().Set(600.0)
+        SimulationManager.step(steps=30)
+        await rep.orchestrator.step_async(rt_subframes=1, pause_timeline=False, delta_time=0.0, wait_for_render=True)
+
+        initial_brick = brick_view.get_world_poses()[0].numpy()[0].copy()
+        dist_initial = {k: v[0].get_world_poses()[0].numpy()[0].copy() for k, v in distractors.items()}
+        max_dist_disp = {k: 0.0 for k in distractors}
+
+        cams = ['wrist', 'top', 'inspect', 'overview']
+        for c in cams:
+            px = np.asarray(annotators[c].get_data())[:, :, :3].copy()
+            Image.fromarray(px).save(r_dir / f'initial-{c}.png')
+
+        encoders = {c: open_video_encoder(r_dir / f'{c}.mp4', 640, 480, 18) for c in cams}
+        comp_enc = open_video_encoder(r_dir / 'three-cameras.mp4', 1920, 480, 18)
+
+        sim_states_deg = []
+        sim_q_rad = []
+        applied_rad = []
+        brick_positions = []
+        fk_grasp_positions = []
+        arm_tracking_errors_rad = []
+        sim_vs_rec_state_deg_errors = []
+        contact_frames = []
+        first_step = SimulationManager.get_num_physics_steps()
+        extra_capture_steps = 0
+
+        try:
+            for i in range(n_frames):
+                before_s = SimulationManager.get_num_physics_steps()
+                await rep.orchestrator.step_async(rt_subframes=1, pause_timeline=False, delta_time=0.0, wait_for_render=True)
+                extra_capture_steps += SimulationManager.get_num_physics_steps() - before_s
+
+                cur_q = robot.get_dof_positions().numpy()[0, indices].copy()
+                cur_deg = sim_rad_to_real_deg(cur_q)
+                sim_states_deg.append(cur_deg)
+                sim_q_rad.append(cur_q)
+                fk_p, _ = kin.grasp(cur_q)
+                fk_grasp_positions.append(fk_p.copy())
+                sim_vs_rec_state_deg_errors.append(np.abs(cur_deg - rec_states[i]).tolist())
+
+                imgs = {}
+                for c in cams:
+                    px = np.asarray(annotators[c].get_data())[:, :, :3].copy()
+                    imgs[c] = px
+                    encoders[c].stdin.write(px.tobytes())
+                comp = np.concatenate([imgs['top'], imgs['wrist'], imgs['inspect']], axis=1)
+                comp_enc.stdin.write(comp.tobytes())
+                if i in [0, 30, 55, 60, 75, 112, n_frames - 1]:
+                    contact_frames.append(comp)
+                    for c in ['wrist', 'top', 'inspect']:
+                        Image.fromarray(imgs[c]).save(r_dir / f'{c}-{i:03d}.png')
+
+                target_q = real_deg_to_sim_rad(rec_actions[i])
+                applied_rad.append(target_q)
+                robot.set_dof_position_targets(target_q[None], dof_indices=indices)
+                SimulationManager.step(steps=2)
+
+                b_pos = brick_view.get_world_poses()[0].numpy()[0].copy()
+                brick_positions.append(b_pos)
+                post_q = robot.get_dof_positions().numpy()[0, indices].copy()
+                arm_tracking_errors_rad.append(float(np.max(np.abs(post_q[:5] - target_q[:5]))))
+                for k, v in distractors.items():
+                    cur_d = v[0].get_world_poses()[0].numpy()[0]
+                    max_dist_disp[k] = max(max_dist_disp[k], float(np.linalg.norm(cur_d - dist_initial[k])))
+        finally:
+            for enc in encoders.values():
+                enc.stdin.close()
+                assert enc.wait() == 0
+            comp_enc.stdin.close()
+            assert comp_enc.wait() == 0
+
+        await rep.orchestrator.step_async(rt_subframes=1, pause_timeline=False, delta_time=0.0, wait_for_render=True)
+        for c in cams:
+            px = np.asarray(annotators[c].get_data())[:, :, :3].copy()
+            Image.fromarray(px).save(r_dir / f'final-{c}.png')
+        if contact_frames:
+            Image.fromarray(np.concatenate(contact_frames, axis=0)).save(r_dir / 'replay-contact.jpg', quality=90)
+
+        brick_arr = np.asarray(brick_positions)
+        fk_arr = np.asarray(fk_grasp_positions)
+        sim_deg_arr = np.asarray(sim_states_deg)
+        sim_q_arr = np.asarray(sim_q_rad)
+        app_q_arr = np.asarray(applied_rad)
+        physics_steps = SimulationManager.get_num_physics_steps() - first_step
+
+        # Post-replay release drop check
+        final_q = robot.get_dof_positions().numpy()[0, indices].copy()
+        grip_final = float(final_q[-1])
+        held_z = float(brick_arr[-1, 2])
+        rel_q = final_q.copy()
+        rel_q[-1] = 1.0
+        robot.set_dof_position_targets(rel_q[None], dof_indices=indices)
+        SimulationManager.step(steps=60)
+        released_z = float(brick_view.get_world_poses()[0].numpy()[0, 2])
+        release_drop = float(held_z - released_z)
+
+        lifts = brick_arr[:, 2] - initial_brick[2]
+        max_lift = float(lifts.max())
+        final_lift = float(lifts[-1])
+        hold_min_last_1s = float(lifts[-30:].min())
+        max_disp = float(np.linalg.norm(brick_arr - initial_brick[None, :], axis=1).max())
+        min_z_idx = int(np.argmin(fk_arr[:, 2]))
+
+        checks = {
+            'lift_over_2cm': bool(max_lift > 0.02),
+            'lift_and_hold_5cm': bool(hold_min_last_1s > 0.05),
+            'gripper_contact_stall': bool(0.08 < grip_final < 0.45),
+            'release_drop_3cm': bool(release_drop > 0.03),
+            'arm_tracking': bool(max(arm_tracking_errors_rad) < 0.25),
+            'table_penetration': bool(float(brick_arr[:, 2].min()) > 0.0046),
+            'distractor_stationary': bool(max(max_dist_disp.values()) < 0.002),
+            'physics_steps': bool(physics_steps == 2 * n_frames),
+            'zero_capture_physics_steps': bool(extra_capture_steps == 0),
+        }
+
+        np.savez_compressed(
+            r_dir / 'replay-arrays.npz',
+            recorded_states=rec_states,
+            recorded_actions=rec_actions,
+            sim_states_deg=sim_deg_arr,
+            sim_joint_radians=sim_q_arr,
+            applied_radians=app_q_arr,
+            fk_grasp_positions=fk_arr,
+            brick_positions=brick_arr,
+            timestamp=np.arange(n_frames, dtype=np.float64) / 30.0,
+        )
+
+        res = {
+            'run_name': r_name,
+            'episode_index': run_spec['episode_index'],
+            'description': run_spec['description'],
+            'frames': n_frames,
+            'pickup_achieved': bool(max_lift > 0.02),
+            'hold_at_end_achieved': bool(hold_min_last_1s > 0.05 and release_drop > 0.03),
+            'checks': checks,
+            'brick_initial_m': initial_brick.tolist(),
+            'brick_final_m': brick_arr[-1].tolist(),
+            'brick_peak_height_m': float(brick_arr[:, 2].max()),
+            'maximum_target_lift_m': max_lift,
+            'final_target_lift_m': final_lift,
+            'minimum_hold_lift_last_1s_m': hold_min_last_1s,
+            'maximum_target_displacement_m': max_disp,
+            'release_drop_m': release_drop,
+            'gripper_final_rad': grip_final,
+            'gripper_min_rad': float(sim_q_arr[:, 5].min()),
+            'gripper_max_rad': float(sim_q_arr[:, 5].max()),
+            'lowest_fk_grasp_frame': min_z_idx,
+            'lowest_fk_grasp_xyz_m': fk_arr[min_z_idx].tolist(),
+            'frame60_fk_grasp_xyz_m': fk_arr[min(60, n_frames - 1)].tolist(),
+            'final_fk_grasp_xyz_m': fk_arr[-1].tolist(),
+            'max_arm_tracking_error_rad': float(max(arm_tracking_errors_rad)),
+            'mean_state_tracking_mae_deg': np.mean(sim_vs_rec_state_deg_errors, axis=0).tolist(),
+            'max_distractor_displacement_m': max_dist_disp,
+            'physics_steps': physics_steps,
+            'extra_capture_steps': extra_capture_steps,
+            'mapping_config': {
+                'joint_offsets_rad': offsets_rad.tolist(),
+                'joint_signs': signs.tolist(),
+                'gripper_mode': grip_mode,
+                'gripper_scale': grip_scale,
+                'gripper_bias_rad': grip_bias_rad,
+                'target_position': run_spec['target_position'],
+                'target_yaw_deg': run_spec['target_yaw_deg'],
+            },
+        }
+        (r_dir / 'replay-result.json').write_text(json.dumps(res, indent=2))
+        all_runs.append(res)
+        print('DEMO_REPLAY_RESULT', r_name, json.dumps({
+            'pickup_achieved': res['pickup_achieved'],
+            'hold_at_end_achieved': res['hold_at_end_achieved'],
+            'max_lift_m': round(max_lift, 4),
+            'final_lift_m': round(final_lift, 4),
+            'max_disp_m': round(max_disp, 4),
+            'release_drop_m': round(release_drop, 4),
+            'lowest_fk_xyz': [round(x, 4) for x in res['lowest_fk_grasp_xyz_m']],
+            'frame60_fk_xyz': [round(x, 4) for x in res['frame60_fk_grasp_xyz_m']],
+        }), flush=True)
+
+    timeline.pause()
+    (OUT / 'summary.json').write_text(json.dumps({'runs': all_runs}, indent=2))
+    print('ALL_DEMO_REPLAYS_COMPLETE', len(all_runs), flush=True)
+except BaseException:
+    timeline.pause()
+    (OUT / 'replay-error.txt').write_text(traceback.format_exc())
+    raise

@@ -1,0 +1,5 @@
+DEMO_REPLAY_RESULT ep0-pick-hold-142f {"pickup_achieved": true, "hold_at_end_achieved": true, "max_lift_m": 0.1667, "final_lift_m": 0.116, "max_disp_m": 0.3148, "release_drop_m": 0.111, "lowest_fk_xyz": [0.1772, -0.1045, 0.0054], "frame60_fk_xyz": [0.1741, -0.1074, 0.0061]}
+DEMO_REPLAY_RESULT ep0-full-159f {"pickup_achieved": true, "hold_at_end_achieved": false, "max_lift_m": 0.1665, "final_lift_m": 0.005, "max_disp_m": 0.3162, "release_drop_m": 0.0, "lowest_fk_xyz": [0.1766, -0.1034, 0.0051], "frame60_fk_xyz": [0.1709, -0.1079, 0.0057]}
+DEMO_REPLAY_RESULT ep8-heldout-unproj-cam-91f {"pickup_achieved": true, "hold_at_end_achieved": true, "max_lift_m": 0.1618, "final_lift_m": 0.0987, "max_disp_m": 0.2224, "release_drop_m": 0.0873, "lowest_fk_xyz": [0.2273, -0.0246, 0.0047], "frame60_fk_xyz": [0.3346, 0.1141, 0.1137]}
+DEMO_REPLAY_RESULT ep8-heldout-fk-site-91f {"pickup_achieved": false, "hold_at_end_achieved": false, "max_lift_m": 0.0053, "final_lift_m": -0.0, "max_disp_m": 0.0318, "release_drop_m": 0.0, "lowest_fk_xyz": [0.2255, -0.0241, 0.0044], "frame60_fk_xyz": [0.3291, 0.1114, 0.1062]}
+ALL_DEMO_REPLAYS_COMPLETE 4

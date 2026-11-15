@@ -1,0 +1,51 @@
+"""Independent recorded-action replay; no policy inference or grasp attachment."""
+import json,os,time,subprocess,sys
+from PIL import Image
+from isaacsim.core.experimental.prims import RigidPrim
+sys.path.insert(0,str(ROOT/'synthetic'))
+from kinematics import Kinematics
+episode=int(reference.get('replay_episode',101))
+OUT=ROOT/'cal2-calibration'/reference.get('replay_label',f'replay-ep{episode}');OUT.mkdir(parents=True,exist_ok=True)
+rec=np.load(ROOT/'cal2-calibration'/f'episode{episode}.npz');states=rec['states'];actions=rec['actions'];n=min(180,len(actions))
+kin=Kinematics(ROOT/'synthetic/robot-assets/so101_new_calib.urdf')
+off=np.array(reference['joint_offsets_rad']);gm=reference['gripper_mapping']
+def mapping(x):
+ q=np.deg2rad(x)+off;q[-1]=x[-1]*gm['scale_rad_per_unit']+gm['bias_rad'];return np.clip(q,limits[indices,0],limits[indices,1]).astype(np.float32)
+def reset(view,pos,yaw):
+ view.set_world_poses(positions=[pos],orientations=[[np.cos(yaw/2),0,0,np.sin(yaw/2)]]);view.set_velocities(linear_velocities=[[0,0,0]],angular_velocities=[[0,0,0]])
+# Bodies are moved without changing schemas; no stale articulation handles.
+for i,name in enumerate(['blue_brick','yellow_brick','cream_brick']):reset(RigidPrim('/World/ReferenceProps/'+name),[3.+i,3.,.1],0)
+q0=mapping(states[0]);robot.set_dof_positions(q0[None],dof_indices=indices);robot.set_dof_velocities(np.zeros((1,6)),dof_indices=indices);robot.set_dof_position_targets(q0[None],dof_indices=indices)
+reset(brick_view,reference['objects']['target']['position'],np.deg2rad(reference['target_yaw_deg']))
+timeline.pause();SimulationManager.step(steps=30)
+await rep.orchestrator.step_async(rt_subframes=1,pause_timeline=False,delta_time=0.,wait_for_render=True)
+initial=brick_view.get_world_poses()[0].numpy()[0].copy();cams=['top','wrist','inspect','overview'];render_products['overview'].hydra_texture.set_updates_enabled(True)
+def encoder(path,w=640,h=480):
+ return subprocess.Popen([str(Path.home()/'.local/bin/ffmpeg'),'-hide_banner','-loglevel','error','-y','-f','rawvideo','-pix_fmt','rgb24','-s',f'{w}x{h}','-r','30','-i','-','-an','-c:v','libx264','-threads','1','-pix_fmt','yuv420p','-crf','18',str(path)],stdin=subprocess.PIPE)
+enc={c:encoder(OUT/f'{c}.mp4') for c in cams};comp=encoder(OUT/'three-cameras.mp4',1920,480)
+arrq=[];arrb=[];arrcmd=[];arrfk=[];sheets=[];first=SimulationManager.get_num_physics_steps();extra=0
+try:
+ for i,action in enumerate(actions[:n]):
+  step0=SimulationManager.get_num_physics_steps()
+  await rep.orchestrator.step_async(rt_subframes=1,pause_timeline=False,delta_time=0.,wait_for_render=True)
+  extra+=SimulationManager.get_num_physics_steps()-step0
+  images={c:np.asarray(annotators[c].get_data())[:,:,:3].copy() for c in cams}
+  for c,im in images.items():enc[c].stdin.write(im.tobytes())
+  image=np.concatenate([images[c] for c in ['top','wrist','inspect']],axis=1);comp.stdin.write(image.tobytes())
+  if i in [0,30,55,65,75,90,120,150,n-1]:
+   sheets.append(image)
+   for c in cams:Image.fromarray(images[c]).save(OUT/f'{c}-{i:03d}.png')
+  q=mapping(action);robot.set_dof_position_targets(q[None],dof_indices=indices);SimulationManager.step(steps=2)
+  actual=robot.get_dof_positions().numpy()[0,indices].copy();b=brick_view.get_world_poses()[0].numpy()[0].copy();fk=kin.grasp(actual)[0]
+  arrq.append(actual);arrb.append(b);arrcmd.append(q);arrfk.append(fk)
+finally:
+ for e in [*enc.values(),comp]:e.stdin.close();assert e.wait()==0
+ timeline.pause()
+B=np.array(arrb);Q=np.array(arrq);FK=np.array(arrfk);cmd=np.array(arrcmd);lift=B[:,2]-initial[2]
+measured_steps=SimulationManager.get_num_physics_steps()-first
+# Release test at the end of recorded hold (excluded from replay).
+q=Q[-1].copy();q[-1]=1.;robot.set_dof_position_targets(q[None],dof_indices=indices);SimulationManager.step(steps=90);released=brick_view.get_world_poses()[0].numpy()[0].copy()
+res={'episode':episode,'mode':'recorded action commands, dynamic physics, no attachments','frames':n,'physics_steps':measured_steps,'extra_capture_steps':extra,'initial_target_m':initial.tolist(),'final_target_m':B[-1].tolist(),'max_lift_m':float(lift.max()),'hold_min_last_1s_m':float(lift[-30:].min()),'release_drop_m':float(B[-1,2]-released[2]),'pickup_lift_over2cm':bool(lift.max()>.02),'hold_over5cm':bool(lift[-30:].min()>.05),'closest_fk_to_initial_target_m':float(np.linalg.norm(FK-initial,axis=1).min()),'actual_fk_at_f65_m':FK[65].tolist(),'mean_arm_tracking_deg':np.rad2deg(abs(Q[:,:5]-cmd[:,:5]).mean(0)).tolist(),'final_gripper_rad':float(Q[-1,-1]),'calibration_note':'Estimated camera/joint/gripper fit. Target independently placed from initial recorded image, not moved to FK grasp.'}
+np.savez(OUT/'arrays.npz',actual_q=Q,brick_positions=B,command_q=cmd,fk_grasp=FK,recorded_states=states[:n],recorded_actions=actions[:n])
+Image.fromarray(np.concatenate(sheets,axis=0)).save(OUT/'contact.jpg',quality=90)
+(OUT/'result.json').write_text(json.dumps(res,indent=2));print('REPLAY_RESULT',json.dumps(res),flush=True)

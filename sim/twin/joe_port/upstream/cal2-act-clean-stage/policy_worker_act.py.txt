@@ -1,0 +1,87 @@
+"""Native LeRobot ACT, saved processors, full RGB views; isolated simulation IPC."""
+import hashlib
+import json
+import os
+import time
+from pathlib import Path
+import numpy as np
+import torch
+from lerobot.policies.act.modeling_act import ACTPolicy
+from lerobot.policies.factory import make_pre_post_processors
+from lerobot.policies.act.configuration_act import ACTConfig
+from safetensors.torch import load_file
+import draccus
+
+ROOT = Path('/work/cal2-act-clean-stage')
+MODEL = Path('/work/act-step7000/model')
+OUT = ROOT / 'outputs'
+IPC = ROOT / 'ipc'
+OUT.mkdir(parents=True, exist_ok=True)
+IPC.mkdir(parents=True, exist_ok=True)
+hashes = {}
+for line in (MODEL / 'SHA256SUMS').read_text().splitlines():
+    expected, filename = line.split(maxsplit=1)
+    filename = filename.lstrip('*')
+    digest = hashlib.sha256((MODEL / filename).read_bytes()).hexdigest()
+    assert digest == expected, filename
+    hashes[filename] = digest
+print('CHECKPOINT_BUNDLE_VERIFIED', hashes, flush=True)
+torch.manual_seed(42)
+raw_config = json.loads((MODEL / 'config.json').read_text())
+assert raw_config.pop('type') == 'act'
+for key in ['dtype', 'optimizer_fused']:
+    assert raw_config.pop(key) is None, key
+# The full trained backbone is loaded below; avoid downloading initialization weights.
+raw_config['pretrained_backbone_weights'] = None
+config = draccus.decode(ACTConfig, raw_config)
+policy = ACTPolicy(config)
+load_result = policy.load_state_dict(load_file(str(MODEL / 'model.safetensors')), strict=True)
+print('STRICT_MODEL_LOAD_OK', load_result, flush=True)
+policy = policy.eval().to('cuda')
+policy.requires_grad_(False)
+pre, post = make_pre_post_processors(policy.config, pretrained_path=str(MODEL),
+    preprocessor_overrides={'device_processor': {'device': 'cuda'}})
+assert policy.config.chunk_size == 50 and policy.config.n_action_steps == 10
+metadata = {
+    'policy': 'native LeRobot ACT', 'config_compatibility': 'Ignored null dtype/optimizer_fused; pretrained backbone initializer disabled; full trained weights loaded strictly', 'checkpoint_step': 7000,
+    'checkpoint_uri': 'gs://onflow-30k-pi05-artifacts/act/runs/act-cal2-grasp120-20261114/test_checkpoints/step7000',
+    'checkpoint_sha256': hashes['model.safetensors'], 'bundle_sha256': hashes,
+    'torch': torch.__version__, 'gpu': torch.cuda.get_device_name(0),
+    'normalization': 'saved native pre/postprocessor MEAN_STD',
+    'camera_order': list(policy.config.image_features),
+    'top_camera_crop': None, 'camera_resolution': [640,480],
+    'chunk_size':50,'n_action_steps':10,'language_conditioned':False,
+}
+(OUT / 'policy-ready.json').write_text(json.dumps(metadata, indent=2))
+print('POLICY_READY', flush=True)
+step = 0
+deadline = time.monotonic() + 3600
+while not (IPC / 'done.flag').exists():
+    obsfile = IPC / f'obs-{step:03d}.npz'
+    if not obsfile.exists():
+        if time.monotonic() > deadline:
+            raise TimeoutError(str(obsfile))
+        time.sleep(.03)
+        continue
+    data = np.load(obsfile, allow_pickle=False)
+    batch = {'observation.state': torch.from_numpy(data['state'].copy()).unsqueeze(0)}
+    for c in ['wrist','top','inspect']:
+        assert data[c].shape == (480,640,3)
+        batch['observation.images.'+c] = torch.from_numpy(data[c].copy()).permute(2,0,1).unsqueeze(0).float()/255.
+    torch.cuda.synchronize()
+    start = time.perf_counter()
+    with torch.inference_mode():
+        processed = pre(batch)
+        predicted = policy.predict_action_chunk(processed)
+        # Saved postprocessor expects a batch of individual actions.
+        actions = post(predicted.reshape(-1,6)).reshape(1,50,6)
+    torch.cuda.synchronize()
+    latency = time.perf_counter()-start
+    actions = actions.float().cpu().numpy()[0]
+    assert actions.shape == (50,6) and np.isfinite(actions).all()
+    tmp = IPC / f'actions-{step:03d}.tmp.npz'
+    np.savez(tmp, actions=actions, latency_s=latency)
+    os.replace(tmp, IPC / f'actions-{step:03d}.npz')
+    print(json.dumps({'req':step,'latency_s':latency,'first_action':actions[0].tolist()}),flush=True)
+    step += 1
+print('WORKER_COMPLETE',step,flush=True)

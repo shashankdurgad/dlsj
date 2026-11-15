@@ -1,0 +1,140 @@
+"""Isolated Physical AI Studio Pi0.5 policy worker for latest GCP checkpoint time-step00006115.ckpt."""
+import hashlib
+import inspect
+import json
+import os
+import time
+from pathlib import Path
+import numpy as np
+import torch
+from transformers.initialization import no_init_weights
+from physicalai.policies import Pi05
+from physicalai.data import Observation
+
+EVAL_ROOT = Path('/work/eval-latest-gcp-6115')
+OUT = EVAL_ROOT / 'outputs'
+IPC = EVAL_ROOT / 'ipc'
+OUT.mkdir(parents=True, exist_ok=True)
+IPC.mkdir(parents=True, exist_ok=True)
+
+EXPECTED_SIZE = 12180880457
+EXPECTED_SHA = '10c891fe37ba23704e830cf42a46708d79996ff7c6be8f68d099283ac4cb152c'
+EXPECTED_STEP = 6115
+EXPECTED_EPOCH = 2
+
+checkpoint = EVAL_ROOT / 'model/time-step00006115.ckpt'
+norm_path = EVAL_ROOT / 'model/TRAIN-NORMALIZATION.json'
+sidecar_path = EVAL_ROOT / 'model/time-step00006115.json'
+
+print('RUNTIME', torch.__version__, torch.cuda.get_device_name(0), flush=True)
+assert checkpoint.exists(), f'Missing checkpoint {checkpoint}'
+assert checkpoint.stat().st_size == EXPECTED_SIZE, (checkpoint.stat().st_size, EXPECTED_SIZE)
+with checkpoint.open('rb') as f:
+    digest = hashlib.file_digest(f, 'sha256').hexdigest()
+assert digest == EXPECTED_SHA, (digest, EXPECTED_SHA)
+print('CHECKPOINT_SHA256_OK', digest, flush=True)
+
+torch.manual_seed(42)
+saved = torch.load(checkpoint, map_location='cpu', mmap=True, weights_only=False)
+assert int(saved['global_step']) == EXPECTED_STEP, saved['global_step']
+assert int(saved['epoch']) == EXPECTED_EPOCH, saved['epoch']
+
+norm = json.loads(norm_path.read_text())
+ds_stats = saved['hyper_parameters']['dataset_stats']
+for key in ['action', 'observation.state']:
+    for stat_k in ['mean', 'std', 'min', 'max', 'q01', 'q99']:
+        assert np.allclose(np.asarray(ds_stats[key][stat_k]), np.asarray(norm[key][stat_k]), atol=1e-5), (key, stat_k)
+
+hparams = {k: v for k, v in saved['hyper_parameters'].items() if k in inspect.signature(Pi05.__init__).parameters}
+hparams.update(pretrained_name_or_path=None, compile_model=False, gradient_checkpointing=False)
+print('CONSTRUCTING_POLICY', sorted(hparams), flush=True)
+with no_init_weights():
+    policy = Pi05(**hparams)
+policy.on_load_checkpoint(saved)
+policy.load_state_dict(saved['state_dict'], strict=True, assign=True)
+del saved
+import gc
+gc.collect()
+print('STATE_LOADED', flush=True)
+policy = policy.eval().to('cuda')
+policy.requires_grad_(False)
+
+tokenizer = policy._preprocessor.tokenizer
+stats = policy.hparams['dataset_stats']
+metadata = {
+    'torch': torch.__version__,
+    'gpu': torch.cuda.get_device_name(0),
+    'checkpoint_uri': 'gs://onflow-30k-pi05-artifacts/runs/pi05-517-3epoch-20261114/checkpoints/time-step00006115.ckpt',
+    'checkpoint_sidecar': json.loads(sidecar_path.read_text()),
+    'checkpoint_step': EXPECTED_STEP,
+    'checkpoint_epoch': EXPECTED_EPOCH,
+    'checkpoint_bytes': EXPECTED_SIZE,
+    'checkpoint_sha256': digest,
+    'gcs_generation': '1794638638061548',
+    'gcs_crc32c': 'O42ctA==',
+    'gcs_finalized_utc': '2026-11-14T06:43:58.219Z',
+    'base_model': 'lerobot/pi05_base',
+    'base_model_revision': '22c30e5b34f9e7ab738b1b34fc2fc5ecfe2d28f0',
+    'studio_commit': '8f1324161ece2b24f2d38765b6e943ed1961258c',
+    'training_dataset': 'gs://onflow-30k-pi05-artifacts/datasets/pi05-517-curated-20261114/',
+    'normalization_verified_against': 'TRAIN-NORMALIZATION.json',
+    'normalization_mode': str(policy.hparams.get('normalization_mode')),
+    'top_camera_crop': '0,0,560,480@640x480',
+    'dataset_stats': stats,
+    'tokenizer': str(type(tokenizer)),
+    'camera_order': ['wrist', 'top', 'inspect'],
+    'joint_order': ['shoulder_pan', 'shoulder_lift', 'elbow_flex', 'wrist_flex', 'wrist_roll', 'gripper'],
+}
+(OUT / 'policy-ready.json').write_text(json.dumps(metadata, indent=2, default=str))
+print('POLICY_READY', flush=True)
+
+step = 0
+deadline = time.monotonic() + 3600
+while True:
+    if (IPC / 'done.flag').exists():
+        print('DONE_FLAG_RECEIVED', step, flush=True)
+        break
+    obsfile = IPC / f'obs-{step:03d}.npz'
+    if not obsfile.exists():
+        if time.monotonic() > deadline:
+            raise TimeoutError(f'Timed out waiting for {obsfile}')
+        time.sleep(0.03)
+        continue
+    data = np.load(obsfile, allow_pickle=False)
+    top_img = data['top'][:, :560, :].copy() if bool(data.get('crop_top', True)) else data['top'].copy()
+    images = {
+        'wrist': torch.from_numpy(data['wrist'].copy()).permute(2, 0, 1).unsqueeze(0).float() / 255.0,
+        'top': torch.from_numpy(top_img).permute(2, 0, 1).unsqueeze(0).float() / 255.0,
+        'inspect': torch.from_numpy(data['inspect'].copy()).permute(2, 0, 1).unsqueeze(0).float() / 255.0,
+    }
+    obs = Observation(
+        state=torch.from_numpy(data['state'].copy()).unsqueeze(0),
+        images=images,
+        task=[str(data['instruction'].item())],
+    )
+    if 'seed' in data:
+        s_val = int(data['seed'].item())
+        torch.manual_seed(s_val)
+        torch.cuda.manual_seed_all(s_val)
+    torch.cuda.synchronize()
+    started = time.perf_counter()
+    with torch.inference_mode(), torch.autocast('cuda', dtype=torch.bfloat16):
+        actions = policy.predict_action_chunk(obs)
+    torch.cuda.synchronize()
+    latency = time.perf_counter() - started
+    actions = actions.float().cpu().numpy()[0]
+    assert actions.shape == (50, 6), actions.shape
+    assert np.isfinite(actions).all()
+    tmp = IPC / f'actions-{step:03d}.tmp.npz'
+    np.savez(tmp, actions=actions, latency_s=latency)
+    os.replace(tmp, IPC / f'actions-{step:03d}.npz')
+    print(json.dumps({
+        'req': step,
+        'latency_s': latency,
+        'top_shape': list(top_img.shape),
+        'min': actions.min(axis=0).tolist(),
+        'max': actions.max(axis=0).tolist(),
+    }), flush=True)
+    step += 1
+
+print('WORKER_COMPLETE', step, flush=True)

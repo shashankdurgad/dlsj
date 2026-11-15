@@ -1,11 +1,12 @@
 """Real-vs-sim replay video of a recorded cal2 episode (top / wrist / inspect; real row above sim row).
 
 Three stages, because importing PyAV in the Isaac process blacks out the cameras:
-    python  sim/twin/env/replay_video.py real   --ep 18       # decode real frames + plate layout (plain python)
+    python  sim/twin/env/replay_video.py real   --ep 18       # decode real frames + scene layout (plain python)
     sim/twin/run.sh sim/twin/env/replay_video.py sim --ep 18  # replay recorded actions in TwinEnv, render each tick
     python  sim/twin/env/replay_video.py encode --ep 18     # compose + H.264 mp4 -> sim/twin/out/env/replay_ep018.mp4
-Brick at the fingertip of the gripper-close frame (as validate_twin.py), plates where the real top frame shows them,
-distractors parked off the table, no clamp, no measurement noise.
+Scene from the real first top frame (sim/twin/scene/layout.layout_from_episode: plates, target colour / kind,
+distractors, target bowl), target brick at the fingertip of the gripper-close frame (as validate_twin.py), no clamp,
+no measurement noise.
 """
 
 import argparse
@@ -33,17 +34,10 @@ tmp = OUT / f"video_ep{args.ep:03d}"
 tmp.mkdir(parents=True, exist_ok=True)
 
 
-def top_camera():
-    ref = json.loads((REPO / "sim/residual_env/assets/joe_cal2/reference-cal2.json").read_text())["camera"]
-    k = json.loads((REPO / "sim/twin/calib/realsense_intrinsics.json").read_text())["top"]
-    K = np.array([[k["fx"], 0, k["cx"]], [0, k["fy"], k["cy"]], [0, 0, 1.0]])
-    return np.array(ref["world_to_cv"]), np.array(ref["position"]), K
-
-
 if args.stage == "real":
     import cv2
 
-    from sim.twin.visuals.measure_real import detect_layout
+    from sim.twin.scene.layout import layout_from_episode
     from sim.twin.visuals.realdata import Dataset
 
     ds = Dataset(str(DATA))
@@ -52,10 +46,9 @@ if args.stage == "real":
     T = len(states(args.ep, str(DATA)))
     frames = {c: ds.frames(args.ep, c, list(range(T))) for c in CAMS}
     np.savez_compressed(tmp / "real.npz", **{c: np.stack([cv2.resize(f, (W, H)) for f in frames[c]]) for c in CAMS})
-    lay = detect_layout(frames["top"][0], *top_camera())
-    plates = {k: [float(v) for v in xyz] for k, xyz in lay["plates"].items()}
-    (tmp / "layout.json").write_text(json.dumps({"plates": plates, "T": T}))
-    print("REAL_OK", T, "frames | plates", plates, flush=True)
+    lay = layout_from_episode(args.ep, DATA)
+    (tmp / "layout.json").write_text(json.dumps(dict(lay, T=T)))
+    print("REAL_OK", T, "frames | plates", sorted(lay["plates"]), "| target", lay["target"], flush=True)
 
 elif args.stage == "sim":
     import torch
@@ -79,33 +72,15 @@ elif args.stage == "sim":
     q = R.robot.data.body_quat_w[:1, R.grip_body]
     xa = _quat_apply_xyzw(q, torch.tensor([[1.0, 0, 0]], device=env.device))[0]
     brick = (float(tip[0]), float(tip[1]), float(torch.atan2(xa[1], xa[0])))
+    lay = json.loads((tmp / "layout.json").read_text())
     env.reset(
         seed=args.dr_seed if args.dr else args.ep,
         joint_deg=S[0],
         brick_pose=brick,
         render=False,
         randomize=bool(args.dr),
+        layout=lay,
     )
-    lay = json.loads((tmp / "layout.json").read_text())
-    o = env.scene.env_origins[:1]
-    for k, (name, obj) in enumerate(zip(R.bowl_names, R.bowl_objs, strict=False)):
-        pose = (
-            obj.data.root_pose_w[:1].clone()
-            if hasattr(obj.data, "root_pose_w")
-            else obj.data.root_state_w[:1, :7].clone()
-        )
-        if name in lay["plates"]:
-            pose[:, 0], pose[:, 1] = lay["plates"][name][0] + o[0, 0], lay["plates"][name][1] + o[0, 1]
-        else:
-            pose[:, :3] = torch.tensor([0.88, -0.55 + 0.12 * k, 0.02], device=env.device) + o
-        obj.write_root_pose_to_sim(pose)
-        obj.write_root_velocity_to_sim(torch.zeros(1, 6, device=env.device))
-    for k, obj in enumerate(R.distractors):
-        pose = torch.tensor([[0.95, -0.4 + 0.1 * k, 0.02, 0, 0, 0, 1.0]], device=env.device)
-        pose[:, :3] += o
-        obj.write_root_pose_to_sim(pose)
-        obj.write_root_velocity_to_sim(torch.zeros(1, 6, device=env.device))
-    env.settle(2)
     import cv2
 
     sim = {c: np.zeros((T, H, W, 3), np.uint8) for c in CAMS}

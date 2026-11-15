@@ -1,0 +1,4 @@
+import inspect
+print('STEP',inspect.signature(SimulationManager.step),inspect.getdoc(SimulationManager.step))
+print('SOURCE',inspect.getsource(SimulationManager.step))
+print('HYDRA',[n for n in dir(render_products['top'].hydra_texture) if 'update' in n.lower()])

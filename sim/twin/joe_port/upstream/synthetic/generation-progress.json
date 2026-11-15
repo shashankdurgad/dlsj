@@ -1,0 +1,15 @@
+{
+  "status": "paused",
+  "counts": {
+    "train": 342,
+    "validation": 100
+  },
+  "targets": {
+    "train": 400,
+    "validation": 100
+  },
+  "attempts": 442,
+  "current_candidate": null,
+  "frame": null,
+  "elapsed_s": 9849.757823200998
+}

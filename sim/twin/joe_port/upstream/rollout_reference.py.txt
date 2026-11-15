@@ -1,0 +1,93 @@
+try:
+    """Run in the same named Kit context as setup_scene.py after policy-ready.json exists."""
+    import os
+    import time
+    from PIL import Image
+    
+    IPC=ROOT/'ipc'
+    frames=OUT/'frames'
+    frames.mkdir(exist_ok=True)
+    assert (OUT/'policy-ready.json').exists(), 'Policy worker not ready'
+    instruction='pick up the brick and hold it in front of the inspection camera'
+    
+    def joint_state():
+        values=robot.get_dof_positions().numpy()[0,indices].copy()
+        state=np.rad2deg(values-joint_offsets)
+        state[-1]=values[-1]/limits[indices[-1],1]*100
+        return state.astype(np.float32)
+    
+    records=[]
+    observed=[]
+    requested=[]
+    applied=[]
+    frame_index=0
+    brick_positions=[]
+    simulation_start=timeline.get_current_time()
+    initial_brick=np.array(UsdGeom.Xformable(stage.GetPrimAtPath('/World/Brick')).ComputeLocalToWorldTransform(Usd.TimeCode.Default()).ExtractTranslation())
+    for chunk in range(10):
+        # Freeze simulation during synchronous inference, so observations cannot become stale.
+        timeline.pause()
+        await app_utils.update_app_async(steps=2)
+        observation={'state':joint_state(),'instruction':np.asarray(instruction)}
+        for name in ['wrist','top','inspect']:
+            pixels=np.asarray(annotators[name].get_data())[:,:,:3].copy()
+            assert pixels.shape==(480,640,3),(name,pixels.shape)
+            observation[name]=pixels
+        temp=IPC/f'obs-{chunk:03d}.tmp.npz'
+        np.savez(temp,**observation)
+        os.replace(temp,IPC/f'obs-{chunk:03d}.npz')
+        actionfile=IPC/f'actions-{chunk:03d}.npz'
+        deadline=time.monotonic()+600
+        while not actionfile.exists():
+            assert time.monotonic()<deadline, 'Policy worker timed out'
+            await asyncio.sleep(.05)
+        result=np.load(actionfile,allow_pickle=False)
+        actions=result['actions']
+        assert actions.shape==(50,6) and np.isfinite(actions).all()
+        records.append({'chunk':chunk,'inference_s':float(result['latency_s']),'state':observation['state'].tolist()})
+        timeline.play()
+        for action in actions:
+            target=np.deg2rad(action).astype(np.float32)+joint_offsets
+            target[-1]=np.clip(action[-1]/100,0,1)*limits[indices[-1],1]
+            target=np.clip(target,limits[indices,0],limits[indices,1])
+            robot.set_dof_position_targets(target.reshape(1,-1),dof_indices=indices)
+            await app_utils.update_app_async(steps=2)
+            pixels=np.asarray(annotators['overview'].get_data())[:,:,:3]
+            Image.fromarray(pixels).save(frames/f'{frame_index:05d}.png')
+            brick_positions.append(np.array(UsdGeom.Xformable(stage.GetPrimAtPath('/World/Brick')).ComputeLocalToWorldTransform(Usd.TimeCode.Default()).ExtractTranslation()))
+            observed.append(joint_state())
+            requested.append(action.copy())
+            applied.append(target.copy())
+            frame_index+=1
+        print('CHUNK_EXECUTED',chunk,flush=True)
+    timeline.pause()
+    for name,ann in annotators.items():
+        Image.fromarray(np.asarray(ann.get_data())[:,:,:3]).save(OUT/f'final-{name}.png')
+    final_brick=np.array(UsdGeom.Xformable(stage.GetPrimAtPath('/World/Brick')).ComputeLocalToWorldTransform(Usd.TimeCode.Default()).ExtractTranslation())
+    np.savez(OUT/'rollout-arrays.npz',observed=np.asarray(observed),requested=np.asarray(requested),applied_radians=np.asarray(applied),brick_positions=np.asarray(brick_positions))
+    summary={
+        'status':'completed','checkpoint_revision':'34e0f9d11f9b91fa07743493b11b76ac80961675',
+        'instruction':instruction,'action_steps':frame_index,'control_hz':30,
+        'simulated_seconds':timeline.get_current_time()-simulation_start,
+        'chunks':records,'joint_order':JOINTS,
+        'observed_joint_min':np.min(observed,axis=0).tolist(),
+        'observed_joint_max':np.max(observed,axis=0).tolist(),
+        'brick_initial_m':initial_brick.tolist(),'brick_final_m':final_brick.tolist(),
+        'task_success':'requires video review',
+        'brick_peak_height_m':float(np.max(np.asarray(brick_positions)[:,2])),
+        'joint_offsets_rad':joint_offsets.tolist(),
+        'scene_reference':'Recorded episode 0; camera-fit.json',
+        'limitations':['Approximate camera extrinsics, intrinsics, appearance, and object placement.',
+            'Pitch joint offsets fitted to one visual landmark; axis alignment and gripper calibration unverified.',
+            'Arm outputs interpreted as degrees; gripper 0-100 mapped to 0-upper-limit radians.',
+            'Synchronous inference pauses simulation; playback does not establish realtime throughput.',
+            'One integration rollout, no measured pick-and-place success rate.'],
+    }
+    (OUT/'rollout-result.json').write_text(json.dumps(summary,indent=2))
+    stage.GetRootLayer().Export(str(OUT/'scene-final.usda'))
+    print('ROLLOUT_COMPLETE',json.dumps(summary),flush=True)
+except BaseException:
+    import traceback
+    (ROOT/"logs/rollout-error.txt").write_text(traceback.format_exc())
+    timeline.pause()
+    raise

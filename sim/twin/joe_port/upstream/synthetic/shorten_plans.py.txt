@@ -1,0 +1,18 @@
+"""Resample slow expert paths to a 5.33 second task, preserving a one-second hold."""
+import json
+from pathlib import Path
+import numpy as np
+ROOT=Path(__file__).parent
+LENGTHS={'settle':5,'descend':30,'close':20,'lift':30,'hold':5,'inspect':40,'inspect_hold':30}
+def shorter(p):
+ q=np.array(p['actions']);phase=np.array(p['phases']);new=[];labels=[]
+ for name in dict.fromkeys(p['phases']):
+  a=q[phase==name];x=np.linspace(0,len(a)-1,LENGTHS[name])
+  new.extend(np.column_stack([np.interp(x,np.arange(len(a)),a[:,j]) for j in range(6)]).tolist());labels.extend([name]*LENGTHS[name])
+ p['actions']=new;p['phases']=labels;p['initial_q']=new[0];p['controller']='shortened-path-v1';return p
+if __name__=='__main__':
+ for filename in ['trial-plan.json','plans.json']:
+  path=ROOT/filename;value=json.loads(path.read_text());path.with_name(path.stem+'-slow.json').write_text(json.dumps(value))
+  value=[shorter(p) for p in value] if isinstance(value,list) else shorter(value)
+  path.write_text(json.dumps(value))
+ print('SHORTENED_PATHS_READY',flush=True)

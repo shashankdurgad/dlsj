@@ -1,0 +1,22 @@
+"""Synthetic task physics setup, run after setup_scene and configure_reference."""
+from pxr import PhysxSchema,UsdShade,Sdf
+from isaacsim.core.experimental.prims import RigidPrim
+SYN=ROOT/'synthetic';SYN.mkdir(exist_ok=True)
+timeline.stop();await app_utils.update_app_async(steps=3)
+mat=UsdShade.Material.Define(stage,'/World/SyntheticGripMaterial');mp=UsdPhysics.MaterialAPI.Apply(mat.GetPrim());mp.CreateStaticFrictionAttr(1.);mp.CreateDynamicFrictionAttr(.8);mp.CreateRestitutionAttr(0.)
+for p in stage.Traverse():
+ if p.HasAPI(UsdPhysics.CollisionAPI):
+  pc=PhysxSchema.PhysxCollisionAPI.Apply(p);pc.CreateContactOffsetAttr(.001);pc.CreateRestOffsetAttr(0.)
+  if 'gripper_link' in str(p.GetPath()) or str(p.GetPath()).startswith('/World/Brick'):
+   UsdShade.MaterialBindingAPI.Apply(p).Bind(mat,UsdShade.Tokens.weakerThanDescendants,'physics')
+ if p.HasAPI(UsdPhysics.RigidBodyAPI):
+  rb=PhysxSchema.PhysxRigidBodyAPI.Apply(p);rb.CreateSolverPositionIterationCountAttr(32);rb.CreateSolverVelocityIterationCountAttr(8)
+ if p.IsA(UsdGeom.Mesh) and p.GetName().startswith(('wrist_roll_follower','moving_jaw')):
+  UsdPhysics.MeshCollisionAPI.Apply(p).CreateApproximationAttr('convexDecomposition')
+SimulationManager.setup_simulation(dt=1/60,device='cpu');timeline.play();await app_utils.update_app_async(steps=60)
+robot=Articulation('/World/SO101');brick_view=RigidPrim('/World/Brick')
+robot.set_dof_gains(stiffnesses=[[200]*5+[50]],dampings=[[10]*5+[2]],dof_indices=indices)
+robot.set_dof_max_efforts([[10]*5+[.5]],dof_indices=indices)
+timeline.pause()
+stage.GetRootLayer().Export(str(OUT/'synthetic-scene.usda'))
+print('SYNTHETIC_PHYSICS_READY',flush=True)

@@ -1,0 +1,155 @@
+"""Replace the baseline props and camera poses with a recording-derived setup."""
+import json,math
+import numpy as np
+from pxr import UsdGeom,UsdShade,UsdPhysics,Sdf,Gf
+from PIL import Image
+
+timeline.stop()
+await app_utils.update_app_async(steps=3)
+reference=json.loads((ROOT/'assets/camera-fit.json').read_text())
+joint_offsets=np.array(reference['joint_offsets_rad'],dtype=np.float32)
+for path in ['/World/Table','/World/Brick','/World/OrangeTray','/World/PurpleTray','/World/YellowTray','/World/ReferenceProps','/World/ReferenceMaterials']:
+    if stage.GetPrimAtPath(path):stage.RemovePrim(path)
+
+def linear_color(rgb):
+    a=np.asarray(rgb);return np.where(a<=.04045,a/12.92,((a+.055)/1.055)**2.4).tolist()
+
+def material(name,rgb,roughness=.5,texture=None,texture_scale=(1,1)):
+    path='/World/ReferenceMaterials/'+name
+    m=UsdShade.Material.Define(stage,path);shader=UsdShade.Shader.Define(stage,path+'/Surface');shader.CreateIdAttr('UsdPreviewSurface')
+    shader.CreateInput('diffuseColor',Sdf.ValueTypeNames.Color3f).Set(Gf.Vec3f(*linear_color(rgb)))
+    shader.CreateInput('roughness',Sdf.ValueTypeNames.Float).Set(roughness)
+    if texture:
+        reader=UsdShade.Shader.Define(stage,path+'/UV');reader.CreateIdAttr('UsdPrimvarReader_float2');reader.CreateInput('varname',Sdf.ValueTypeNames.Token).Set('st')
+        transform=UsdShade.Shader.Define(stage,path+'/Transform');transform.CreateIdAttr('UsdTransform2d');transform.CreateInput('in',Sdf.ValueTypeNames.Float2).ConnectToSource(reader.ConnectableAPI(),'result');transform.CreateInput('scale',Sdf.ValueTypeNames.Float2).Set(Gf.Vec2f(*texture_scale))
+        tex=UsdShade.Shader.Define(stage,path+'/Texture');tex.CreateIdAttr('UsdUVTexture');tex.CreateInput('file',Sdf.ValueTypeNames.Asset).Set(Sdf.AssetPath(str(texture)));tex.CreateInput('sourceColorSpace',Sdf.ValueTypeNames.Token).Set('sRGB');tex.CreateInput('st',Sdf.ValueTypeNames.Float2).ConnectToSource(transform.ConnectableAPI(),'result');tex.CreateInput('wrapS',Sdf.ValueTypeNames.Token).Set('mirror');tex.CreateInput('wrapT',Sdf.ValueTypeNames.Token).Set('mirror');shader.GetInput('diffuseColor').ConnectToSource(tex.ConnectableAPI(),'rgb')
+    m.CreateSurfaceOutput().ConnectToSource(shader.ConnectableAPI(),'surface');return m
+
+black=material('RobotBlack',[.07,.075,.08],.35)
+red=material('FingersRed',[.65,.045,.12],.4)
+orange=material('CameraOrange',[.86,.43,.06],.45)
+wood=material('Wood',[.55,.43,.32],.75,ROOT/'assets/wood-patch.png',(3,3))
+UsdShade.Shader(stage.GetPrimAtPath('/World/ReferenceMaterials/Wood/Texture')).CreateInput('scale',Sdf.ValueTypeNames.Float4).Set(Gf.Vec4f(1.2,.85,.6,1))
+blue=material('BluePlate',[.01,.58,.86],.19)
+orange_plate=material('OrangePlate',[.82,.28,.07],.2)
+silver=material('CameraSilver',[.65,.69,.7],.4)
+def bind(prim,mat):UsdShade.MaterialBindingAPI.Apply(prim).Bind(mat)
+for prim in stage.Traverse():
+    if prim.IsA(UsdGeom.Mesh) and str(prim.GetPath()).startswith('/World/SO101'):
+        name=prim.GetName()
+        bind(prim,red if name.startswith(('wrist_roll_follower','moving_jaw')) else black)
+
+def cube(path,position,scale,mat,collision=True,yaw=0):
+    c=UsdGeom.Cube.Define(stage,path);c.CreateSizeAttr(1)
+    c.AddTranslateOp().Set(Gf.Vec3d(*position))
+    if yaw:c.AddRotateZOp().Set(yaw)
+    c.AddScaleOp().Set(Gf.Vec3f(*scale));bind(c.GetPrim(),mat)
+    if collision:UsdPhysics.CollisionAPI.Apply(c.GetPrim())
+    return c
+
+cube('/World/Table',(0.25,0,-.027),(1.35,1.3,.05),wood)
+# The top face is a separate UV-authored surface; the cube remains the collider.
+table=UsdGeom.Mesh.Define(stage,'/World/ReferenceProps/TableSurface')
+table.CreatePointsAttr([(-.425,-.65,-.0019),(.925,-.65,-.0019),(.925,.65,-.0019),(-.425,.65,-.0019)])
+table.CreateFaceVertexCountsAttr([4]);table.CreateFaceVertexIndicesAttr([0,1,2,3])
+UsdGeom.PrimvarsAPI(table).CreatePrimvar('st',Sdf.ValueTypeNames.TexCoord2fArray,UsdGeom.Tokens.vertex).Set([(0,0),(1,0),(1,1),(0,1)])
+bind(table.GetPrim(),wood)
+
+def cylinder(path,pos,radius,height,mat,collision=False):
+    c=UsdGeom.Cylinder.Define(stage,path);c.CreateRadiusAttr(radius);c.CreateHeightAttr(height);c.CreateAxisAttr('Z');c.AddTranslateOp().Set(Gf.Vec3d(*pos));bind(c.GetPrim(),mat)
+    if collision:UsdPhysics.CollisionAPI.Apply(c.GetPrim())
+    return c
+
+def ring_mesh(path,rings,mat,segments=64):
+    verts=[(radius*math.cos(2*math.pi*i/segments),radius*math.sin(2*math.pi*i/segments),z) for radius,z in rings for i in range(segments)]
+    faces=[]
+    for j in range(len(rings)-1):
+        for i in range(segments):faces.extend([j*segments+i,j*segments+(i+1)%segments,(j+1)*segments+(i+1)%segments,(j+1)*segments+i])
+    m=UsdGeom.Mesh.Define(stage,path);m.CreatePointsAttr(verts);m.CreateFaceVertexCountsAttr([4]*(len(faces)//4));m.CreateFaceVertexIndicesAttr(faces);m.CreateSubdivisionSchemeAttr('none');bind(m.GetPrim(),mat);return m
+
+def plate(name,obj,mat):
+    root='/World/ReferenceProps/'+name
+    p=np.array(obj['position']);p[2]=0
+    x=UsdGeom.Xform.Define(stage,root);x.AddTranslateOp().Set(Gf.Vec3d(*p))
+    ring_mesh(root+'/Dish',[(0,.003),(.072,.003),(.082,.006),(.093,.016),(.096,.016),(.083,.003),(.072,.0),(0,0)],mat)
+    cylinder(root+'/Floor',(0,0,.001),.078,.004,mat,True)
+    for i in range(24):
+        theta=2*math.pi*i/24
+        cube(root+f'/Rim{i}',(.087*math.cos(theta),.087*math.sin(theta),.009),(.012,.025,.018),mat,True,theta*180/math.pi)
+
+plate('BluePlate',reference['objects']['blue_plate'],blue)
+plate('OrangePlate',reference['objects']['orange_plate'],orange_plate)
+
+def brick(name,obj,yaw,studs=True):
+    root='/World/Brick' if name=='target' else '/World/ReferenceProps/'+name
+    mat=material('Brick_'+name,obj['color'],.35)
+    parent=UsdGeom.Xform.Define(stage,root);parent.AddTranslateOp().Set(Gf.Vec3d(*obj['position']));parent.AddRotateZOp().Set(yaw)
+    UsdPhysics.RigidBodyAPI.Apply(parent.GetPrim());UsdPhysics.MassAPI.Apply(parent.GetPrim()).CreateMassAttr(.012)
+    size=obj['size'];cube(root+'/Body',(0,0,0),size,mat)
+    if studs:
+        count_x=int(round(size[0]/.016));count_y=int(round(size[1]/.016))
+        for ix in range(count_x):
+            for iy in range(count_y):
+                stud=ring_mesh(root+f'/Stud{ix}_{iy}',[(.0047,0),(.0047,.0044),(.0033,.0044),(.0033,.0001)],mat,32)
+                stud.AddTranslateOp().Set(Gf.Vec3d((ix-(count_x-1)/2)*.016,(iy-(count_y-1)/2)*.016,size[2]/2))
+    return parent
+
+brick('target',reference['objects']['target'],58)
+brick('blue_brick',reference['objects']['blue_brick'],120)
+brick('yellow_brick',reference['objects']['yellow_brick'],77)
+brick('cream_brick',reference['objects']['cream_brick'],50,False)
+
+# Reference camera mount and small tripod visible at the right of the top view.
+ip=np.array(reference['objects']['inspection_camera']['position'])
+ip[2]=reference['inspect_camera']['position'][2]
+inspection_forward=np.array(reference['inspect_camera']['world_to_cv'])[2]
+cube('/World/ReferenceProps/InspectionBody',ip-inspection_forward*.035,(.085,.02,.027),silver,False)
+cube('/World/ReferenceProps/InspectionLens',ip-inspection_forward*.022,(.065,.003,.019),black,False)
+for i,delta in enumerate([[-.06,-.045,0],[.06,-.04,0],[.02,.06,0]]):
+    foot=ip+delta;foot[2]=.006
+    cylinder('/World/ReferenceProps/Foot'+str(i),foot,.018,.006,blue)
+
+def set_camera(path,params,local=False):
+    cam=UsdGeom.Camera(stage.GetPrimAtPath(path));cam.CreateFocalLengthAttr(20.)
+    f=params['focal_px'];cam.CreateHorizontalApertureAttr(20.*640/f);cam.CreateVerticalApertureAttr(20.*480/f);cam.CreateClippingRangeAttr(Gf.Vec2f(.002,30))
+    r=np.array(params['local_to_cv' if local else 'world_to_cv']);position=np.array(params['position_local' if local else 'position'])
+    matrix=np.eye(4);matrix[:3,:3]=(r.T@np.diag([1,-1,-1])).T;matrix[3,:3]=position
+    xf=UsdGeom.Xformable(cam);xf.ClearXformOpOrder();xf.AddTransformOp().Set(Gf.Matrix4d(matrix.tolist()))
+
+set_camera(camera_paths['top'],reference['camera'])
+set_camera(camera_paths['inspect'],reference['inspect_camera'])
+set_camera(camera_paths['wrist'],reference['wrist_camera'],True)
+
+# Reference-derived hall background is a distant textured surface, not a policy input replacement.
+bgmat=material('HallBackground',[.3,.3,.3],1,ROOT/'assets/room-background.png')
+ipar=reference['inspect_camera'];r=np.array(ipar['world_to_cv']);eye=np.array(ipar['position']);depth=1.4
+right,down,forward=r;centre=eye+depth*forward
+half_w=depth*320/ipar['focal_px'];half_h=depth*240/ipar['focal_px']
+verts=[centre-right*half_w+down*half_h,centre+right*half_w+down*half_h,centre+right*half_w-down*half_h,centre-right*half_w-down*half_h]
+bg=UsdGeom.Mesh.Define(stage,'/World/ReferenceProps/HallBackdrop');bg.CreatePointsAttr([tuple(v) for v in verts]);bg.CreateFaceVertexCountsAttr([4]);bg.CreateFaceVertexIndicesAttr([0,1,2,3]);bg.CreateDoubleSidedAttr(True)
+UsdGeom.PrimvarsAPI(bg).CreatePrimvar('st',Sdf.ValueTypeNames.TexCoord2fArray,UsdGeom.Tokens.vertex).Set([(0,0),(1,0),(1,1),(0,1)]);bind(bg.GetPrim(),bgmat)
+
+# Camera housing follows the wrist and remains behind its lens.
+housing_root=gripper_paths[0]+'/ReferenceCameraHousing'
+hx=UsdGeom.Xform.Define(stage,housing_root)
+wr=reference['wrist_camera'];matrix=np.eye(4);matrix[:3,:3]=(np.array(wr['local_to_cv']).T@np.diag([1,-1,-1])).T;matrix[3,:3]=wr['position_local'];hx.AddTransformOp().Set(Gf.Matrix4d(matrix.tolist()))
+cube(housing_root+'/Body',(0,0,.007),(.05,.035,.009),orange,False)
+
+light.GetIntensityAttr().Set(700)
+sun=UsdLux.DistantLight(stage.GetPrimAtPath('/World/Sun'))
+if sun:sun.GetIntensityAttr().Set(600)
+initial=np.deg2rad(np.array(reference['initial_joint_state'],dtype=np.float32))+joint_offsets
+initial[-1]=reference['initial_joint_state'][-1]/100*limits[indices[-1],1]
+initial=np.clip(initial,limits[indices,0],limits[indices,1])
+timeline.play()
+await app_utils.update_app_async(steps=20)
+robot.set_dof_positions(initial.reshape(1,-1),dof_indices=indices)
+robot.set_dof_position_targets(initial.reshape(1,-1),dof_indices=indices)
+await app_utils.update_app_async(steps=120)
+timeline.pause()
+for name,ann in annotators.items():
+    pixels=np.asarray(ann.get_data())[:,:,:3]
+    Image.fromarray(pixels).save(OUT/f'reference-{name}.png')
+stage.GetRootLayer().Export(str(OUT/'scene-reference.usda'))
+(OUT/'reference-configuration.json').write_text(json.dumps(reference,indent=2))
+print('REFERENCE_SCENE_READY', 'initial_sim_joints',robot.get_dof_positions().numpy().tolist(),flush=True)

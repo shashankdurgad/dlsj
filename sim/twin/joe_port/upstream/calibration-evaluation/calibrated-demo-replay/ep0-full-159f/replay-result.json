@@ -1,0 +1,97 @@
+{
+  "run_name": "ep0-full-159f",
+  "episode_index": 0,
+  "description": "Original recorded Episode 0 ACTION commands (full 159 frames including orange-plate placement) under multi-pose calibrated mapping at unmodified target [0.1719, -0.1064, 0.0076]",
+  "frames": 159,
+  "pickup_achieved": true,
+  "hold_at_end_achieved": false,
+  "checks": {
+    "lift_over_2cm": true,
+    "lift_and_hold_5cm": false,
+    "gripper_contact_stall": false,
+    "release_drop_3cm": false,
+    "arm_tracking": true,
+    "table_penetration": true,
+    "distractor_stationary": true,
+    "physics_steps": true,
+    "zero_capture_physics_steps": true
+  },
+  "brick_initial_m": [
+    0.17189723253250122,
+    -0.10636526346206665,
+    0.007600014563649893
+  ],
+  "brick_final_m": [
+    0.34412914514541626,
+    0.13870082795619965,
+    0.012599965557456017
+  ],
+  "brick_peak_height_m": 0.1741115301847458,
+  "maximum_target_lift_m": 0.16651152074337006,
+  "final_target_lift_m": 0.004999950993806124,
+  "minimum_hold_lift_last_1s_m": 0.004999947268515825,
+  "maximum_target_displacement_m": 0.31624534726142883,
+  "release_drop_m": 0.0,
+  "gripper_final_rad": 0.5746380090713501,
+  "gripper_min_rad": 0.19079487025737762,
+  "gripper_max_rad": 0.5745104551315308,
+  "lowest_fk_grasp_frame": 64,
+  "lowest_fk_grasp_xyz_m": [
+    0.17657213227198995,
+    -0.10335939784841797,
+    0.005068111604032602
+  ],
+  "frame60_fk_grasp_xyz_m": [
+    0.17094571684702195,
+    -0.10789721018778956,
+    0.0056710986239202205
+  ],
+  "final_fk_grasp_xyz_m": [
+    0.3225567873114373,
+    0.05298141509888721,
+    0.08706787236782632
+  ],
+  "max_arm_tracking_error_rad": 0.16080784797668457,
+  "mean_state_tracking_mae_deg": [
+    0.9400873664040236,
+    1.92082911992223,
+    2.171415481177516,
+    2.5334192192029654,
+    0.4033482149711945,
+    4.599702973035896
+  ],
+  "max_distractor_displacement_m": {
+    "blue_brick": 0.0,
+    "yellow_brick": 1.873443034128286e-05,
+    "cream_brick": 0.0
+  },
+  "physics_steps": 318,
+  "extra_capture_steps": 0,
+  "mapping_config": {
+    "joint_offsets_rad": [
+      0.16861799359321594,
+      -0.08230999857187271,
+      -0.1488959938287735,
+      0.11517900228500366,
+      -0.2734540104866028,
+      0.0
+    ],
+    "joint_signs": [
+      1.0,
+      1.0,
+      1.0,
+      1.0,
+      1.0,
+      1.0
+    ],
+    "gripper_mode": "linear_upper_limit",
+    "gripper_scale": 1.0,
+    "gripper_bias_rad": 0.0,
+    "target_position": [
+      0.1718973875542686,
+      -0.10636524158167146,
+      0.0076
+    ],
+    "target_yaw_deg": 58.0
+  }
+}
