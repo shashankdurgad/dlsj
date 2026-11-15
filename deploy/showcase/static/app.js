@@ -525,5 +525,19 @@ async function loadStory() {
   }
 }
 
+// theme: dark by default, light on request (remembered per browser when storage allows)
+const themeBtn = $('#themeBtn');
+function syncThemeBtn() {
+  const light = document.documentElement.dataset.theme === 'light';
+  themeBtn.setAttribute('aria-label', light ? 'Switch to dark theme' : 'Switch to light theme');
+}
+themeBtn.addEventListener('click', () => {
+  const light = document.documentElement.dataset.theme !== 'light';
+  if (light) document.documentElement.dataset.theme = 'light'; else delete document.documentElement.dataset.theme;
+  try { localStorage.setItem('theme', light ? 'light' : 'dark'); } catch { /* storage blocked */ }
+  syncThemeBtn();
+});
+syncThemeBtn();
+
 loadStory();
 tick();

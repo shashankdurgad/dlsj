@@ -1,0 +1,6 @@
+Atkinson Hyperlegible Next (variable, wght 200-800) and Atkinson Hyperlegible Mono (Regular)
+Copyright 2020-2024 The Atkinson Hyperlegible Next Project Authors and The Atkinson Hyperlegible Mono Project Authors
+(https://github.com/googlefonts/atkinson-hyperlegible-next, https://github.com/googlefonts/atkinson-hyperlegible-next-mono); designed for the Braille Institute.
+
+This Font Software is licensed under the SIL Open Font License, Version 1.1
+(as stated in each font file's name table). Full licence text: https://openfontlicense.org

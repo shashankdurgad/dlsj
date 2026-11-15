@@ -18,7 +18,7 @@ const TOPCAM = { baseX: 365, baseY: 40, mPerPx: 0.001 };
 const pxToTable = (px, py) => [(py - TOPCAM.baseY) * TOPCAM.mPerPx, (TOPCAM.baseX - px) * TOPCAM.mPerPx]; // [x, z]
 const PLATE_POS = { yellow: pxToTable(86, 159), purple: pxToTable(110, 301) }; // fallback when perception has no plates
 const COLORS = {
-  printed: 0xe9eef0, motor: 0x2b3238, table: 0x22394a,
+  printed: 0xa92b25, motor: 0x15191d, table: 0x1a3247, // the SO-101's red printed parts, black servos
   yellow: 0xe9b923, purple: 0x7646c6, unknownBrick: 0xcfd8dc,
 };
 
@@ -34,7 +34,7 @@ export function createTwin(canvas, { onReady, onError } = {}) {
   renderer.shadowMap.type = THREE.PCFSoftShadowMap;
   renderer.outputColorSpace = THREE.SRGBColorSpace;
   renderer.toneMapping = THREE.ACESFilmicToneMapping;
-  renderer.toneMappingExposure = 1.05;
+  renderer.toneMappingExposure = 1.1;
 
   const scene = new THREE.Scene();
   const camera = new THREE.PerspectiveCamera(32, 1, 0.01, 20);
@@ -51,35 +51,66 @@ export function createTwin(canvas, { onReady, onError } = {}) {
   controls.enableZoom = false; // keep the mouse wheel for scrolling the page
   controls.update();
 
-  // soft studio lighting
-  scene.add(new THREE.HemisphereLight(0xdde9f2, 0x1b2a35, 1.25));
-  const key = new THREE.DirectionalLight(0xffffff, 2.1);
-  key.position.set(0.5, 1.1, 0.6);
+  // inspection-bay lighting: one overhead spot pooling light on the cell, a cool rim from behind, a dim fill
+  scene.fog = new THREE.Fog(0x0b1723, 1.1, 2.6);
+  scene.add(new THREE.HemisphereLight(0xbcd3e6, 0x0a1520, 0.55));
+  const key = new THREE.SpotLight(0xfff4e6, 5.5, 0, 0.62, 0.75, 0);
+  key.position.set(0.12, 1.25, 0.12);
+  key.target.position.set(0.15, 0, 0.08);
   key.castShadow = true;
   key.shadow.mapSize.set(1024, 1024);
-  key.shadow.camera.left = -0.5; key.shadow.camera.right = 0.5;
-  key.shadow.camera.top = 0.5; key.shadow.camera.bottom = -0.5;
-  key.shadow.camera.near = 0.1; key.shadow.camera.far = 3;
-  key.shadow.radius = 6;
-  key.shadow.bias = -0.0005;
-  scene.add(key);
-  const rim = new THREE.DirectionalLight(0x9cc4ff, 0.9);
-  rim.position.set(-0.7, 0.5, -0.6);
+  key.shadow.camera.near = 0.3; key.shadow.camera.far = 2.5;
+  key.shadow.radius = 5;
+  key.shadow.bias = -0.0004;
+  scene.add(key, key.target);
+  const rim = new THREE.DirectionalLight(0x7fb4ff, 1.6);
+  rim.position.set(0.2, 0.45, 0.9);
   scene.add(rim);
+  const fill = new THREE.DirectionalLight(0xffd9b0, 0.35);
+  fill.position.set(0.6, 0.3, -0.8);
+  scene.add(fill);
 
-  // table: a soft disc with a faint ring
+  // floor: a lit pool with a 5 cm grid that fades into the dark of the cell
+  const floorTex = (() => {
+    const N = 1024, c = document.createElement('canvas'); c.width = c.height = N;
+    const g = c.getContext('2d');
+    const rad = g.createRadialGradient(N / 2, N / 2, 0, N / 2, N / 2, N / 2);
+    rad.addColorStop(0, 'rgba(38,70,98,1)'); rad.addColorStop(0.55, 'rgba(24,46,66,0.9)'); rad.addColorStop(1, 'rgba(15,30,44,0)');
+    g.fillStyle = rad; g.fillRect(0, 0, N, N);
+    const span = 1.6, step = 0.05, px = N / span; // texture covers 1.6 m
+    g.lineWidth = 1.2;
+    for (let v = -span / 2; v <= span / 2 + 1e-6; v += step) {
+      const p = N / 2 + v * px;
+      const major = Math.abs(Math.round(v / step)) % 4 === 0;
+      g.strokeStyle = major ? 'rgba(120,170,210,0.13)' : 'rgba(120,170,210,0.055)';
+      g.beginPath(); g.moveTo(p, 0); g.lineTo(p, N); g.stroke();
+      g.beginPath(); g.moveTo(0, p); g.lineTo(N, p); g.stroke();
+    }
+    // fade the grid towards the edge
+    g.globalCompositeOperation = 'destination-in';
+    const fade = g.createRadialGradient(N / 2, N / 2, N * 0.18, N / 2, N / 2, N / 2);
+    fade.addColorStop(0, 'rgba(0,0,0,1)'); fade.addColorStop(1, 'rgba(0,0,0,0)');
+    g.fillStyle = fade; g.fillRect(0, 0, N, N);
+    const t = new THREE.CanvasTexture(c); t.colorSpace = THREE.SRGBColorSpace; t.anisotropy = 4;
+    return t;
+  })();
   const table = new THREE.Mesh(
-    new THREE.CircleGeometry(0.62, 96),
-    new THREE.MeshStandardMaterial({ color: COLORS.table, roughness: 0.92, metalness: 0 }),
+    new THREE.PlaneGeometry(1.6, 1.6),
+    new THREE.MeshStandardMaterial({ map: floorTex, transparent: true, roughness: 0.95, metalness: 0, depthWrite: false }),
   );
   table.rotation.x = -Math.PI / 2;
+  table.position.set(0.15, 0, 0.08);
   table.receiveShadow = true;
   scene.add(table);
+  const shadowCatcher = new THREE.Mesh(new THREE.PlaneGeometry(1.4, 1.4), new THREE.ShadowMaterial({ opacity: 0.45 }));
+  shadowCatcher.rotation.x = -Math.PI / 2; shadowCatcher.position.set(0.15, 0.0004, 0.08); shadowCatcher.receiveShadow = true;
+  scene.add(shadowCatcher);
+  // a thin reach ring at the arm's working radius
   const ring = new THREE.Mesh(
-    new THREE.RingGeometry(0.42, 0.423, 128),
-    new THREE.MeshBasicMaterial({ color: 0x4d6a7d, transparent: true, opacity: 0.6 }),
+    new THREE.RingGeometry(0.4, 0.403, 128),
+    new THREE.MeshBasicMaterial({ color: 0x5f8fb8, transparent: true, opacity: 0.35 }),
   );
-  ring.rotation.x = -Math.PI / 2; ring.position.y = 0.0005;
+  ring.rotation.x = -Math.PI / 2; ring.position.y = 0.0008;
   scene.add(ring);
 
   // plates
@@ -177,7 +208,7 @@ export function createTwin(canvas, { onReady, onError } = {}) {
       const dark = src && (src.r + src.g + src.b) < 0.9;
       o.material = new THREE.MeshStandardMaterial({
         color: dark ? COLORS.motor : COLORS.printed,
-        roughness: dark ? 0.5 : 0.62, metalness: dark ? 0.15 : 0.0,
+        roughness: dark ? 0.38 : 0.55, metalness: dark ? 0.35 : 0.0,
       });
     });
   }

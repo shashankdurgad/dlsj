@@ -3,9 +3,12 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="dark light">
 <title>Brick Sorter Live</title>
 <meta name="description" content="An SO-101 arm sorting Duplo bricks on one Intel Core Ultra laptop: VLA on the Arc GPU, YOLO on the NPU, control on the CPU.">
+<link rel="preload" href="./fonts/AtkinsonHyperlegibleNext-var.ttf" as="font" type="font/ttf" crossorigin>
 <link rel="stylesheet" href="./style.css">
+<script>try { if (localStorage.getItem('theme') === 'light') document.documentElement.dataset.theme = 'light'; } catch (e) {}</script>
 <script type="importmap">
 { "imports": { "three": "./vendor/three.module.js", "three/examples/jsm/": "./vendor/jsm/" } }
 </script>
@@ -28,6 +31,9 @@
   </nav>
   <div class="bar-right">
     <div class="conn" id="conn" role="status" aria-live="polite"><span class="dot"></span><span id="connText">Connecting</span></div>
+    <button class="theme-btn" id="themeBtn" type="button" aria-label="Switch to light theme" title="Switch theme">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="4.5"/><path d="M12 2v2.5M12 19.5V22M2 12h2.5M19.5 12H22M4.9 4.9l1.8 1.8M17.3 17.3l1.8 1.8M4.9 19.1l1.8-1.8M17.3 6.7l1.8-1.8"/></svg>
+    </button>
     <button class="btn-stop" id="btnStop" type="button" aria-label="Stop the robot">
       <svg viewBox="0 0 20 20" aria-hidden="true"><rect x="4" y="4" width="12" height="12" rx="2"/></svg>Stop
     </button>
@@ -42,11 +48,11 @@
 <main>
   <!-- HERO: live digital twin -->
   <section class="hero" aria-label="Live digital twin">
-    <div class="stage" id="stage">
+    <div class="stage vf" id="stage">
       <canvas id="twin" aria-label="3D model of the SO-101 arm mirroring the real robot's joint angles"></canvas>
       <div class="stage-hud">
         <div class="hud-step">
-          <span class="hud-step-k">Now</span>
+          <span class="hud-step-k">Cell, now</span>
           <span class="hud-step-v" id="hudStep">Waiting for the robot</span>
         </div>
         <p class="hud-msg" id="hudMsg"></p>
@@ -120,15 +126,15 @@
 
     <div class="cams">
       <figure class="cam" data-cam="top">
-        <div class="cam-box"><img alt="Live top camera" data-src="/live/top?w=640"><canvas></canvas><div class="cam-off">Top camera feed unavailable. Retrying.</div></div>
+        <div class="cam-box vf"><img alt="Live top camera" data-src="/live/top?w=640"><canvas></canvas><div class="cam-off">Top camera feed unavailable. Retrying.</div></div>
         <figcaption><b>Top camera</b> finds bricks and plates <span class="chip npu">NPU</span></figcaption>
       </figure>
       <figure class="cam" data-cam="inspect">
-        <div class="cam-box"><img alt="Live inspection camera" data-src="/live/inspect?w=640"><canvas></canvas><div class="cam-off">Inspection camera feed unavailable. Retrying.</div></div>
+        <div class="cam-box vf"><img alt="Live inspection camera" data-src="/live/inspect?w=640"><canvas></canvas><div class="cam-off">Inspection camera feed unavailable. Retrying.</div></div>
         <figcaption><b>Inspection camera</b> watches the brick spin <span class="chip npu">NPU</span></figcaption>
       </figure>
       <figure class="cam" data-cam="wrist">
-        <div class="cam-box"><img alt="Live wrist camera" data-src="/live/wrist?w=640"><canvas></canvas><div class="cam-off">Wrist camera feed unavailable. Retrying.</div></div>
+        <div class="cam-box vf"><img alt="Live wrist camera" data-src="/live/wrist?w=640"><canvas></canvas><div class="cam-off">Wrist camera feed unavailable. Retrying.</div></div>
         <figcaption><b>Wrist camera</b> feeds the VLA <span class="chip gpu">GPU</span></figcaption>
       </figure>
     </div>
