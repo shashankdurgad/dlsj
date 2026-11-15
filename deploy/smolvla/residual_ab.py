@@ -7,6 +7,7 @@ home-and-retry). Per pick:
 * closes: close attempts = the commanded jaw falls below 15 after being above 30 (the twin's rule, image_task.py);
 * grasped: the pick ended by handing over to "bring" (the loop does that only after its grasp check);
 * first_attempt: grasped with exactly one close (no re-open / regrasp), the twin's first-attempt success;
+  a pick still running when the trace ends is listed but left out of the counts;
 * seconds, the residual's mean |applied offset| (xyz mm, wrist deg, gripper units) and its decisions.
 
     python deploy/smolvla/residual_ab.py ~/desmond/residual_test/traces/pi05-*.jsonl [--csv picks.csv]
@@ -115,8 +116,11 @@ def main() -> None:
         print(json.dumps({k: p[k] for k in ("file", "mode", "closes", "grasped", "first_attempt", "seconds", "end",
                                             "decisions", "mean_abs_offset")}))
     summ = {}
+    cut = [p for p in rows if p["end"] == "trace_end"]  # the run ended mid-pick: neither success nor failure
+    if cut:
+        print(f"{len(cut)} pick(s) cut off by the end of a trace: left out of the counts")
     for m in ("off", "shadow", "on"):
-        g = [p for p in rows if p["mode"] == m]
+        g = [p for p in rows if p["mode"] == m and p["end"] != "trace_end"]
         if g:
             k1, k2 = sum(p["first_attempt"] for p in g), sum(p["grasped"] for p in g)
             summ[m] = (k1, len(g))
