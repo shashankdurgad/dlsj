@@ -75,8 +75,9 @@ SAME_AS_PLATE = {"purple": ("light_blue",), "orange": ("orange", "red"), "yellow
 
 # ------------------------------------------------------------------------------------------------ cameras
 def top_camera():
-    """Real top camera: joe_cal2 pose + factory intrinsics (fx, fy, cx 304, cy) -> (R_world_to_cv, pos, K)."""
-    ref = json.loads((REPO / "sim/residual_env/assets/joe_cal2/reference-cal2.json").read_text())["camera"]
+    """Real top camera, the same model the twin renders with (calib/cameras_fit.json: pose fitted to arm silhouettes
+    with the factory intrinsics) -> (R_world_to_cv, pos, K)."""
+    ref = json.loads((REPO / "sim/twin/calib/cameras_fit.json").read_text())["top"]
     k = json.loads((REPO / "sim/twin/calib/realsense_intrinsics.json").read_text())["top"]
     K = np.array([[k["fx"], 0, k["cx"]], [0, k["fy"], k["cy"]], [0, 0, 1.0]])
     return np.array(ref["world_to_cv"], float), np.array(ref["position"], float), K
@@ -168,11 +169,11 @@ def _kin():
     global _KIN
     if _KIN is None:
         sys.path.insert(0, str(REPO / "sim/residual_env"))
-        from calib import load_profile
 
+        from sim.twin.calib.profile import twin_profile
         from sim.twin.rl.kin import Kin
 
-        _KIN = Kin(load_profile("joe_cal2").joint_offsets, device="cpu")
+        _KIN = Kin(twin_profile().joint_offsets, device="cpu")  # the twin's default joint offsets
     return _KIN
 
 
@@ -390,7 +391,7 @@ def grasp_frame(states: np.ndarray, insp: int | None, thr=12.0, stay=15.0, open_
 
 
 def fingertip(states_deg: np.ndarray) -> np.ndarray:
-    """FK fingertip (env frame) of the twin robot (sim/twin/rl/kin.py, joe_cal2 offsets) for (N, 6) states."""
+    """FK fingertip (env frame) of the twin robot (sim/twin/rl/kin.py, the twin profile's offsets) for (N, 6) states."""
     import torch
 
     p, _ = _kin().fk(torch.as_tensor(np.atleast_2d(states_deg), dtype=torch.float32))
