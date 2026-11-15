@@ -1,0 +1,6 @@
+r3_W_sagL --rung 3 --n 60 --place fk --joint_offsets sim/twin/grasp_gate/offsets/W.json --sag 0.0871,0,0
+r3_W_sagE --rung 3 --n 60 --place fk --joint_offsets sim/twin/grasp_gate/offsets/W.json --sag 0,0.2212,0
+r3_W_sagL_r0fit --rung 3 --n 60 --place rung0 --rung0_cam fit --joint_offsets sim/twin/grasp_gate/offsets/W.json --sag 0.0871,0,0
+r3_W_sagE_r0fit --rung 3 --n 60 --place rung0 --rung0_cam fit --joint_offsets sim/twin/grasp_gate/offsets/W.json --sag 0,0.2212,0
+r1_W_sagL_r0fit --rung 1 --n 60 --place rung0 --rung0_cam fit --joint_offsets sim/twin/grasp_gate/offsets/W.json --sag 0.0871,0,0
+r1_W_sagE_r0fit --rung 1 --n 60 --place rung0 --rung0_cam fit --joint_offsets sim/twin/grasp_gate/offsets/W.json --sag 0,0.2212,0

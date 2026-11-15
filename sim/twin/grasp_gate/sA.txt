@@ -1,0 +1,10 @@
+w_base --rung 3 --n 60 --place fk
+w_lab --rung 3 --n 60 --place fk --labels sim/twin/grasp_gate/brick_labels.json
+w_lab_side --rung 3 --n 60 --place fk --labels sim/twin/grasp_gate/brick_labels.json --label_poses side_x,side_y
+w_lab_down --rung 3 --n 60 --place fk --labels sim/twin/grasp_gate/brick_labels.json --label_poses down
+w_lab_kind --rung 3 --n 60 --place fk --labels sim/twin/grasp_gate/brick_labels.json --label_poses none
+w_sagL_lab --rung 3 --n 60 --place fk --labels sim/twin/grasp_gate/brick_labels.json --sag 0.0871,0,0
+w_gs-2 --rung 3 --n 60 --place fk --grip_shift -2
+w_gs-1 --rung 3 --n 60 --place fk --grip_shift -1
+w_gs1 --rung 3 --n 60 --place fk --grip_shift 1
+w_gs2 --rung 3 --n 60 --place fk --grip_shift 2

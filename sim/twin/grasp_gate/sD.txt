@@ -1,0 +1,3 @@
+w_lab_sy --rung 3 --n 60 --place fk --labels sim/twin/grasp_gate/brick_labels.json --label_map side_x=side_y
+w_lab_sy_noup --rung 3 --n 60 --place fk --labels sim/twin/grasp_gate/brick_labels.json --label_map side_x=side_y --label_poses side_x,side_y
+w_sagL_lab_sy --rung 3 --n 60 --place fk --labels sim/twin/grasp_gate/brick_labels.json --label_map side_x=side_y --sag 0.0871,0,0

@@ -1,0 +1,305 @@
+{
+ "_doc": "Picked brick kind and resting pose at the grasp, hand-labelled from the wrist camera at close-10 / close+12 (grasp_gate/wristsheet.py sheets) for the gate's 60 held-out demos (seed 0). pose: up = studs up, down = upside down (resting on its studs), side_x = on a side face with the studs pointing along the jaw axis (the jaw squeezes stud tips to back face, 23.6 mm for a 2x2), side_y = on a side face with the studs pointing across the fingers (squeezed across 31.7 mm). kind: 2x2 / 2x4 / curved_2x3. unsure = hard to read from the wrist view.",
+ "episodes": {
+  "1": {
+   "kind": "2x2",
+   "pose": "up",
+   "unsure": false
+  },
+  "3": {
+   "kind": "2x2",
+   "pose": "up",
+   "unsure": false
+  },
+  "7": {
+   "kind": "2x2",
+   "pose": "side_y",
+   "unsure": false
+  },
+  "12": {
+   "kind": "2x2",
+   "pose": "down",
+   "unsure": true
+  },
+  "22": {
+   "kind": "2x4",
+   "pose": "up",
+   "unsure": false
+  },
+  "30": {
+   "kind": "2x2",
+   "pose": "up",
+   "unsure": false
+  },
+  "31": {
+   "kind": "2x2",
+   "pose": "up",
+   "unsure": false
+  },
+  "60": {
+   "kind": "2x2",
+   "pose": "up",
+   "unsure": false
+  },
+  "71": {
+   "kind": "2x2",
+   "pose": "up",
+   "unsure": false
+  },
+  "87": {
+   "kind": "2x4",
+   "pose": "up",
+   "unsure": false
+  },
+  "95": {
+   "kind": "2x2",
+   "pose": "down",
+   "unsure": false
+  },
+  "104": {
+   "kind": "2x2",
+   "pose": "side_x",
+   "unsure": false
+  },
+  "118": {
+   "kind": "curved_2x3",
+   "pose": "side_x",
+   "unsure": false
+  },
+  "122": {
+   "kind": "2x2",
+   "pose": "down",
+   "unsure": false
+  },
+  "142": {
+   "kind": "2x2",
+   "pose": "down",
+   "unsure": false
+  },
+  "147": {
+   "kind": "2x2",
+   "pose": "down",
+   "unsure": false
+  },
+  "169": {
+   "kind": "2x2",
+   "pose": "down",
+   "unsure": false
+  },
+  "177": {
+   "kind": "curved_2x3",
+   "pose": "up",
+   "unsure": false
+  },
+  "183": {
+   "kind": "2x4",
+   "pose": "up",
+   "unsure": false
+  },
+  "186": {
+   "kind": "2x4",
+   "pose": "down",
+   "unsure": true
+  },
+  "190": {
+   "kind": "2x2",
+   "pose": "up",
+   "unsure": false
+  },
+  "198": {
+   "kind": "2x2",
+   "pose": "down",
+   "unsure": false
+  },
+  "199": {
+   "kind": "2x2",
+   "pose": "side_x",
+   "unsure": true
+  },
+  "202": {
+   "kind": "2x2",
+   "pose": "side_x",
+   "unsure": false
+  },
+  "206": {
+   "kind": "2x2",
+   "pose": "side_x",
+   "unsure": false
+  },
+  "207": {
+   "kind": "2x2",
+   "pose": "up",
+   "unsure": false
+  },
+  "208": {
+   "kind": "curved_2x3",
+   "pose": "up",
+   "unsure": false
+  },
+  "209": {
+   "kind": "2x2",
+   "pose": "side_y",
+   "unsure": false
+  },
+  "234": {
+   "kind": "2x2",
+   "pose": "up",
+   "unsure": false
+  },
+  "245": {
+   "kind": "2x4",
+   "pose": "up",
+   "unsure": true
+  },
+  "248": {
+   "kind": "2x2",
+   "pose": "up",
+   "unsure": false
+  },
+  "257": {
+   "kind": "2x2",
+   "pose": "side_x",
+   "unsure": false
+  },
+  "281": {
+   "kind": "2x2",
+   "pose": "down",
+   "unsure": false
+  },
+  "288": {
+   "kind": "2x2",
+   "pose": "down",
+   "unsure": false
+  },
+  "293": {
+   "kind": "2x4",
+   "pose": "down",
+   "unsure": false
+  },
+  "294": {
+   "kind": "2x2",
+   "pose": "down",
+   "unsure": false
+  },
+  "306": {
+   "kind": "2x4",
+   "pose": "up",
+   "unsure": false
+  },
+  "307": {
+   "kind": "2x2",
+   "pose": "down",
+   "unsure": false
+  },
+  "319": {
+   "kind": "2x2",
+   "pose": "up",
+   "unsure": false
+  },
+  "320": {
+   "kind": "2x4",
+   "pose": "down",
+   "unsure": false
+  },
+  "325": {
+   "kind": "2x2",
+   "pose": "down",
+   "unsure": false
+  },
+  "329": {
+   "kind": "2x2",
+   "pose": "down",
+   "unsure": false
+  },
+  "332": {
+   "kind": "2x2",
+   "pose": "down",
+   "unsure": false
+  },
+  "350": {
+   "kind": "2x2",
+   "pose": "up",
+   "unsure": false
+  },
+  "351": {
+   "kind": "2x2",
+   "pose": "down",
+   "unsure": false
+  },
+  "359": {
+   "kind": "2x2",
+   "pose": "down",
+   "unsure": false
+  },
+  "363": {
+   "kind": "2x4",
+   "pose": "side_x",
+   "unsure": false
+  },
+  "378": {
+   "kind": "2x2",
+   "pose": "down",
+   "unsure": false
+  },
+  "393": {
+   "kind": "2x2",
+   "pose": "up",
+   "unsure": false
+  },
+  "396": {
+   "kind": "2x4",
+   "pose": "down",
+   "unsure": false
+  },
+  "403": {
+   "kind": "curved_2x3",
+   "pose": "side_x",
+   "unsure": false
+  },
+  "404": {
+   "kind": "2x2",
+   "pose": "down",
+   "unsure": false
+  },
+  "409": {
+   "kind": "2x2",
+   "pose": "side_y",
+   "unsure": false
+  },
+  "421": {
+   "kind": "2x4",
+   "pose": "side_x",
+   "unsure": false
+  },
+  "424": {
+   "kind": "2x2",
+   "pose": "down",
+   "unsure": false
+  },
+  "438": {
+   "kind": "2x2",
+   "pose": "down",
+   "unsure": false
+  },
+  "441": {
+   "kind": "2x2",
+   "pose": "down",
+   "unsure": false
+  },
+  "447": {
+   "kind": "2x2",
+   "pose": "up",
+   "unsure": false
+  },
+  "452": {
+   "kind": "2x2",
+   "pose": "down",
+   "unsure": false
+  },
+  "453": {
+   "kind": "2x2",
+   "pose": "down",
+   "unsure": false
+  }
+ }
+}

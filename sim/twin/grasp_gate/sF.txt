@@ -1,0 +1,8 @@
+w9 --rung 3 --n 60 --place fk --joint_offsets sim/twin/grasp_gate/offsets/W9.json
+w9_r2 --rung 2 --n 60 --place fk --joint_offsets sim/twin/grasp_gate/offsets/W9.json
+w9_kc1e3 --rung 3 --n 60 --place fk --joint_offsets sim/twin/grasp_gate/offsets/W9.json --set gripper.finray.material.compliant_contact_stiffness=1000
+w9_lab_sy --rung 3 --n 60 --place fk --joint_offsets sim/twin/grasp_gate/offsets/W9.json --labels sim/twin/grasp_gate/brick_labels.json --label_map side_x=side_y
+ws9 --rung 3 --n 60 --place fk --joint_offsets sim/twin/grasp_gate/offsets/WS9.json --sag 0.054022,0.056734,-0.088203
+ws9_r2 --rung 2 --n 60 --place fk --joint_offsets sim/twin/grasp_gate/offsets/WS9.json --sag 0.054022,0.056734,-0.088203
+w9_bend2 --rung 3 --n 60 --place fk --joint_offsets sim/twin/grasp_gate/offsets/W9.json --set gripper.finray.bias_rad=-0.242 --set gripper.finray.bend.hinges=2
+w9_r2_bend2 --rung 2 --n 60 --place fk --joint_offsets sim/twin/grasp_gate/offsets/W9.json --set gripper.finray.bias_rad=-0.242 --set gripper.finray.bend.hinges=2
