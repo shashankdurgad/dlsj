@@ -35,9 +35,14 @@ Units (runtime = the team's LeRobot units in the recorded data's calibration fra
 then q01/q99 quantile normalisation with the checkpoint's `norm_stats.json`. The worker lets Studio apply the
 transform (as on the robot); `to_ckpt` / `from_ckpt` here are the same maths, used for diagnostics and the tests.
 
-A fine-tuned Studio Lightning checkpoint (training/molmoact2, LoRA on cal2; none published yet) loads with
-`snap="/path/last.ckpt"`; it was trained with the top camera cropped to x 0-560 (560x480), so pass
-`crops={"top": (0, 0, 560, 480)}` and its three-phase prompts (deploy/molmoact2/harness.py THREE_PHASE).
+The cal2 fine-tune (Studio Lightning checkpoint, LoRA; the deployed 8k = sim/twin/data/models/molmoact2_ft_8k/
+step008000.ckpt) loads with `snap="/path/step008000.ckpt"`. It was trained with the top camera cropped to x 0-560
+(560x480): pass `crops={"top": (0, 0, 560, 480)}`. It knows ONLY the prompts of finetune_cal2_456.json `tasks`
+("pick up the {blue|brown|red|white|yellow} brick", "bring the brick to the inspection camera", "place the brick in
+the {colour} bowl"; sim/twin/rl/priors.py FT_*), not the zero-shot prompts in DEPLOY below. Its deploy loop
+(run_loop.sh) uses ready pose 26.3,-51.8,30.1,73.1,15.9,37.7, --max-step 4 (gripper 8), RTC horizon 15, guidance 3,
+and the OpenVINO export's FIXED flow noise (a fixed-seed op: deterministic per input; here `seed=` per call, the RL
+image task passes the same seed on every request). sim/twin/rl/image_task.py requires finetune=True with a .ckpt.
 """
 
 from __future__ import annotations
@@ -61,9 +66,10 @@ DEFAULT_SNAP = "allenai/MolmoAct2-SO100_101"
 NORM_TAG = "so100_so101_molmoact2"
 JOINTS = ("shoulder_pan", "shoulder_lift", "elbow_flex", "wrist_flex", "wrist_roll", "gripper")
 S = np.array([1, -1, 1, 1, 1, 1], np.float32)
-O = np.array([0, 90, 90, 0, 0, 0], np.float32)
+O = np.array([0, 90, 90, 0, 0, 0], np.float32)  # noqa: E741 (Studio name, used by tests)
 CHUNK = 30
-# The real deployment (deploy/smolvla/run_molmo.sh + deploy/molmoact2/export.py), see the module docstring.
+# The ZERO-SHOT deployment (deploy/smolvla/run_molmo.sh + deploy/molmoact2/export.py), see the module docstring;
+# the cal2 fine-tune's prompts / ready pose / crop are in the docstring and sim/twin/rl/priors.py FT_*.
 DEPLOY = {
     "cams": ("wrist", "top"),
     "pick_prompt": "pick up the brick and lift it up",
@@ -258,7 +264,8 @@ class MolmoAct2Client:
         prev_chunk: the not-yet-executed tail of the current plan (n, 6) runtime units -> RTC-guided chunk
         (the deployed controller's hand-off); inference_delay = actions that pass during this inference.
         cams / task / noise / steps / frame_offset_deg: per-call overrides (diagnostics, sweeps); seed: re-seed the
-        flow's start noise for this call (common random numbers across variants). Returns (horizon, 6) float32 runtime units."""
+        flow's start noise for this call (common random numbers across variants).
+        Returns (horizon, 6) float32 runtime units."""
         if self._closed:
             raise RuntimeError("MolmoAct2Client is closed")
         cams = self._order(cams, self.keep_order) if cams is not None else self.cams
@@ -286,6 +293,45 @@ class MolmoAct2Client:
         self.last_latency_s = float(r["latency_s"])  # model time in the worker (pre + flow + post)
         self.last_info = {k: v for k, v in r.items() if k != "actions"} | {"roundtrip_s": time.perf_counter() - t}
         return remove_frame_offset(np.asarray(r["actions"], np.float32), delta)[: self.horizon]
+
+    def act_k(self, obs: dict, k: int, seeds=None, *, prev_chunk: np.ndarray | None = None, inference_delay: int = 0,
+              task: str | None = None, steps: int | None = None, latent: bool = True,
+              timeout: float = 120.0) -> tuple[np.ndarray, np.ndarray | None]:
+        """K candidate chunks from ONE vision-language prefix forward: the prefix / KV context is computed once and
+        the action expert's flow loop runs batched over k Gaussian start noises (one per seed; seeds default
+        0..k-1). Same RTC guidance as act() when prev_chunk is given (shared by all k). Returns
+        (actions (k, horizon, 6) runtime units, pooled prefix latent (D,) float32 or None). With k = 1 and the same
+        seed the chunk equals act(obs, seed=seed)'s up to the noise generator (torch.Generator per seed here)."""
+        if self._closed:
+            raise RuntimeError("MolmoAct2Client is closed")
+        cams = self.cams
+        imgs = {}
+        for c in cams:
+            im = np.asarray(obs["images"][c])
+            if c in self.crops:
+                x, y, w, h = self.crops[c]
+                im = im[y:y + h, x:x + w]
+            imgs[c] = np.ascontiguousarray(im)
+        delta = self.frame_offset_deg
+        state = apply_frame_offset(np.asarray(obs["state"], np.float32).reshape(6), delta)
+        text = task or self.instruction or obs.get("task") or DEPLOY["pick_prompt"]
+        seeds = list(range(k)) if seeds is None else [int(v) for v in seeds]
+        if len(seeds) != k:
+            raise ValueError("need one seed per candidate")
+        req = {"op": "act_k", "k": int(k), "seeds": seeds, "images": imgs, "cams": list(cams), "state": state,
+               "task": str(text), "steps": steps, "latent": bool(latent)}
+        if prev_chunk is not None and len(prev_chunk):
+            req["prev_chunk"] = apply_frame_offset(np.asarray(prev_chunk, np.float32).reshape(-1, 6)[:CHUNK], delta)
+            req["inference_delay"] = int(inference_delay)
+        t = time.perf_counter()
+        with self._lock:
+            _send(self._proc.stdin, req)
+            r = self._reply(timeout)
+        self.last_latency_s = float(r["latency_s"])
+        self.last_info = {kk: v for kk, v in r.items() if kk not in ("actions", "latent")} | {
+            "roundtrip_s": time.perf_counter() - t}
+        a = remove_frame_offset(np.asarray(r["actions"], np.float32), delta)[:, : self.horizon]
+        return a, (np.asarray(r["latent"], np.float32) if r.get("latent") is not None else None)
 
     def close(self) -> None:
         if self._closed:
@@ -394,6 +440,8 @@ class _Worker:
         print("MOLMOACT2_READY", self.ready, file=sys.stderr, flush=True)
 
     def act(self, req: dict) -> dict:
+        if req.get("op") == "act_k":
+            return self.act_k(req)
         torch = self.torch
         cams = req["cams"]
         self.pre._extractor.image_keys = list(cams)  # model camera order for this call
@@ -427,6 +475,124 @@ class _Worker:
         self.n_calls += 1
         return {"actions": a, "latency_s": lat, "call": self.n_calls, "rtc": rtc, "cams": cams, "task": req["task"],
                 "noise": noise, "steps": steps}
+
+
+    def act_k(self, req: dict) -> dict:
+        """One prefix forward, k flow-noise samples batched in the action expert (+ the pooled prefix latent)."""
+        torch = self.torch
+        from physicalai.policies.molmoact2.model import _MODEL_INPUT_KEYS
+
+        cams = req["cams"]
+        self.pre._extractor.image_keys = list(cams)
+        k, seeds = int(req["k"]), list(req["seeds"])
+        steps = int(req.get("steps") or self.steps)
+        model = self.policy.model
+        bb = model.backbone.model
+        ae = bb._require_action_expert()
+        batch = {"state": torch.as_tensor(req["state"])[None].to(self.dev), "task": [req["task"]],
+                 "images": {c: torch.from_numpy(req["images"][c]).permute(2, 0, 1)[None].to(self.dev) for c in cams}}
+        if self.dev.type == "cuda":
+            torch.cuda.synchronize()
+        t = time.perf_counter()
+        x = self.pre(batch)
+        inputs = {kk: x[kk] for kk in _MODEL_INPUT_KEYS if kk in x}
+        chunk = int(model._chunk_size)
+        device, dtype = ae.action_embed.weight.device, ae.action_embed.weight.dtype
+        cap = {}
+        def grab(_mod, _inp, out):
+            cap["h"] = out[0] if isinstance(out, (tuple, list)) else out
+
+        hook = bb.transformer.register_forward_hook(grab)
+        try:
+            ctx = bb._encode_action_context(input_ids=inputs["input_ids"], attention_mask=inputs.get("attention_mask"),
+                                            token_type_ids=inputs.get("token_type_ids"), images=inputs.get("images"),
+                                            token_pooling=inputs.get("token_pooling"), seq_len=chunk, device=device,
+                                            dtype=dtype)
+        finally:
+            hook.remove()
+        if self.dev.type == "cuda":
+            torch.cuda.synchronize()
+        t_prefix = time.perf_counter() - t
+        latent = None
+        if req.get("latent", True) and "h" in cap:
+            m = bb._encoder_attention_mask(inputs["input_ids"], inputs.get("attention_mask"))
+            h = cap["h"].float()
+            m = (m.float() if m is not None else torch.ones(h.shape[:2], device=h.device))[..., None]
+            latent = ((h * m).sum(1) / m.sum(1).clamp(min=1))[0].cpu().numpy()
+        ctx = _expand_batch(ctx, k, torch)
+        pad = inputs.get("action_dim_is_pad")
+        pad = pad.expand(k, *pad.shape[1:]) if pad is not None else None
+        shape = (1, chunk, bb.max_action_dim)
+        if self.noise == "random":
+            gens = [torch.Generator(device=device).manual_seed(int(sd)) for sd in seeds]
+            traj = torch.cat([torch.randn(*shape, device=device, dtype=dtype, generator=g) for g in gens])
+            traj = bb._mask_action_dims(traj, pad)
+        else:
+            traj = torch.zeros(k, *shape[1:], device=device, dtype=dtype)
+        rtc = "prev_chunk" in req
+        if rtc:
+            prev_m, w, gmax = self._rtc_terms(req, chunk, bb, device, dtype)
+        dt = 1.0 / steps
+        for step in range(steps):
+            tt = step / steps
+            ts = torch.full((k,), tt, device=device, dtype=dtype)
+            v = bb._mask_action_dims(ae.forward_with_context(traj, ts, context=ctx), pad)
+            if rtc:
+                x1 = traj + (1.0 - tt) * v
+                err = (prev_m - x1) * w
+                if tt == 0.0:
+                    gw = gmax
+                else:
+                    c = (1.0 - tt) / tt
+                    gw = min(c * ((1.0 - tt) ** 2 + tt ** 2) / ((1.0 - tt) ** 2), gmax)
+                v = v + gw * err
+            traj = bb._mask_action_dims(traj + dt * v, pad)
+        a = traj[:, :chunk, : model._action_dim].float()
+        a = self.post({"action": a})["action"].float().cpu().numpy().reshape(k, -1, 6)
+        if self.dev.type == "cuda":
+            torch.cuda.synchronize()
+        lat = time.perf_counter() - t
+        self.n_calls += 1
+        return {"actions": a, "latent": latent, "latency_s": lat, "prefix_s": t_prefix, "k": k, "rtc": rtc,
+                "call": self.n_calls, "steps": steps, "latent_dim": None if latent is None else int(latent.shape[0])}
+
+    def _rtc_terms(self, req, chunk, bb, device, dtype):
+        """deploy/molmoact2/rtc_patch.py's guidance inputs (previous chunk in model space, prefix weights)."""
+        torch = self.torch
+        from rtc_patch import OFFSETS, SIGNS, _action_quantiles
+
+        q01, q99 = _action_quantiles(self.policy)
+        adim = len(q01)
+        prev = np.zeros((1, chunk, adim), np.float32)
+        tail = np.asarray(req["prev_chunk"], np.float32)[:chunk, :adim]
+        prev[0, :len(tail)] = tail
+        ck = prev * np.asarray(SIGNS[:adim], np.float32) + np.asarray(OFFSETS[:adim], np.float32)
+        den = np.where(q99 - q01 == 0, 1e-8, q99 - q01)
+        n = np.clip(2.0 * (ck - q01) / den - 1.0, -1.0, 1.0)
+        n = np.pad(n, ((0, 0), (0, 0), (0, max(0, bb.max_action_dim - adim))))
+        h = float(self.rtc_h)
+        start = min(float(max(int(req.get("inference_delay", 0)), 0)), h)
+        idx = np.arange(chunk, dtype=np.float32)
+        w = np.clip((h - idx) / (h - start + 1.0), 0.0, 1.0).reshape(1, chunk, 1)
+        return (torch.from_numpy(n).to(device, dtype), torch.from_numpy(w).to(device, dtype), float(self.rtc_g))
+
+
+def _expand_batch(obj, k: int, torch):
+    """Repeat batch-1 tensors of an ActionExpertContext (dataclass / tuples / lists) to batch k (views, no copy)."""
+    import dataclasses
+
+    if isinstance(obj, torch.Tensor):
+        return obj.expand(k, *obj.shape[1:]) if obj.dim() >= 2 and obj.shape[0] == 1 else obj
+    if dataclasses.is_dataclass(obj) and not isinstance(obj, type):
+        return dataclasses.replace(obj, **{f.name: (_expand_batch(getattr(obj, f.name), k, torch)
+                                                    if f.name != "rope_cache" else getattr(obj, f.name))
+                                           for f in dataclasses.fields(obj)})
+    if isinstance(obj, tuple):
+        vals = [_expand_batch(v, k, torch) for v in obj]
+        return type(obj)(*vals) if hasattr(obj, "_fields") else tuple(vals)
+    if isinstance(obj, list):
+        return [_expand_batch(v, k, torch) for v in obj]
+    return obj
 
 
 if __name__ == "__main__":
