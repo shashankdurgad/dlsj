@@ -33,7 +33,7 @@ and are logged, the arm gets the unmodified plan; on = applied. `--residual-weig
 (identity, for testing the plumbing). POST /ctl/residual_off fades it out live; /ctl/residual_on re-arms it.
 
 Vendored twin files (`twin_vendor/sim/twin/...`, refreshed by `sync_twin_vendor.sh` from this repo's sim/twin):
-main at f9701eb (2026-11-15 05:36 UTC).
+main at 1ab6297 (2026-11-15 06:06 UTC, the numpy 2.5 cross-product fix).
 """
 
 from __future__ import annotations

@@ -16,9 +16,9 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 
-# the vendored tracker's 2-D np.cross (numpy 2 deprecation), thousands of times per test
-# and macOS Accelerate's spurious float32 matmul FP flags (results are finite and match float64 to 1e-6)
-pytestmark = [pytest.mark.filterwarnings("ignore:Arrays of 2-dimensional vectors:DeprecationWarning"),
+# macOS Accelerate's spurious float32 matmul FP flags (results are finite and match float64 to 1e-6). The 2-D
+# np.cross deprecation is an error here: numpy 2.5 (the XPS runtime) rejects it.
+pytestmark = [pytest.mark.filterwarnings("error:Arrays of 2-dimensional vectors:DeprecationWarning"),
               pytest.mark.filterwarnings("ignore:.*encountered in matmul:RuntimeWarning")]
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "deploy" / "smolvla"))
