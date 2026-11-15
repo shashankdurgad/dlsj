@@ -15,6 +15,9 @@ OUT=${1:-dist}
 MEDIA=${2:-}
 rm -rf "$OUT"; mkdir -p "$OUT"
 cp -R site/. "$OUT/"
+# Cache-bust the stylesheet and script (Pages serves them with max-age=600).
+V=$(cat site/style.css site/site.js | shasum | cut -c1-10)
+sed -i.bak "s/?v=dev/?v=$V/g" "$OUT/index.html" && rm "$OUT/index.html.bak"
 if [ -n "$MEDIA" ]; then
   mkdir -p "$OUT/media"; cp -R "$MEDIA/." "$OUT/media/"
 else

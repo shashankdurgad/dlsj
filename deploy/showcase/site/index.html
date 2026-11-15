@@ -11,7 +11,7 @@
 <meta property="og:type" content="website">
 <meta name="theme-color" content="#f4f3f1">
 <link rel="preload" href="fonts/figtree-latin.woff2" as="font" type="font/woff2" crossorigin>
-<link rel="stylesheet" href="style.css">
+<link rel="stylesheet" href="style.css?v=dev">
 </head>
 <body>
 <a class="skip" href="#overview">Skip to content</a>
@@ -39,7 +39,7 @@
   <p class="kicker">Adaptive Inspection</p>
   <h1>End to End</h1>
   <div class="hero-media">
-    <video data-loop src="media/hero.mp4" poster="media/hero.jpg" width="854" height="480" autoplay muted loop playsinline preload="auto" aria-label="The SO-101 arm picking and sorting bricks"></video>
+    <video data-loop autoplay muted loop playsinline preload="auto" src="media/hero.mp4" poster="media/hero.jpg" width="854" height="480" aria-label="The SO-101 arm picking and sorting bricks"></video>
   </div>
   <div class="hero-text">
     <p class="lead">A robot arm that picks, inspects and sorts manufactured parts on its own, running entirely on a single Intel Core Ultra laptop.</p>
@@ -154,11 +154,11 @@
   <h2>Simulation</h2>
   <p class="prose big">Fully fitted to real recordings.</p>
   <div class="vid-wide">
-    <video data-loop src="media/sim_replay.mp4" poster="media/sim_replay.jpg" width="1280" height="720" muted loop playsinline preload="none" aria-label="A recorded teleop demo and the Isaac Lab twin replaying the same joint commands"></video>
+    <video data-loop autoplay muted loop playsinline preload="metadata" src="media/sim_replay.mp4" poster="media/sim_replay.jpg" width="1280" height="640" aria-label="A recorded teleop demo and the Isaac Lab twin replaying the same joint commands"></video>
   </div>
   <div class="wipes">
-    <video data-loop src="media/sim_plain.mp4" poster="media/sim_plain.jpg" width="960" height="720" muted loop playsinline preload="none" aria-label="Real and simulated top camera at the same instant, sliding divider"></video>
-    <video data-loop src="media/sim_wipe.mp4" poster="media/sim_wipe.jpg" width="960" height="720" muted loop playsinline preload="none" aria-label="Real and simulated top camera, wireframe then render"></video>
+    <video data-loop autoplay muted loop playsinline preload="metadata" src="media/sim_plain.mp4" poster="media/sim_plain.jpg" width="960" height="676" aria-label="Real and simulated top camera at the same instant, sliding divider"></video>
+    <video data-loop autoplay muted loop playsinline preload="metadata" src="media/sim_wipe.mp4" poster="media/sim_wipe.jpg" width="960" height="676" aria-label="Real and simulated top camera, wireframe then render"></video>
   </div>
   <dl class="facts">
     <div><dt>Cameras</dt><dd>Wrist camera mount fitted from real frames. Inspect camera calibrated with a ChArUco board on a laptop screen. Overhead camera pose fitted to the arm's silhouette and checked at table level against 262 real grasps (0.4 cm systematic bias).</dd></div>
@@ -175,8 +175,8 @@
     <img src="media/render_hero_cluttered_table.jpg" alt="Rendered twin with a cluttered table" width="1600" height="900" loading="lazy" decoding="async">
   </div>
   <div class="dr">
-    <video data-loop src="media/sim_dr.mp4" poster="media/sim_dr.jpg" width="1152" height="898" muted loop playsinline preload="none" aria-label="Nine domain-randomised replays of the same recorded actions"></video>
-    <img src="media/dr_montage.jpg" alt="Fifteen randomised renders of the top camera" width="1600" height="1257" loading="lazy" decoding="async">
+    <video data-loop autoplay muted loop playsinline preload="metadata" src="media/sim_dr.mp4" poster="media/sim_dr.jpg" width="1152" height="866" aria-label="Nine domain-randomised replays of the same recorded actions"></video>
+    <img src="media/dr_montage.jpg" alt="Fifteen randomised renders of the top camera" width="1600" height="1204" loading="lazy" decoding="async">
   </div>
 </section>
 
@@ -323,6 +323,6 @@
   <p class="fine">University and Intel logos are trademarks of their owners, shown as affiliation marks.</p>
 </footer>
 
-<script src="site.js" defer></script>
+<script src="site.js?v=dev" defer></script>
 </body>
 </html>
