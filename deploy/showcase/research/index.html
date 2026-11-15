@@ -1,0 +1,196 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="dark">
+<title>DLSJ: Closed-Loop Defect Sorting</title>
+<meta name="description" content="A VLA picks every brick, an NPU detector reads it while the wrist spins it, and the arm sorts it, all on one Intel Core Ultra laptop. Junction 2026, Intel Challenge.">
+<link rel="preload" href="../static/fonts/AtkinsonHyperlegibleNext-var.ttf" as="font" type="font/ttf" crossorigin>
+<link rel="stylesheet" href="./style.css">
+<script type="importmap">
+{ "imports": { "three": "../static/vendor/three.module.js", "three/examples/jsm/": "../static/vendor/jsm/" } }
+</script>
+</head>
+<body>
+<a class="skip" href="#overview">Skip to the overview</a>
+
+<nav class="nav" aria-label="Sections">
+  <a class="nav-home" href="#top">DLSJ</a>
+  <div class="nav-links">
+    <a href="#overview">Overview</a>
+    <a href="#method">Method</a>
+    <a href="#results">Results</a>
+    <a href="#gallery">Gallery</a>
+    <a href="#limitations">Limitations</a>
+    <a href="#conclusion">Conclusion</a>
+    <a href="#team">Team</a>
+    <a href="#bibtex">BibTeX</a>
+  </div>
+</nav>
+
+<header class="hero" id="top">
+  <p class="venue">Junction 2026, Intel Challenge</p>
+  <h1>DLSJ: Closed-Loop Defect Sorting with a VLA and an NPU on One Laptop</h1>
+  <ul class="authors" aria-label="Team">
+    <li>Team member 1</li><li>Team member 2</li><li>Team member 3</li><li>Team member 4</li>
+  </ul>
+  <div class="links">
+    <a class="pill" href="https://github.com/shashankdurgad/dlsj">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 7l-5 5 5 5M16 7l5 5-5 5"/></svg>Code</a>
+    <a class="pill" href="#gallery">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 5.5v13l11-6.5z"/></svg>Video</a>
+  </div>
+
+  <figure class="teaser" id="teaser">
+    <div class="teaser-frame">
+      <video id="teaserVideo" src="../media/teaser.mp4" poster="../media/teaser.jpg" muted loop playsinline preload="auto" aria-label="The real SO-101 picking a brick and bringing it to the inspection camera"></video>
+    </div>
+    <figcaption id="teaserCap">The SO-101 picking a brick and bringing it to the inspection camera (real robot, 1x).</figcaption>
+  </figure>
+  <a class="scroll-cue" href="#overview" aria-label="Scroll to the overview"><span></span></a>
+</header>
+
+<main>
+  <section id="overview" class="sec">
+    <h2>Overview</h2>
+    <p class="lede">An SO-101 arm sorts Duplo bricks by inspecting each one: a fine-tuned vision-language-action model picks the brick and holds it up to a camera, the wrist spins it while a detector on the NPU reads every frame, and the arm places it on the yellow plate (plain) or the purple plate (marked). The whole loop runs on one Intel Core Ultra laptop, with each model on the engine that suits it.</p>
+    <figure class="fig fig-wide">
+      <div class="diagram-scroll">
+        <svg class="loop" viewBox="0 0 1000 250" role="img" aria-labelledby="loopT">
+          <title id="loopT">The sorting loop: perceive on the NPU, pick on the GPU, spin and detect on the NPU, reason on the CPU, place on the GPU, then repeat until the table is clear.</title>
+          <defs>
+            <marker id="ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" fill="#98aebe"/></marker>
+          </defs>
+          <g class="edges" stroke="#98aebe" stroke-width="2" fill="none" marker-end="url(#ah)">
+            <path d="M176 92H212"/><path d="M376 92H412"/><path d="M576 92H612"/><path d="M776 92H812"/>
+            <path d="M894 132V196H106V140" stroke-dasharray="5 6"/>
+          </g>
+          <text class="repeat" x="500" y="222" text-anchor="middle">repeat until the top camera sees an empty table</text>
+          <g class="node" style="--c:#34d3b4" transform="translate(16 52)"><rect width="160" height="80" rx="8"/><text x="80" y="34" class="n-t">Perceive</text><text x="80" y="58" class="n-d">NPU, top camera</text></g>
+          <g class="node" style="--c:#7aa2ff" transform="translate(216 52)"><rect width="160" height="80" rx="8"/><text x="80" y="34" class="n-t">Act: pick</text><text x="80" y="58" class="n-d">GPU, VLA</text></g>
+          <g class="node" style="--c:#34d3b4" transform="translate(416 52)"><rect width="160" height="80" rx="8"/><text x="80" y="34" class="n-t">Detect</text><text x="80" y="58" class="n-d">NPU, spin + YOLO</text></g>
+          <g class="node" style="--c:#f2a65a" transform="translate(616 52)"><rect width="160" height="80" rx="8"/><text x="80" y="34" class="n-t">Reason</text><text x="80" y="58" class="n-d">CPU, evidence rule</text></g>
+          <g class="node" style="--c:#7aa2ff" transform="translate(816 52)"><rect width="160" height="80" rx="8"/><text x="80" y="34" class="n-t">Act: place</text><text x="80" y="58" class="n-d">GPU, VLA</text></g>
+        </svg>
+      </div>
+      <figcaption>The loop. Colours mark the engine each step runs on: <b class="c-gpu">Arc GPU</b>, <b class="c-npu">NPU</b>, <b class="c-cpu">CPU</b>.</figcaption>
+    </figure>
+  </section>
+
+  <section id="method" class="sec">
+    <h2>Method</h2>
+    <p class="lede">Three parts make the loop work on a laptop: a fast VLA, an inspection that reads the brick from every side, and an engine that keeps all of it moving.</p>
+
+    <article class="sub">
+      <h3>A VLA that keeps up with a 30 Hz arm</h3>
+      <p>We LoRA fine-tune AI2's MolmoAct2 on 456 teleoperated demonstrations, export it to OpenVINO with INT8 weights, and run it on the Arc iGPU with real-time chunking, so a new action chunk always lands before the queue runs dry.</p>
+      <figure class="fig"><div id="figLatency" class="chart-slot"></div>
+        <figcaption>Latency per 30-action chunk on the same 60 recorded frames. The deployed configuration is highlighted.</figcaption></figure>
+    </article>
+
+    <article class="sub">
+      <h3>Spin-and-inspect on the NPU</h3>
+      <p>The VLA holds the brick up to the inspection camera and the wrist rolls it through about 180°. A held-brick YOLO reads about 61 frames on the NPU, around 4 ms each, and an evidence rule over all frames decides: plain goes to the yellow plate; marked, or still uncertain after a re-spin, goes to the purple plate.</p>
+      <figure class="fig"><img src="../media/mission.jpg" alt="Mission control during a run: top-camera detections, the inspection and wrist feeds, the device split and the cycle log" loading="lazy" width="1600" height="950">
+        <figcaption>Mission control during a run. Camera feeds with bystanders are blurred.</figcaption></figure>
+    </article>
+
+    <article class="sub">
+      <h3>A closed-loop engine with a digital twin</h3>
+      <p>A controller on the CPU runs survey, pick, grasp check, bring, spin, place and verify until the table is clear, and streams every joint angle to a 3D twin. Drag to orbit; press play to replay the recorded run.</p>
+      <figure class="fig">
+        <div class="twin-frame">
+          <canvas id="methodTwin" aria-label="Interactive 3D twin of the SO-101; drag to orbit"></canvas>
+          <div class="twin-ui">
+            <button type="button" class="play" id="twinPlay" aria-label="Play the recorded run">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path class="i-play" d="M8 5.5v13l11-6.5z"/><path class="i-pause" d="M7 5h4v14H7zM13 5h4v14h-4z"/></svg>
+            </button>
+            <input type="range" id="twinScrub" min="0" max="1000" value="40" aria-label="Position in the recorded run">
+            <span class="twin-t" id="twinT">0 s</span>
+            <span class="twin-step" id="twinStep">pick</span>
+          </div>
+        </div>
+        <figcaption>The SO-101 twin driven by the logged joint angles of a 160-second run. Plates are placed from the top camera.</figcaption>
+      </figure>
+    </article>
+  </section>
+
+  <section id="results" class="sec">
+    <h2>Results</h2>
+    <p class="lede">Every number below was measured on the robot or on the same recorded frames; the caveats are listed under Limitations.</p>
+
+    <article class="result">
+      <h3>34x faster and 36x less energy per action chunk</h3>
+      <div id="figRuntime" class="chart-slot grid-2"></div>
+      <p class="cap">Stock PyTorch on the CPU (baseline) against OpenVINO INT8 with real-time chunking on the Arc iGPU (now), same 60 frames.</p>
+    </article>
+
+    <article class="result">
+      <h3>37 of 38 rig spins classified correctly</h3>
+      <div id="figInspect" class="chart-slot"></div>
+      <p class="cap">38 labelled spins on the real rig, scored with the live decision rule. The deployed inspector is the last row.</p>
+    </article>
+
+    <article class="result">
+      <h3>Fine-tuning cuts the policy's error threefold</h3>
+      <div id="figPolicy" class="chart-slot"></div>
+      <p class="cap">Joint error against the human demonstrations on the same 60 recorded frames.</p>
+    </article>
+  </section>
+
+  <section id="gallery" class="sec sec-wide">
+    <h2>Gallery</h2>
+    <p class="lede">The system at work.</p>
+    <div class="gallery" id="galleryGrid"></div>
+  </section>
+
+  <section id="limitations" class="sec">
+    <h2>Limitations</h2>
+    <ul class="plain-list">
+      <li>The rig evaluation is one session of 38 spins, and its overlap with the detector's training data is unknown.</li>
+      <li>The robot currently runs the FP16 export (about 360 ms per chunk); INT8 is the benchmarked configuration.</li>
+      <li>The residual-RL grasp correction is only evaluated in simulation, partly over a scripted stand-in policy.</li>
+    </ul>
+  </section>
+
+  <section id="conclusion" class="sec">
+    <h2>Conclusion</h2>
+    <p class="lede">A fine-tuned VLA, a held-brick detector and a small evidence rule close the perceive, detect, reason and act loop on a single laptop, with each model on the engine that suits it. Optimising for the hardware was what made it work: 34 times faster and 36 times less energy than the stock model, fast enough for the arm never to wait.</p>
+  </section>
+
+  <section id="team" class="sec">
+    <h2>Team</h2>
+    <ul class="team">
+      <li><b>Team member 1</b><span>Junction 2026, Intel Challenge</span></li>
+      <li><b>Team member 2</b><span>Junction 2026, Intel Challenge</span></li>
+      <li><b>Team member 3</b><span>Junction 2026, Intel Challenge</span></li>
+      <li><b>Team member 4</b><span>Junction 2026, Intel Challenge</span></li>
+    </ul>
+  </section>
+
+  <section id="bibtex" class="sec">
+    <div class="bib-head"><h2>BibTeX</h2><button type="button" class="pill pill-sm" id="copyBib">Copy</button></div>
+    <pre class="bib"><code id="bibCode">@misc{dlsj2026,
+  title        = {DLSJ: Closed-Loop Defect Sorting with a VLA and an NPU on One Laptop},
+  author       = {Team member 1 and Team member 2 and Team member 3 and Team member 4},
+  year         = {2026},
+  howpublished = {Junction 2026, Intel Challenge}
+}</code></pre>
+    <p class="copy-msg" id="copyMsg" role="status" aria-live="polite"></p>
+  </section>
+
+  <section id="ack" class="sec">
+    <h2>Acknowledgments</h2>
+    <p class="small">We thank Intel for the challenge, Physical AI Studio and OpenVINO; Junction for hosting; AI2 for MolmoAct2; and TheRobotStudio for the open SO-ARM100 / SO-101 design.</p>
+  </section>
+</main>
+
+<footer class="foot">
+  <span>DLSJ, Junction 2026.</span>
+  <span>Built on the open SO-101 design. Page layout inspired by research project pages.</span>
+</footer>
+
+<script type="module" src="./research.js"></script>
+</body>
+</html>

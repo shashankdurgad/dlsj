@@ -1,0 +1,18 @@
+{
+  "teaser": {
+    "type": "video",
+    "src": "../media/teaser.mp4",
+    "poster": "../media/teaser.jpg",
+    "caption": "The SO-101 picking a brick and bringing it to the inspection camera (real robot, 1x)."
+  },
+  "gallery": [
+    { "type": "video", "layout": "tall", "src": "../media/sort_portrait.mp4", "poster": "../media/sort_portrait.jpg", "caption": "Sorting bricks into the plates (real robot, phone view)." },
+    { "type": "video", "src": "../media/teaser.mp4", "poster": "../media/teaser.jpg", "caption": "The SO-101 picking a brick and bringing it to the inspection camera (real robot, 1x)." },
+    { "type": "image", "src": "../media/twin.jpg", "caption": "The live 3D digital twin: the arm follows the real joint angles; plates and bricks come from the top camera." },
+    { "type": "image", "src": "../media/mission.jpg", "caption": "Mission control during a run. Camera feeds with bystanders are blurred." },
+    { "type": "image", "src": "../media/how.jpg", "caption": "Each step of the loop on its engine: GPU, NPU or CPU." },
+    { "type": "image", "src": "../media/detection.jpg", "caption": "Rig evaluation of every inspector we tried." },
+    { "type": "image", "src": "../media/posttraining.jpg", "caption": "Post-training: LoRA fine-tune, Isaac Lab digital twin and residual RL." },
+    { "type": "image", "src": "../media/runtime.jpg", "caption": "Runtime optimisation, baseline against now." }
+  ]
+}

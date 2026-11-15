@@ -212,7 +212,8 @@ export function createTwin(canvas, { onReady, onError } = {}) {
       });
     });
   }
-  loader.load('./robot/so101_new_calib.urdf', (r) => {
+  // resolve against this module, so pages outside static/ (e.g. ../research/) can reuse the twin
+  loader.load(new URL('./robot/so101_new_calib.urdf', import.meta.url).href, (r) => {
     robot = r;
     root.add(r);
     const gf = r.links['gripper_frame_link'] || r.links['gripper_link'];
