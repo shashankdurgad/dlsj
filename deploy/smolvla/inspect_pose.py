@@ -55,6 +55,7 @@ class Mover:
     def __init__(self, waypoints, speed: float = 30.0, tol: float = 2.5):
         self.waypoints = [np.asarray(w, float)[:5] for w in waypoints if w is not None]
         self.speed, self.tol, self.i = speed, tol, 0
+        self._at_cmd_ticks = 0
 
     @property
     def done(self) -> bool:
@@ -70,9 +71,14 @@ class Mover:
         step = self.speed / max(1, getattr(ctl, "fps", 30))
         cmd = base + np.clip(target - base, -step, step)
         measured = np.asarray(ctl._step(cmd), float)
-        # reached = the command is exactly at the waypoint AND the arm is within tol of it (never stop short)
-        if np.abs(cmd[:5] - target[:5]).max() < 1e-6 and np.abs(measured[:5] - target[:5]).max() < self.tol:
+        # reached = the command is exactly at the waypoint AND (the arm is within tol of it, or it has stayed as close
+        # as it gets for 1 s: a loaded shoulder sags ~4 deg below its command and would otherwise never "arrive")
+        at_cmd = np.abs(cmd[:5] - target[:5]).max() < 1e-6
+        self._at_cmd_ticks = self._at_cmd_ticks + 1 if at_cmd else 0
+        if at_cmd and (np.abs(measured[:5] - target[:5]).max() < self.tol
+                       or self._at_cmd_ticks >= getattr(ctl, "fps", 30)):
             self.i += 1
+            self._at_cmd_ticks = 0
         return self.done
 
 

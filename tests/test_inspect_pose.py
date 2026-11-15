@@ -54,3 +54,19 @@ def test_mover_visits_waypoints_at_capped_speed_and_keeps_gripper():
     assert all(s[5] == 5.6 for s in ctl.sent)  # the gripper keeps squeezing the brick
     # it really went through the raised waypoint first
     assert min(s[1] for s in ctl.sent) < -45
+
+
+def test_mover_finishes_when_the_arm_sags_short_of_the_target():
+    class Sagging(FakeCtl):
+        def _step(self, target):
+            self.cmd = np.asarray(target, float).copy()
+            m = self.cmd.copy()
+            m[1] += 4.0  # shoulder_lift hangs 4 deg below its command under load
+            return m
+
+    ctl = Sagging([0, 0, 0, 0, 0, 5.6])
+    m = IP.Mover([[1, 1, 1, 1, 1]], speed=30.0)
+    for _ in range(30 * 5):
+        if m.step(ctl):
+            break
+    assert m.done
