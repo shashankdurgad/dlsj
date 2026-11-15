@@ -56,7 +56,8 @@ function render(s){
 }
 async function poll(){try{render(await fetch('/api/state').then(r=>r.json()))}catch(e){document.body.classList.add('offline')}}
 (async()=>{let cfg={};try{cfg=await fetch('/api/config').then(r=>r.json())}catch(e){}
-  stream($('twin'),cfg.twin);if(cfg.cams)stream($('cam'),`${cfg.cams}/stream/top`);
+  const cams=(cfg.cams||'').replace(/\/\/(localhost|127\.0\.0\.1)/,'//'+location.hostname);
+  stream($('twin'),cfg.twin);if(cams)stream($('cam'),`${cams}/stream/top`);
   setInterval(poll,250);poll()})();
 </script>
 </body>

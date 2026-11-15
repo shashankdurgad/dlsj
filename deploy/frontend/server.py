@@ -144,7 +144,7 @@ class MockRobot:
                 if step == "inspect" else None}
 
 
-def make_handler(source: Source, config: dict):
+def make_handler(source: Source, config: dict, twin_upstream: str = ""):
 
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, *a):  # quiet
@@ -159,6 +159,24 @@ def make_handler(source: Source, config: dict):
             self.end_headers()
             self.wfile.write(body)
 
+        def _relay(self, url: str) -> None:
+            """Pass the twin's MJPEG stream through, so browsers that are not on the XPS can show it too."""
+            try:
+                up = urllib.request.urlopen(url, timeout=5)
+            except Exception:  # noqa: BLE001  renderer not running: the page shows the top camera instead
+                return self._send(502, b"", "text/plain")
+            self.send_response(200)
+            self.send_header("Content-Type", up.headers.get("Content-Type", "multipart/x-mixed-replace"))
+            self.send_header("Cache-Control", "no-store")
+            self.end_headers()
+            try:
+                while chunk := up.read1(65536):
+                    self.wfile.write(chunk)
+            except Exception:  # noqa: BLE001  viewer closed the page or the stream dropped
+                pass
+            finally:
+                up.close()
+
         def do_GET(self):  # noqa: N802
             path = self.path.split("?", 1)[0]
             if path in ("/", "/index.html"):
@@ -169,6 +187,14 @@ def make_handler(source: Source, config: dict):
                 return self._send(200, json.dumps(source.pose()).encode(), "application/json")
             if path == "/api/config":
                 return self._send(200, json.dumps(config).encode(), "application/json")
+            if path == "/twin.mjpg" and twin_upstream:
+                return self._relay(twin_upstream)
+            if path == "/twin/health" and twin_upstream:
+                try:
+                    body = urllib.request.urlopen(twin_upstream.rsplit("/", 1)[0] + "/health", timeout=2).read()
+                    return self._send(200, body, "application/json")
+                except Exception:  # noqa: BLE001
+                    return self._send(502, b"{}", "application/json")
             return self._send(404, b"", "text/plain")
 
     return Handler
@@ -177,7 +203,8 @@ def make_handler(source: Source, config: dict):
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--console", default="http://localhost:8020", help="the robot console (serves /ctl/state)")
-    ap.add_argument("--twin", default="http://watson:8030/stream.mjpg", help="Isaac live-mirror MJPEG stream")
+    ap.add_argument("--twin", default="http://localhost:8030/stream.mjpg",
+                    help="Isaac live-mirror MJPEG stream (relayed to the page as /twin.mjpg)")
     ap.add_argument("--cams", default="", help="base URL of the camera streams (/stream/<cam>); default the console")
     ap.add_argument("--host", default="0.0.0.0")
     ap.add_argument("--port", type=int, default=8040)
@@ -185,8 +212,9 @@ def main() -> None:
     ap.add_argument("--mock", action="store_true", help="synthetic robot, no hardware")
     a = ap.parse_args()
     source = Source(a.console.rstrip("/") + "/ctl/state", a.hz, a.mock)
-    config = {"twin": a.twin, "cams": "" if a.mock else (a.cams or a.console).rstrip("/"), "mock": a.mock}
-    server = ThreadingHTTPServer((a.host, a.port), make_handler(source, config))
+    config = {"twin": "/twin.mjpg" if a.twin else "", "cams": "" if a.mock else (a.cams or a.console).rstrip("/"),
+              "mock": a.mock}
+    server = ThreadingHTTPServer((a.host, a.port), make_handler(source, config, a.twin))
     print(f"station display on http://{a.host}:{a.port}  (console {a.console}{', MOCK' if a.mock else ''}; "
           f"twin {a.twin})", flush=True)
     server.serve_forever()
