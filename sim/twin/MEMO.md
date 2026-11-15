@@ -39,19 +39,21 @@ Isaac needs RT cores. RTX PRO 6000 / L40S / RTX work; H100 / A100 / B200 / H200 
    (`--device nvidia.com/gpu=all`). The Dockerfile comments mention arm64 because it was first built on a GB10; the
    base is multi-arch.
 2. **Robot USD.** `sim/twin/scripts/fetch_so101.sh`.
-3. **Data** under `sim/twin/data/` (git-ignored). The private Hugging Face repos need access from Desmond:
+3. **Data** under `sim/twin/data/` (git-ignored). All of it is in **public** Hugging Face repos (no login needed):
    - `canonical/duplo_teleop_cal2_rgb_456` ← `akoniti/dlsj-canonical` (dataset)
    - `posttrain_v3_1` ← `akoniti/dlsj-posttrain-v3-1` (dataset)
    - `models/molmoact2_ft_8k/step008000.ckpt` ← `akoniti/dlsj-molmoact2-ft-8k` (model)
    - `hf/` (HF cache; `HF_HOME` defaults here): `allenai/MolmoAct2-SO100_101` at `152569fe`, plus `allenai/MolmoAct2`
    ```bash
-   huggingface-cli login        # token with access to the akoniti repos; don't commit it
    huggingface-cli download akoniti/dlsj-canonical --repo-type dataset --local-dir sim/twin/data/canonical
    huggingface-cli download akoniti/dlsj-posttrain-v3-1 --repo-type dataset --local-dir sim/twin/data/posttrain_v3_1
    huggingface-cli download akoniti/dlsj-molmoact2-ft-8k --local-dir sim/twin/data/models/molmoact2_ft_8k
    HF_HOME=sim/twin/data/hf huggingface-cli download allenai/MolmoAct2-SO100_101 --revision 152569fe57914d97be91055800035f54e250d009
+   # RLPD expert rows (lets you skip step 4):
+   mkdir -p sim/twin/out/rl && huggingface-cli download akoniti/dlsj-molmoact2-ft-8k expert/expert_img8k_prior.pt --local-dir /tmp/exp \
+     && cp /tmp/exp/expert/expert_img8k_prior.pt sim/twin/out/rl/
    ```
-4. **Expert rows.** About 5 min on 8 GPUs; writes `sim/twin/out/rl/expert_img8k_prior.pt`:
+4. **Expert rows** (only if you didn't download them in step 3). About 5 min on 8 GPUs; writes `sim/twin/out/rl/expert_img8k_prior.pt`:
    `sim/twin/rl/jobs/build_expert_local.sh`
 5. **Train.** W&B is optional. Set `WANDB_API_KEY` in your shell and pass your own entity / project:
    ```bash
