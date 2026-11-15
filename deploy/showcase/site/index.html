@@ -156,19 +156,18 @@
   <div class="vid-wide">
     <video data-loop src="media/sim_replay.mp4" poster="media/sim_replay.jpg" width="1280" height="720" muted loop playsinline preload="none" aria-label="A recorded teleop demo and the Isaac Lab twin replaying the same joint commands"></video>
   </div>
-  <div class="fit">
-    <div class="vid-side">
-      <video data-loop src="media/sim_wipe.mp4" poster="media/sim_wipe.jpg" width="960" height="720" muted loop playsinline preload="none" aria-label="Real and simulated top camera, wireframe then render"></video>
-    </div>
-    <dl class="facts">
-      <div><dt>Cameras</dt><dd>Wrist camera mount fitted from real frames. Inspect camera calibrated with a ChArUco board on a laptop screen. Overhead camera pose fitted to the arm's silhouette and checked at table level against 262 real grasps (0.4 cm systematic bias).</dd></div>
-      <div><dt>Joints</dt><dd>Joint offsets refitted from camera views of 44 episodes, with URDF FK matching Isaac to 0.45 mm.</dd></div>
-      <div><dt>Servo dynamics</dt><dd>Response rate and delay fitted to 249 real command windows.</dd></div>
-      <div><dt>Mechanical play</dt><dd>Backlash, hold band, sag and encoder quantisation identified from over 1,000 holds per joint across 450 episodes.</dd></div>
-      <div><dt>Contact physics</dt><dd>Built around the real gripper: UMI-style fin-ray TPU fingers as 4 independently hinged slices with fitted stiffness (held gripper reading 5.7 sim vs 5.65 real). Real Duplo geometry from LDraw CAD (studs, hollow underside, tubes).</dd></div>
-      <div><dt>Validation</dt><dd>Open-loop replay of 60 held-out human demos lifts 89% of bricks.</dd></div>
-    </dl>
+  <div class="wipes">
+    <video data-loop src="media/sim_plain.mp4" poster="media/sim_plain.jpg" width="960" height="720" muted loop playsinline preload="none" aria-label="Real and simulated top camera at the same instant, sliding divider"></video>
+    <video data-loop src="media/sim_wipe.mp4" poster="media/sim_wipe.jpg" width="960" height="720" muted loop playsinline preload="none" aria-label="Real and simulated top camera, wireframe then render"></video>
   </div>
+  <dl class="facts">
+    <div><dt>Cameras</dt><dd>Wrist camera mount fitted from real frames. Inspect camera calibrated with a ChArUco board on a laptop screen. Overhead camera pose fitted to the arm's silhouette and checked at table level against 262 real grasps (0.4 cm systematic bias).</dd></div>
+    <div><dt>Joints</dt><dd>Joint offsets refitted from camera views of 44 episodes, with URDF FK matching Isaac to 0.45 mm.</dd></div>
+    <div><dt>Servo dynamics</dt><dd>Response rate and delay fitted to 249 real command windows.</dd></div>
+    <div><dt>Mechanical play</dt><dd>Backlash, hold band, sag and encoder quantisation identified from over 1,000 holds per joint across 450 episodes.</dd></div>
+    <div><dt>Contact physics</dt><dd>Built around the real gripper: UMI-style fin-ray TPU fingers as 4 independently hinged slices with fitted stiffness (held gripper reading 5.7 sim vs 5.65 real). Real Duplo geometry from LDraw CAD (studs, hollow underside, tubes).</dd></div>
+    <div><dt>Validation</dt><dd>Open-loop replay of 60 held-out human demos lifts 89% of bricks.</dd></div>
+  </dl>
   <div class="renders">
     <img src="media/render_hero_three_quarter.jpg" alt="Rendered twin, three-quarter view" width="1600" height="900" loading="lazy" decoding="async">
     <img src="media/render_finray_closeup_grasp.jpg" alt="Fin-ray fingers grasping a brick" width="1600" height="900" loading="lazy" decoding="async">

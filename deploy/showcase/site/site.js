@@ -67,14 +67,33 @@ if (still.matches) {
     v.controls = true;
   }
 } else {
+  const visible = new Set();
+  // A browser can refuse play() while the page is still loading; retry once the clip has
+  // data, then on the first interaction. Show controls only if it is still refused.
+  const start = (v) =>
+    v.play().catch(() => {
+      if (v.dataset.retry) return;
+      v.dataset.retry = "1";
+      const again = () => {
+        if (visible.has(v) && v.paused) v.play().catch(() => (v.controls = true));
+      };
+      v.addEventListener("canplay", () => setTimeout(again, 300), { once: true });
+      setTimeout(again, 1500);
+      for (const ev of ["pointerdown", "touchstart", "keydown", "scroll"])
+        addEventListener(ev, again, { once: true, passive: true });
+    });
   const io = new IntersectionObserver(
     (entries) => {
       for (const e of entries) {
         const v = e.target;
         if (e.isIntersecting) {
+          visible.add(v);
           if (v.preload === "none") v.preload = "auto";
-          v.play().catch(() => (v.controls = true));
-        } else v.pause();
+          start(v);
+        } else {
+          visible.delete(v);
+          v.pause();
+        }
       }
     },
     { threshold: 0.2 }
