@@ -26,6 +26,7 @@ sys.path.insert(0, str(REPO))
 from sim.twin.perception import geometry as G  # noqa: E402
 from sim.twin.perception import proxy_eval as P  # noqa: E402
 from sim.twin.perception.detector_model import DetectorModel  # noqa: E402
+from sim.twin.perception.proxy_eval import RENDER_GRIP_BIAS  # noqa: E402
 from sim.twin.perception.wrist_target import TargetTracker, WristCamera  # noqa: E402
 
 OUT = REPO / "sim/twin/out/perception"
@@ -46,7 +47,9 @@ def main():
     sys.path.insert(0, str(REPO / "sim/residual_env"))
     from calib import load_profile
 
-    geo_r = G.Geometry(offsets_rad=list(load_profile("joe_cal2").joint_offsets), camera="sim")
+    geo_r = G.Geometry(
+        offsets_rad=list(load_profile("joe_cal2").joint_offsets), camera="sim", grip_bias=RENDER_GRIP_BIAS
+    )
     v = P.proxy(d, geo_r)
     inside = v["vis"] + v["occ_grip"] + v["occ_other"]
     vp = v["vis"] / np.maximum(inside, 1e-9)

@@ -6,7 +6,8 @@
 The jaw fin is rigid in the camera frame except for its joint angle q, so its image silhouette is a function of q
 only. Per real frame: red pixels (the TPU fins, HSV) in the image's right part (the fixed fin is on the left) vs the
 projected CAD jaw-fin silhouette (wrist mount + measured intrinsics) for q on a grid; best IoU -> q_real. Then
-q_real = a * reading + b (robust line). Compared with the twin's mapping q = 0.02308 u + 0.105.
+q_real = a * reading + b (robust line). Compared with the twin map of the time, q = 0.02308 u + 0.105
+(physics now uses bias -0.10).
 """
 
 from __future__ import annotations

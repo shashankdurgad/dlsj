@@ -5,7 +5,7 @@
 
 For every rendered job (render/vis_*.npz) the proxy is evaluated on exactly the rendered state (measured joints after
 the settle, brick pose / size, other bricks as 2x2-footprint boxes of their recorded positions) with the twin's own
-camera model (Geometry(camera="sim"): centred pinhole f 341.8, local_to_cv_sim). Compared, in frame:
+camera model (Geometry(camera="sim"): centred pinhole f 341.8, local_to_cv_sim; the render-era jaw map). In frame:
   rendered visible fraction  = target pixels with everything / target pixels with the robot + other bricks hidden
   proxy visible fraction     = vis / (vis + occ_grip + occ_other)   (the proxy's out-of-frame part removed)
 and the visible boxes (IoU), plus the out-of-frame / occluded classification at a few thresholds.
@@ -25,6 +25,7 @@ from sim.twin.perception import geometry as G  # noqa: E402
 from sim.twin.perception.gt_real import iou  # noqa: E402
 
 OUT = REPO / "sim/twin/out/perception"
+RENDER_GRIP_BIAS = 0.105  # the jaw map the render batch (15 Nov) ran with; physics params.json now has -0.10
 
 
 def load():
@@ -64,7 +65,9 @@ def main():
     sys.path.insert(0, str(REPO / "sim/residual_env"))
     from calib import load_profile
 
-    geo = G.Geometry(offsets_rad=list(load_profile("joe_cal2").joint_offsets), camera="sim", samples=7)
+    geo = G.Geometry(
+        offsets_rad=list(load_profile("joe_cal2").joint_offsets), camera="sim", samples=7, grip_bias=RENDER_GRIP_BIAS
+    )
     v = proxy(d, geo)
     ok = d["n_amodal"] > 50  # target at least partly in frame in the render
     vr = d["n_vis"] / np.maximum(d["n_amodal"], 1)

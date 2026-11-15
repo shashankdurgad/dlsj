@@ -6,7 +6,7 @@ analysis (numpy) and the real-data fits (numpy).
 
 Frames: `env` = robot base frame (the residual env / GraspEnv env frame, metres); `gripper_link` = the SO-101 link
 the wrist camera and the fixed fin are bolted to. Joints in OUR units (LeRobot degrees of the cal2 frame, gripper
-0-100), mapped like the twin: q = deg2rad(d) + joint_offsets, gripper q = 0.02308 u + 0.105 rad.
+0-100), mapped like the twin: q = deg2rad(d) + joint_offsets, gripper q = 0.02308 u + GRIP_BIAS (physics, -0.10 rad).
 
 Occluders (gripper_link / moving-jaw link, from sim/twin/gripper/assets/finray_so101.npz): the TPU fins as their 4
 convex collider pieces each (the fin's ribbed outline is filled; see proxy accuracy in README), the two printed
@@ -37,15 +37,29 @@ FINRAY = REPO / "sim/twin/gripper/assets/finray_so101.npz"
 WRIST_JSON = REPO / "sim/twin/robot/wrist_mount.json"
 CHAIN = ["shoulder_pan", "shoulder_lift", "elbow_flex", "wrist_flex", "wrist_roll"]
 JAW_XYZ = np.array([0.0202, 0.0188, -0.0234])  # gripper joint origin in gripper_link, rpy (pi/2, 0, 0)
-GRIP_SCALE, GRIP_BIAS = 0.02307670501098437, 0.105  # twin profile + physics/params.json gripper.bias_rad
+
+
+def _twin_gripper() -> tuple:
+    """(fingertip / grasp point in gripper_link, gripper bias rad) of the twin, from sim/twin/physics/apply.py
+    (the fin-ray grasp point and params.json's gripper bias); plain-number fallback when it cannot be imported."""
+    try:
+        from sim.twin.physics import apply as A
+
+        g = A._p()["gripper"]
+        b = g["finray"].get("bias_rad") if A.finray() else None
+        b = g.get("bias_rad") if b is None else b
+        return tuple(float(v) for v in A.tip_local()), float(b)
+    except Exception:  # noqa: BLE001
+        return (0.0063, 0.001, -0.0902), -0.10
+
+
+_TIP, _BIAS = _twin_gripper()
+# twin jaw map q = GRIP_SCALE u + GRIP_BIAS (profile scale, physics bias; -0.10 = servo map fitted on open frames)
+GRIP_SCALE, GRIP_BIAS = 0.02307670501098437, _BIAS
 # the jaw angle the REAL wrist camera sees vs the reading (jaw_fit.py, 496 real frames: the moving fin's silhouette):
 # ~0.2 rad more closed than the twin's mapping at every opening (at the hold it includes the TPU fin's bend)
 JAW_REAL = (0.02406, -0.1183)
-TIP_LOCAL = (
-    0.008,
-    0.0,
-    -0.090,
-)  # GraspEnv / Kin fingertip (gripper_link); the finray grasp point is (0.0063, 0.001, -0.0902)
+TIP_LOCAL = _TIP  # the twin's one grasp point: the fin-ray point (0.0063, 0.001, -0.0902), physics apply.tip_local()
 TABLE_Z = -0.002
 W, H = 640, 480
 PARTS = ("fixed_fin", "jaw_fin", "fixed_base", "jaw_base")
@@ -92,8 +106,10 @@ def default_offsets() -> list:
         return list(load_profile("joe_cal2").joint_offsets)
     p = REPO / "sim/twin/align/joint_fit/result.json"
     res = json.loads(p.read_text())  # FileNotFoundError if missing
-    rad = res.get("grasp_depth_candidates", {}).get("W9", {}).get("joint_offsets_rad_for_sim") \
+    rad = (
+        res.get("grasp_depth_candidates", {}).get("W9", {}).get("joint_offsets_rad_for_sim")
         or res["joint_offsets_rad_for_sim"]
+    )
     return [float(v) for v in rad[:5]] + [0.0]
 
 

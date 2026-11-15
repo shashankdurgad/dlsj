@@ -70,7 +70,8 @@ it in 64 %); a wrong object in 9.6 % (runs of ~7 frames, 4-12 cm away, mostly ot
 rejected (IoU with the fin's image box).
 
 Jaw angle seen by the real camera (jaw_fit.py, 496 frames, moving-fin silhouette): q_real = 0.02406 u - 0.1183, i.e.
-~0.2 rad more closed than the twin's q = 0.02308 u + 0.105 at every reading (at the hold it includes the TPU fin's
+~0.2 rad more closed than the twin's map of the time, q = 0.02308 u + 0.105, at every reading (physics now uses
+bias -0.10, close to it) (at the hold it includes the TPU fin's
 bend). The proxy uses q_real for the physical camera (geometry.JAW_REAL), so the jaw fin hides the brick where it
 does on the robot regardless of the twin's own jaw angle. Held brick in the gripper (held_brick.py): centre
 (-0.8, 2.8, -88.0) mm in gripper_link, bottom ~7.6 mm above the fixed-fin tip.
@@ -113,6 +114,11 @@ conservative direction. The printed bases never reach the image. Cost: ~10 ms pe
 The render jobs after the close keep the brick at its pre-grasp table pose (it interpenetrates the closed fins), so
 they test geometry, not a realistic hold. TwinEnv note: its ResidualEnv keeps joe_cal2's joint offsets (not the
 profile's W), so the twin renders FK(joe_cal2) of the recorded joints; proxy_eval.py uses the same.
+
+Constants: the fingertip / grasp point (`geometry.TIP_LOCAL`, the fin-ray point (0.0063, 0.001, -0.0902)) and the
+twin's gripper bias (`GRIP_BIAS`) come from `sim/twin/physics/apply.py`, with plain-number fallbacks; joint offsets
+from `align/joint_fit/result.json` (W9). Refit / re-validated with them (15 Nov): detection timeline and pose errors
+unchanged within 0.02 / 2 mm.
 
 ## Integration
 

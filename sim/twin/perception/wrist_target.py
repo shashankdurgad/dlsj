@@ -80,8 +80,10 @@ class WristCamera:
     ):
         if offsets_rad is None:
             res = json.loads(Path(OFFSETS_JSON).read_text())  # the twin's default: W9, else fit W
-            offsets_rad = (res.get("grasp_depth_candidates", {}).get("W9", {}).get("joint_offsets_rad_for_sim")
-                           or res["joint_offsets_rad_for_sim"])[:5]
+            offsets_rad = (
+                res.get("grasp_depth_candidates", {}).get("W9", {}).get("joint_offsets_rad_for_sim")
+                or res["joint_offsets_rad_for_sim"]
+            )[:5]
         self.off = np.asarray(offsets_rad[:5], float)
         self.T = _chain(str(urdf))
         c = json.loads(Path(wrist_json).read_text())["camera"]

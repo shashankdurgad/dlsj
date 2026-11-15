@@ -44,6 +44,12 @@ from sim.twin.perception import geometry as G
 
 MODEL_JSON = Path(__file__).resolve().parent / "detector_model.json"
 BRICK_CENTRE_Z = G.TABLE_Z + 0.0096  # the robot assumes a brick standing studs-up on the table
+# fallback of sim/twin/rl/grasp_env.py KIND_SIZE (2x2, 2x4, curved 2x3 body boxes, m)
+KIND_SIZE = (
+    (0.0317, 0.0317, 0.0192),
+    (0.0637, 0.0317, 0.0192),
+    (0.0477, 0.0317, 0.0192),
+)  # the robot assumes a brick standing studs-up on the table
 
 
 def load_params(path: str | Path = MODEL_JSON) -> dict:
@@ -345,7 +351,8 @@ class GraspEnvDetector(_EnvDetector):
     """sim/twin/rl/grasp_env.py: `env.detector_model = det = GraspEnvDetector(env)` and chain `det.tick` into
     `env.tick_hook` (30 Hz camera, 1-frame latency). `det(env, rel_true) -> (det (n, 3), valid (n,))` = GraspEnv's
     hook contract: the brick centre - fingertip (Kin TIP_LOCAL) in gripper_link estimated from the simulated box,
-    zero where not detected. The ACTIVE brick (env.kind: 2x2 / 2x4 / curved 2x2) is the target; the other two pool
+    zero where not detected. The ACTIVE brick (env.kind: 2x2 / 2x4 / curved 2x3, sizes = grasp_env.KIND_SIZE) is
+    the target; the other two pool
     bodies occlude it when they are on the table. `det.last` holds conf / box / vis / occ_grip / oof for logging."""
 
     def __init__(self, env, **kw):
@@ -356,9 +363,12 @@ class GraspEnvDetector(_EnvDetector):
 
         j = env.measured(noisy=False)
         o = env.scene.env_origins
-        hgt = float(env.layout.target.size[2])
-        # GraspEnv KINDS: 2x2 target, 2x4 box, curved-slope 2x2 (as its box; USD origin assumed at the centre)
-        sizes = torch.tensor([[0.0318, 0.0318, hgt], [0.0636, 0.0318, hgt], [0.0318, 0.0318, hgt]], device=env.device)
+        # body sizes per GraspEnv kind (2x2, 2x4, curved 2x3 as its box; USD origin assumed at the centre): the env's
+        # own table (grasp_env.KIND_SIZE), else the same numbers
+        import sys
+
+        table = getattr(env, "KIND_SIZE", None) or getattr(sys.modules.get(type(env).__module__), "KIND_SIZE", None)
+        sizes = torch.tensor(table or KIND_SIZE, dtype=torch.float32, device=env.device)
         oth = None
         if self.others:
             ps, Rs, ss, vs = [], [], [], []
@@ -389,7 +399,7 @@ class ResidualEnvDetector(_EnvDetector):
 
         tip = getattr(renv, "tip_local", None)
         if tip is None:
-            tip = getattr(sys.modules.get("env"), "TIP_LOCAL", (0.008, 0.0, -0.090))
+            tip = getattr(sys.modules.get("env"), "TIP_LOCAL", G.TIP_LOCAL)
         tip = tip.tolist() if hasattr(tip, "tolist") else list(tip)
         super().__init__(renv, tip[:3], **kw)
         self.renv, self.dt_frames = renv, dt_frames
