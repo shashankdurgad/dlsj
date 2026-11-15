@@ -6,8 +6,8 @@ One project holds the whole VLA lifecycle of the brick-sorting robot, and the ru
 | Studio object | What it is | ID |
 |---|---|---|
 | Project | **dlsj brick sorting** | `0fad5636-5f89-4d15-b83c-bf069a7b23bf` |
-| Robots | SO101 Follower, SO101 Leader (calibration bind-mounted from `~/.cache/huggingface/lerobot/calibration`) | |
-| Cameras | `wrist`, `top`, `inspect` | |
+| Robots | SO101 Follower (serial 5B14031698), SO101 Leader (5AAF262866), each with its **calibration** (per-joint homing offset and range, LeRobot SO-101 format): the current one from 14 Nov, after the hardware reattachment, the same one the recorder, the training data and the loop use | `74efbd9b…`, `748d5b93…` |
+| Cameras | `wrist` (USB2.0_CAM1), `top` (RealSense D415 346422061366), `inspect` (RealSense D415 243722062690), 640x480 at 30 fps | |
 | Environment | **so101 brick station** (follower + leader + the three cameras) | `246feb8d-2d73-451a-bdd8-3edfa066c748` |
 | Dataset | **cal2 teleop, 3-stage prompts (456 episodes, MolmoAct2 training set)**: the current-calibration demos with the per-frame stage prompts the policy was trained on | `db961a58-3f56-4498-a597-7b948ae32a91` |
 | Model (deployed) | **MolmoAct2 SO-101 cal2 3-stage LoRA, step 8000 (OpenVINO INT8 + RTC)**, policy `molmoact2` | `22fb0973-b9df-4c10-bca7-8af2a8f9739d` |
@@ -15,7 +15,9 @@ One project holds the whole VLA lifecycle of the brick-sorting robot, and the ru
 
 ## The VLA lifecycle
 
-1. **Robot + cameras + environment** are set up in Studio (above).
+1. **Calibration, robot, cameras, environment** are set up in Studio (above). `sync_calibration.py` keeps the
+   robots' calibration in Studio identical to `calibration/` in the repo (after any recalibration: run it, it
+   backs up the old records, writes the new ones and reads them back).
 2. **Demos** are recorded with `dlsj.teleop_record` against the same arm and cameras (LeRobot v3), then labelled
    into three stages ("pick up the {colour} brick", "bring the brick to the inspection camera", "place the brick in
    the {colour} bowl") and imported into Studio as a dataset.
@@ -49,6 +51,9 @@ REPO=~/inference/dlsj-smolvla ~/inference/deploy/studio/import_model.sh \
     ~/inference/exports/molmo_opt/ft_cal2_456_8k/rtc_int8 \
     "MolmoAct2 SO-101 cal2 3-stage LoRA, step 8000 (OpenVINO INT8 + RTC)" db961a58-3f56-4498-a597-7b948ae32a91 \
     $S/molmo_8k_lineage.json
+
+# calibration: Studio robot records <- calibration/robots/so_follower/follower.json, calibration/teleoperators/so_leader/leader.json
+python3 ~/inference/deploy/studio/sync_calibration.py --dry-run   # then without --dry-run
 
 # what the loop will load
 cd ~/inference/dlsj-smolvla && PYTHONPATH=$PWD ~/desmond/venvs/pi05rt/bin/python -m dlsj.deploy.studio_registry \
