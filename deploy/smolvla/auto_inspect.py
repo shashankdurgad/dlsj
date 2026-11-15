@@ -28,7 +28,7 @@ import numpy as np
 
 log = logging.getLogger("auto_inspect")
 
-BOWL = {"none": "yellow", "circle": "orange", "cross": "purple"}
+BOWL = {"none": "yellow", "circle": "orange", "cross": "purple", "marked": "purple"}  # marked: binary v5 (two plates)
 FALLBACK_BOWL = "purple"  # uncertain after the re-spin: treat as defective (PLAYBOOK REASON rule)
 
 
@@ -179,6 +179,8 @@ class AutoInspector:
                 return InspectResult("unknown", FALLBACK_BOWL, f"sweep {sres.status}", sres.status, attempt, frames,
                                      early, time.perf_counter() - t0, saved)
             outcome = res.outcome().value if res is not None else "unknown"
+            if getattr(self.insp, "binary", False) and outcome in ("circle", "cross"):
+                outcome = "marked"  # a plain/marked model can't tell circle from cross
             if outcome in BOWL:
                 return InspectResult(outcome, BOWL[outcome], res.summary.get("reason", ""), "ok", attempt, frames,
                                      early, time.perf_counter() - t0, saved)
@@ -216,6 +218,10 @@ class HeldCubeInspector:
         from ultralytics import YOLO
 
         self.model = YOLO(str(weights), task="detect")
+        # class names from the model: v2/v4 held_cross/held_circle/held_plain; v5 held_plain/held_marked (binary: a
+        # marked frame counts as "cross" inside the decision rule and the brick outcome is reported as "marked")
+        self.NAMES = {int(k): {"held_marked": "cross"}.get(v, v.removeprefix("held_")) for k, v in self.model.names.items()}
+        self.binary = "held_marked" in self.model.names.values()
         self.device, self.min_conf, self.min_margin = device, conf, 0.0
         # the decision rule re-gates every frame with agg.yolo_min_conf: v2's 0.8 suits a classifier's softmax, but the
         # detector's confidences on held bricks sit at ~0.5-0.8, so with 0.8 most confident frames counted as unsure and
@@ -359,6 +365,7 @@ def scaled_agg(cfg, n: int, base: int = 12):
 HELD_CUBE_WEIGHTS = {
     "held_cube": "held-cube-yolo26n-v4/held_cube_symbols_cross_v4_epoch4_openvino_model",  # v4 epoch 4 (default)
     "held_cube_v2": "held-cube-yolo26n-v2/held_cube_symbols_held_only_openvino_model",
+    "held_v5": "held-brick-yolo26n-v5/held_brick_plain_marked_v5_openvino_model",  # plain / marked (two plates)
 }
 # Joe's held-brick detector v1 (release held-brick-detector-v1-20261115): a later v4 checkpoint used detector-only
 # (any symbol channel = held brick, confidence 0.2 chosen on validation; its wrapper merges overlapping boxes, so the

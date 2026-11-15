@@ -65,6 +65,11 @@ Other research done in conversation (not separate reports):
   empty-table test on the real camera (false positives there would block "done"); the gripper fingertips scored
   0.23–0.35 on older-setup frames when just outside the home ignore box.
 
+- **Held-brick YOLO26n v5, plain / marked (release `held-cube-yolo26n-v5-20261115`) is the live spin classifier** (plan
+  change: two plates, plain -> yellow, marked or uncertain -> purple). Rig eval as plain vs marked, real decision rule:
+  **37 right / 0 uncertain / 1 wrong** of 38 (29/29 marked, 8/9 plain), identical to v4 scored the same way; the miss is
+  the disputed red brick. Also fixed: the decision rule now uses the detector's own confidence bar (0.5), not v2's 0.8,
+  which had made every live brick uncertain -> purple. `bench/held_v5/`.
 - **Held-brick detector v1 (release `held-brick-detector-v1-20261115`) as stage 1 of held-crop** (`--inspector
   held_crop`, confidence 0.2): identical rig result to the v4-box version, **31 / 2 / 5** of 38 (3 circles passed as
   plain by the v2 classifier); the backbone alone gives exactly v4 epoch 4's answers (33 / 4 / 1). The detector is

@@ -102,7 +102,7 @@ th{color:var(--mute);font-weight:500;text-align:left;padding:4px 6px;border-bott
 <script>
 const $=id=>document.getElementById(id),COL={yellow:'#f2c230',orange:'#f08a24',purple:'#9b7fe0',blue:'#3d8bff',red:'#e5484d',white:'#f4f4f4',brown:'#8b5a2b'};
 const STEPS=[['survey','Survey','bricks left?'],['pick','Pick','VLA'],['bring','Bring','grasp confirmed'],['tune','At camera','offset / tuning'],['inspect','Spin + YOLO','NPU'],['place','Place','VLA'],['home','Home','only to re-check'],['verify','Verify','YOLO: table empty?']];
-const LBL={none:'plain',circle:'circle',cross:'cross',unknown:'uncertain'};
+const LBL={none:'plain',circle:'circle',cross:'cross',marked:'marked',unknown:'uncertain'};
 function L(c){fetch('/loop/'+c,{method:'POST'})}
 function PZ(c){fetch('/pose/'+c,{method:'POST'})}
 function CL(c){fetch('/collect/'+c,{method:'POST'})}

@@ -877,7 +877,7 @@ def _make_top_detector():
 
 
 def _label(outcome) -> str:
-    return {"none": "plain", "circle": "circle", "cross": "cross", "unknown": "uncertain"}.get(outcome, str(outcome))
+    return {"none": "plain", "circle": "circle", "cross": "cross", "marked": "marked", "unknown": "uncertain"}.get(outcome, str(outcome))
 
 
 def _banner(img, text: str) -> None:
@@ -1032,7 +1032,7 @@ def main() -> None:
                     help="final empty-table check: lower threshold, the brick must persist in >= half the frames")
     ap.add_argument("--verify-frames", type=int, default=LCFG.verify_frames)
     ap.add_argument("--inspect-device", default="NPU")
-    ap.add_argument("--inspector", choices=("held_crop", "held_cube", "held_cube_v2", "yolo_v2"), default="held_cube",
+    ap.add_argument("--inspector", choices=("held_v5", "held_cube", "held_cube_v2", "held_crop", "yolo_v2"), default="held_v5",
                     help="spin classifier: held_cube (Joe's held-cube YOLO26n v4, default), held_cube_v2 or yolo_v2")
     ap.add_argument("--inspect-roi", default="")
     ap.add_argument("--inspect-frames", type=int, default=12)

@@ -1,0 +1,52 @@
+{
+ "v5 plain/marked": {
+  "spins": {
+   "correct": 37,
+   "uncertain": 0,
+   "wrong": 1
+  },
+  "frames": {
+   "frames": 456,
+   "confident": 451,
+   "correct": 438
+  },
+  "ms": 9.0,
+  "confusion": {
+   "plain->plain": 8,
+   "plain->marked": 1,
+   "marked->marked": 29
+  },
+  "misses": [
+   [
+    "232c447e14",
+    "plain",
+    "marked"
+   ]
+  ]
+ },
+ "v4 (circle/cross = marked)": {
+  "spins": {
+   "correct": 37,
+   "uncertain": 0,
+   "wrong": 1
+  },
+  "frames": {
+   "frames": 456,
+   "confident": 450,
+   "correct": 437
+  },
+  "ms": 9.0,
+  "confusion": {
+   "plain->plain": 8,
+   "plain->marked": 1,
+   "marked->marked": 29
+  },
+  "misses": [
+   [
+    "232c447e14",
+    "plain",
+    "marked"
+   ]
+  ]
+ }
+}
