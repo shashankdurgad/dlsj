@@ -23,12 +23,15 @@ def pose(t: float) -> list:
 
 
 class H(BaseHTTPRequestHandler):
+    protocol_version = "HTTP/1.1"  # keep-alive, like the robot laptop's server
+
     def log_message(self, *a):
         pass
 
     def do_GET(self):
         if self.path.split("?")[0] != "/api/pose":
             self.send_response(404)
+            self.send_header("Content-Length", "0")
             self.end_headers()
             return
         t = time.time()

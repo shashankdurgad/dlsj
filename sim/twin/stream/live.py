@@ -30,15 +30,20 @@ from sim.twin.stream.server import S_BLACK, S_FRAMES, S_HEARTBEAT, S_LOOP_MS, S_
 
 OUT = REPO / "sim/twin/out/stream"
 REST_DEG = [16.1, -101.9, 90.5, 7.7, 2.9, 1.1]  # until the first pose arrives (the real follower at rest, cal2)
-# hero views (eye, target) in the env frame (robot base at the origin on the table's back edge, table toward +x, plates
-# at y -0.1..-0.3 in the real data, inspect camera at y +0.18, inspect backdrop billboard at y ~ -0.6)
+# hero views (eye, target, focal mm) in the env frame (robot base at the origin on the table's back edge, table toward
+# +x, plates at y -0.1..-0.3 in the real data, inspect camera at y +0.18, inspect backdrop billboard at y ~ -0.6).
+# hero_a..: ranked by hero_search.py (scores in out/stream/hero_search/); "hero" = the live default.
 HEROES = {
-    "hero": ((0.625, 0.128, 0.453), (0.24, -0.12, 0.15)),  # 3/4 from the inspect side; working reach ~60 % height
-    "hero_low": ((0.66, -0.30, 0.30), (0.12, 0.02, 0.14)),
-    "front_right": ((0.80, -0.52, 0.46), (0.16, 0.02, 0.10)),
-    "front_left": ((0.78, 0.55, 0.46), (0.16, -0.02, 0.10)),
-    "front": ((0.95, 0.05, 0.55), (0.15, 0.0, 0.10)),
-    "side_right": ((0.15, -0.85, 0.42), (0.18, 0.0, 0.12)),
+    "hero": ((0.8724, 0.5831, 0.3589), (0.268, -0.0213, 0.1299), 24.0),  # = hero_a
+    "hero_a": ((0.8724, 0.5831, 0.3589), (0.268, -0.0213, 0.1299), 24.0),  # az 45 el 15 d 0.89: h 0.62 score 0.40
+    "hero_b": ((0.736, 0.7893, 0.3807), (0.268, -0.0213, 0.1299), 24.0),  # az 60 el 15 d 0.97: h 0.61 score 0.46
+    "hero_c": ((0.4716, 0.7383, 0.5839), (0.268, -0.0213, 0.1299), 24.0),  # az 75 el 30 d 0.91: h 0.51 score 0.52
+    "hero_d": ((0.6912, 0.7116, 0.6185), (0.268, -0.0213, 0.1299), 24.0),  # az 60 el 30 d 0.98: h 0.46 score 0.53
+    "hero_e": ((0.4879, 0.7993, 0.4731), (0.268, -0.0213, 0.1299), 24.0),  # az 75 el 22 d 0.92: h 0.55 score 0.54
+    "hero_f": ((0.268, 0.4403, 0.3964), (0.268, -0.0213, 0.1299), 14.0),  # az 90 el 30 d 0.53: h 0.59 score 0.58
+    "hero_v1": ((0.625, 0.128, 0.453), (0.24, -0.12, 0.15), 18.0),  # first hand-tuned 3/4 from the inspect side
+    "front_right": ((0.80, -0.52, 0.46), (0.16, 0.02, 0.10), 18.0),
+    "front": ((0.95, 0.05, 0.55), (0.15, 0.0, 0.10), 18.0),
 }
 
 
@@ -46,6 +51,9 @@ def parse_args(argv=None):
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--pose_url", default="http://127.0.0.1:8040/api/pose",
                     help="robot pose feed (on watson: the Mac's SSH tunnel to the XPS /api/pose)")
+    ap.add_argument("--pose_conns", type=int, default=5,
+                    help="persistent keep-alive connections polling the pose (the SSH tunnel's ~150 ms round trip "
+                         "allows ~7 poses/s per connection; 5 reach the 30 Hz cap)")
     ap.add_argument("--bind", default="127.0.0.1",
                     help="listen address (never 0.0.0.0 by default); 'auto' = Tailscale IPv4, else 127.0.0.1")
     ap.add_argument("--port", type=int, default=8030)
@@ -58,8 +66,8 @@ def parse_args(argv=None):
     ap.add_argument("--max_fps", type=float, default=30.0)
     ap.add_argument("--smooth_ms", type=float, default=100.0, help="critically damped filter rise time")
     ap.add_argument("--quality", type=int, default=85, help="JPEG quality")
-    ap.add_argument("--hero", default="hero", help=f"named view {sorted(HEROES)} or 'ex,ey,ez,tx,ty,tz'")
-    ap.add_argument("--focal", type=float, default=18.0, help="hero focal length mm (35 mm-ish aperture 20.955)")
+    ap.add_argument("--hero", default="hero", help=f"named view {sorted(HEROES)} or 'ex,ey,ez,tx,ty,tz[,focal]'")
+    ap.add_argument("--focal", type=float, default=0.0, help="focal length mm (aperture 20.955); 0 = the view's own")
     ap.add_argument("--seed", type=int, default=3, help="layout seed (bricks / plates as the real data has them)")
     ap.add_argument("--render_passes", type=int, default=1)
     ap.add_argument("--aa", type=int, default=3,
@@ -72,10 +80,11 @@ def parse_args(argv=None):
 
 
 def hero_pose(spec: str):
+    """(eye, target, focal) of a named view or 'ex,ey,ez,tx,ty,tz[,focal]'."""
     if spec in HEROES:
         return HEROES[spec]
     v = [float(x) for x in spec.split(",")]
-    return tuple(v[:3]), tuple(v[3:6])
+    return tuple(v[:3]), tuple(v[3:6]), (v[6] if len(v) > 6 else 18.0)
 
 
 def look_at_rows(eye, target) -> np.ndarray:
@@ -136,14 +145,16 @@ def patch_scene(width: int, height: int, eye, target, focal: float):
     ts.twin_scene_cfg = twin_scene_cfg
 
 
-def set_hero(stage, eye, target, env: int = 0):
-    """Move the hero camera at run time (USD xform; the GB10 render path reads USD)."""
+def set_hero(stage, eye, target, focal: float | None = None, env: int = 0):
+    """Move the hero camera at run time (USD xform + focal length; the GB10 render path reads USD)."""
     from pxr import Gf
 
     from sim.twin.visuals.usd_sync import _parent_world, set_local
 
     prim = stage.GetPrimAtPath(f"/World/envs/env_{env}/HeroCam")
     set_local(prim, Gf.Matrix4d(look_at_rows(eye, target).tolist()) * _parent_world(prim).GetInverse())
+    if focal:
+        prim.GetAttribute("focalLength").Set(float(focal))
 
 
 def apply_minimal(stage, look, env: int = 0):
@@ -232,8 +243,8 @@ class Mirror:
         from sim.twin.env.twin_env import launch_app
 
         launch_app(headless=True, cameras=True)  # Kit first: isaaclab.sim needs it (GB10 KIT_ARGS from app.py)
-        eye, target = hero_pose(args.hero)
-        patch_scene(args.width, args.height, eye, target, args.focal)
+        eye, target, focal = hero_pose(args.hero)
+        patch_scene(args.width, args.height, eye, target, args.focal or focal)
         from sim.twin.env import TwinEnv, TwinEnvCfg
 
         cfg = TwinEnvCfg(cameras=(), color_correct=False, play=False, randomize=False, layout="sample",
@@ -398,8 +409,8 @@ def main():
     sh = Shared(args.width, args.height)
     # the HTTP / JPEG / pose child is forked before Isaac (Kit, CUDA) exists in this process
     child = mp.get_context("fork").Process(
-        target=serve, args=(sh, args.pose_url, args.bind, args.port, args.look, args.quality, args.max_fps),
-        daemon=True, name="live-http")
+        target=serve, daemon=True, name="live-http",
+        args=(sh, args.pose_url, args.bind, args.port, args.look, args.quality, args.max_fps, args.pose_conns))
     child.start()
     m = Mirror(args, sh)
     if args.tune:
