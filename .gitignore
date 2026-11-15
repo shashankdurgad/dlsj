@@ -23,3 +23,4 @@ sim/twin/data/
 
 # grasp-residual exports fetched by deploy/smolvla/fetch_residual.sh
 residual_exports/
+deploy/showcase/dist/

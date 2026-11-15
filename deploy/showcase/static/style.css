@@ -422,3 +422,12 @@ tr.empty td { color: var(--muted); padding: 16px 8px; border: 0; }
   html { scroll-behavior: auto; }
   *, *::before, *::after { animation: none !important; transition: none !important; }
 }
+
+/* gallery (public build) */
+.gallery { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 420px), 1fr)); gap: 22px; margin-top: 28px; }
+.g-item { margin: 0; }
+.g-item img, .g-item video { width: 100%; display: block; border-radius: 6px; border: 1px solid var(--line-soft); background: #000; }
+.g-item figcaption { margin-top: 8px; font-size: 14px; color: var(--muted); line-height: 1.45; }
+.blur-inspect img[alt="Live inspection camera"] { filter: blur(16px) saturate(.8); }
+.blur-inspect img[alt="Live wrist camera"] { filter: blur(16px) saturate(.8); }
+.public #btnStop, .public .controls { display: none !important; }

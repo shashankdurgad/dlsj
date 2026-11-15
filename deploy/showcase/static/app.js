@@ -319,7 +319,7 @@ async function sendCmd(cmd) {
   if (mode !== 'live') { msg.textContent = 'Robot offline: controls unavailable.'; return; }
   msg.textContent = cmd === 'stop' ? 'Stopping…' : 'Sending…';
   try {
-    const r = await fetch('/api/loop/' + cmd, { method: 'POST' });
+    const r = await fetch('api/loop/' + cmd, { method: 'POST' });
     msg.textContent = r.ok ? ({ start: 'Loop started', pause: 'Paused', resume: 'Resumed', stop: 'Stopped', home: 'Going home' }[cmd]) : `Robot refused ${cmd} (HTTP ${r.status})`;
   } catch { msg.textContent = `Could not reach the robot to ${cmd}.`; }
 }
@@ -336,6 +336,8 @@ function setControls(st) {
 
 // ---------------------------------------------------------------- connection / replay / demo
 let mode = 'connecting';
+let PUBLIC = false;
+if (new URLSearchParams(location.search).has('blurinspect')) document.documentElement.classList.add('blur-inspect');  // the public (Vercel) build: /api/state says {offline, public: true}
 let replay = null, replayT0 = 0, lastLive = null;
 function setMode(m, detail = '') {
   if (m !== mode) {
@@ -349,9 +351,11 @@ function setMode(m, detail = '') {
   ban.hidden = m === 'live' || m === 'connecting';
   ban.dataset.kind = m === 'demo' ? 'demo' : '';
   $('#offlineTitle').textContent = m === 'demo' ? 'Demo mode: synthetic data for rehearsal, not the robot'
+    : (m === 'replay' && PUBLIC) ? 'Recorded run from the robot, replayed (the live view runs on the robot laptop)'
     : m === 'replay' ? 'Robot offline: showing the last recorded run'
     : 'Robot offline: showing the last known state';
-  $('#offlineDetail').textContent = detail;
+  $('#offlineDetail').textContent = (PUBLIC && m === 'replay') ? '' : detail;
+  document.documentElement.classList.toggle('public', PUBLIC);
   $('#btnStop').disabled = false;
 }
 
@@ -364,7 +368,7 @@ async function getJSON(url, ms = 2500) {
 let replayTried = false;
 async function loadReplay() {
   if (replayTried) return replay; replayTried = true;
-  try { const r = await getJSON('/api/replay', 6000); const arr = Array.isArray(r) ? r : r.frames || r.samples; if (arr?.length > 1) { replay = arr; replayT0 = performance.now(); } } catch { /* optional */ }
+  try { const r = await getJSON('api/replay', 6000); const arr = Array.isArray(r) ? r : r.frames || r.samples; if (arr?.length > 1) { replay = arr; replayT0 = performance.now(); } } catch { /* optional */ }
   return replay;
 }
 function replayState() {
@@ -381,7 +385,7 @@ function replayState() {
 async function tick() {
   if (DEMO) { setMode('demo', 'Remove ?demo from the address to connect to the robot.'); const s = demoState(); render(s); setControls(s); return setTimeout(tick, POLL_MS); }
   let st = null, err = '';
-  try { st = await getJSON('/api/state'); if (st.offline) { err = st.error || 'controller unreachable'; st = null; } }
+  try { st = await getJSON('api/state'); if (st.offline) { PUBLIC = !!st.public; err = PUBLIC ? '' : (st.error || 'controller unreachable'); st = null; } }
   catch (e) { err = e.name === 'AbortError' ? 'the showcase server did not answer' : String(e.message || e); }
   if (st) {
     lastLive = st; setMode('live'); render(st); setControls(st);
@@ -396,7 +400,7 @@ async function tick() {
 
 // synthetic rehearsal data (?demo only)
 let demoBase = null;
-fetch('/api/state').then((r) => r.json()).then((j) => { if (!j.offline) demoBase = j; }).catch(() => {});
+fetch('api/state').then((r) => r.json()).then((j) => { if (!j.offline) demoBase = j; }).catch(() => {});
 function demoState() {
   const T = 34, t = (performance.now() / 1000) % T, cyc = Math.floor(performance.now() / 1000 / T) + 1;
   const HOME = [15, -102, 97, 8, 4, 1], PICK = [2, -18, 42, 62, 0, 36], GRAB = [2, -14, 44, 64, 0, 5.5], INSP = [-24, 20, -24, 72, -17, 5.5], PLACE_Y = [38, -30, 52, 62, 0, 5.5], PLACE_P = [62, -24, 40, 66, 0, 5.5];
@@ -505,7 +509,18 @@ function renderStory(s) {
       <div class="sec-head"><h2 id="h-${esc(x.id)}">${esc(x.title)}</h2>${x.lead ? `<p class="lead">${esc(arrows(x.lead))}</p>` : ''}</div>
       ${stats ? `<div class="stats">${stats}</div>` : ''}
       <div class="story-grid"><div>${left}</div><div>${right}</div></div></section>`;
-  }).join('');
+  }).join('') + galleryHTML(s.gallery);
+  if (s.gallery?.length && !$('#navSections a[href="#s-gallery"]')) $('#navSections').insertAdjacentHTML('beforeend', '<a href="#s-gallery">Gallery</a>');
+}
+
+function galleryHTML(g) {
+  if (!g?.length) return '';
+  const items = g.map((m) => m.type === 'video'
+    ? `<figure class="g-item"><video src="${esc(m.src)}" controls preload="metadata" playsinline${m.poster ? ` poster="${esc(m.poster)}"` : ''}></video><figcaption>${esc(arrows(m.caption || ''))}</figcaption></figure>`
+    : `<figure class="g-item"><a href="${esc(m.src)}" target="_blank" rel="noopener"><img src="${esc(m.src)}" alt="${esc(m.alt || m.caption || '')}" loading="lazy"></a><figcaption>${esc(arrows(m.caption || ''))}</figcaption></figure>`).join('');
+  return `<section class="story-sec" id="s-gallery" data-accent="ink" aria-labelledby="h-gallery">
+    <div class="sec-head"><h2 id="h-gallery">Gallery</h2><p class="lead">The platform in pictures: the live dashboard, the digital twin and the results.</p></div>
+    <div class="gallery">${items}</div></section>`;
 }
 
 const FALLBACK_PIPELINE = [
@@ -517,7 +532,7 @@ const FALLBACK_PIPELINE = [
   { step: 'Place', device: 'GPU', what: 'Plain goes to the yellow plate, marked or uncertain to the purple plate.' },
 ];
 async function loadStory() {
-  try { renderStory(await getJSON('/api/story', 5000)); }
+  try { renderStory(await getJSON('api/story', 5000)); }
   catch {
     if (!$('#pipeline').children.length) renderStory({ pipeline: FALLBACK_PIPELINE, sections: [] });
     $('#story').innerHTML = `<p class="story-wait">The results sections load from the showcase server. Retrying.</p>`;
