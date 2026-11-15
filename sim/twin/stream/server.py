@@ -11,6 +11,7 @@ Stdlib + numpy + cv2 (falls back to PIL) only.
 from __future__ import annotations
 
 import fcntl
+import http.client
 import json
 import math
 import multiprocessing as mp
@@ -20,7 +21,7 @@ import struct
 import subprocess
 import threading
 import time
-import urllib.request
+import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import numpy as np
@@ -104,15 +105,12 @@ def _parse_pose(body: bytes):
 
 
 class PosePoller:
-    """GET pose_url at up to `hz` with `workers` staggered concurrent requests (the pose server answers HTTP/1.0 with a
-    new connection per request, and through the SSH tunnel one round trip takes 0.13-0.45 s, so a single sequential
-    poller only reaches ~3 Hz). Responses are accepted in source-time order and written into shared memory. Isaac holds
-    the last pose (nothing new is written) when the server is unreachable, q is null, or the server's own `age` (s since
-    its last good console read) exceeds `stale_s`; without an `age` field, when the source timestamp has not advanced
-    for `stale_s` (local receive clock, so a clock offset between the robot laptop and this box does not matter).
-    pose_age_s = time since the last fresh answer + the server's age in it."""
+    """GET pose_url at up to `hz` over `workers` PERSISTENT HTTP/1.1 connections (keep-alive; reconnect on error),
+    staggered. Answers are accepted in source-time order and written into shared memory. Isaac holds the last pose
+    (nothing new is written) when the server is unreachable, q is null, or the server's own `age` (s since its last
+    good console read) is null or exceeds `stale_s`. pose_age_s = time since the last fresh answer + its age."""
 
-    def __init__(self, sh: Shared, url: str, hz: float = 30.0, stale_s: float = 1.0, workers: int = 8):
+    def __init__(self, sh: Shared, url: str, hz: float = 30.0, stale_s: float = 1.0, workers: int = 5):
         self.sh, self.url, self.hz, self.stale_s, self.workers = sh, url, hz, stale_s, workers
         self.lock = threading.Lock()
         self.ok = self.errors = 0
@@ -144,9 +142,8 @@ class PosePoller:
             self.clock_offset = (now - t_src) if t_src else None
             if t_src != self.last_src or not t_src:
                 self.last_src, self.last_new = t_src, now
-            # the server's own age decides when it sends one (its t may not advance while the arm is still);
-            # without an age field, a t that has not advanced for stale_s counts as stale
-            fresh = q is not None and (age <= self.stale_s if age is not None else now - self.last_new <= self.stale_s)
+            # the server's own age decides (its t may not advance while the arm is still); age null = stale
+            fresh = q is not None and age is not None and age <= self.stale_s
             if not fresh:
                 self.held += 1
                 return
@@ -159,24 +156,38 @@ class PosePoller:
             p[P_SEQ] = p[P_SEQ] + 1
 
     def _worker(self, k: int):
-        period = self.workers / self.hz  # each worker's own period: all together poll at <= hz
+        u = urllib.parse.urlsplit(self.url)
+        path = (u.path or "/") + (f"?{u.query}" if u.query else "")
+        period = self.workers / self.hz  # each connection's own period: all together poll at <= hz
         time.sleep(k * period / self.workers)
+        conn = None
         nxt = time.monotonic()
         while True:
             t0 = time.monotonic()
             try:
-                with urllib.request.urlopen(self.url, timeout=2.0) as r:
-                    body = r.read()
+                if conn is None:
+                    conn = http.client.HTTPConnection(u.hostname, u.port or 80, timeout=2.0)
+                conn.request("GET", path, headers={"Connection": "keep-alive"})
+                r = conn.getresponse()
+                body = r.read()
+                if r.status != 200:
+                    raise OSError(f"HTTP {r.status}")
+                if r.getheader("Connection", "").lower() == "close" or r.version == 10:
+                    conn.close()
+                    conn = None
                 self._accept(*_parse_pose(body), time.monotonic() - t0)
                 delay = period
-            except Exception as e:  # noqa: BLE001 (any failure: hold the last pose, retry slower)
+            except Exception as e:  # noqa: BLE001 (any failure: hold the last pose, reconnect, retry slower)
+                if conn is not None:
+                    conn.close()
+                    conn = None
                 with self.lock:
                     self.errors += 1
                     self.last_error = f"{type(e).__name__}: {e}"[:200]
                     if time.time() - self._last_log > 30:
                         print(f"[live/pose] {self.url}: {self.last_error} (holding the last pose)", flush=True)
                         self._last_log = time.time()
-                delay = 1.0
+                delay = 0.5
             nxt = max(nxt + delay, time.monotonic())
             time.sleep(max(0.0, nxt - time.monotonic()))
 
@@ -370,13 +381,14 @@ def health(sh: Shared, enc: Encoder, poller: PosePoller, info: dict, clients: li
     }
 
 
-def serve(sh: Shared, pose_url: str, bind: str, port: int, look: str, quality: int, max_fps: float):
+def serve(sh: Shared, pose_url: str, bind: str, port: int, look: str, quality: int, max_fps: float,
+          pose_conns: int = 5):
     """Child-process entry point: pose poller + encoder + HTTP server(s). With bind='auto' it starts on 127.0.0.1
     (or the Tailscale IP) and adds a listener on the Tailscale IP as soon as one appears."""
     parent = os.getppid()
     info = {"look": look, "started": time.strftime("%Y-%m-%dT%H:%M:%S%z"), "binds": [], "max_fps": max_fps}
     clients: list = []
-    poller = PosePoller(sh, pose_url)
+    poller = PosePoller(sh, pose_url, workers=pose_conns)
     poller.start()
     enc = Encoder(sh, quality)
     enc.start()
