@@ -75,6 +75,11 @@ th{color:var(--mute);font-weight:500;text-align:left;padding:4px 6px;border-bott
   <section class="card"><h2>Grasp check <em id="gnum"></em></h2><div class="gstate" id="gstate">&ndash;</div>
    <div class="gauge" id="gauge"><div class="band" id="band"></div><div class="cmd" id="gcmd"></div><div class="pos" id="gpos"></div></div>
    <div class="mute" style="font-size:12px">white = gripper position, blue = command, green band = holding a brick (4&ndash;9). Holding = squeezing an object at brick width.</div></section>
+  <section class="card"><h2>Data collection <em><a href="/collect" target="_blank" style="color:var(--acc)">review</a></em></h2>
+   <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:8px" id="colbtns"></div>
+   <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:6px"><button onclick="PZ('grip_open')">Open gripper</button><button onclick="PZ('grip_close')">Close gripper</button>
+    <button class="go" onclick="CL('spin')">Spin &amp; save</button></div>
+   <div class="mute" id="colmsg" style="font-size:12px"></div><div id="colcounts" style="font-size:12.5px;margin-top:4px"></div></section>
   <section class="card"><h2>Inspection pose <em id="ipsrc"></em></h2>
    <div id="offwrap"><div class="btns" style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:8px">
     <button id="holdbtn" onclick="PZ(this.dataset.on?'hold_off':'hold_on')">Hold at camera</button>
@@ -100,6 +105,10 @@ const STEPS=[['survey','Survey','bricks left?'],['pick','Pick','VLA'],['bring','
 const LBL={none:'plain',circle:'circle',cross:'cross',unknown:'uncertain'};
 function L(c){fetch('/loop/'+c,{method:'POST'})}
 function PZ(c){fetch('/pose/'+c,{method:'POST'})}
+function CL(c){fetch('/collect/'+c,{method:'POST'})}
+function drawCollect(c){if(!c)return;$('colbtns').innerHTML=['off','plain','circle','cross'].map(l=>`<button style="${(c.label||'off')===l?'outline:2px solid var(--ok)':''}" onclick="CL('set/${l}')">${l==='off'?'Off':l}</button>`).join('');
+ $('colmsg').textContent=(c.busy?'Spinning... ':'')+(c.message||'Pick the TRUE label of the brick; every spin (loop or Spin & save) is saved under it.');
+ $('colcounts').innerHTML=Object.entries(c.counts).map(([k,v])=>`<b>${k}</b> ${v.spins} spins / ${v.crops} crops`).join(' · ')}
 function drawOffset(ip){$('offwrap').style.display='';$('fixwrap').style.display='none';
  $('ipsrc').textContent='VLA bring + offset ('+ip.offset_source+')';$('ipmsg').textContent=(ip.at_camera?'HOLDING AT THE CAMERA. ':'')+(ip.message||'');
  $('holdbtn').textContent=ip.hold?'Hold at camera: ON':'Hold at camera: off';$('holdbtn').dataset.on=ip.hold?'1':'';
@@ -161,6 +170,6 @@ function drawInsp(r){const pc=r.perception||{},c=$('ovinsp').getContext('2d');c.
  c.strokeStyle='rgba(255,255,255,.25)';c.lineWidth=1;[ins.band[0]*640,ins.band[1]*640].forEach(x=>{c.beginPath();c.moveTo(x,0);c.lineTo(x,480);c.stroke()});
  (ins.others||[]).forEach(b=>box(c,b,'rgba(170,170,170,.8)',1));
  if(ins.held)box(c,ins.held,'#3eff8e',4,'held brick')}
-const _tick=tick;tick=async function(){await _tick();try{const r=window._last;if(r){drawTop(r.perception||{},(r.loop||{}).step);drawInsp(r);drawPose(r.inspect_pose)}}catch(e){}};
+const _tick=tick;tick=async function(){await _tick();try{const r=window._last;if(r){drawTop(r.perception||{},(r.loop||{}).step);drawInsp(r);drawPose(r.inspect_pose);drawCollect(r.collect)}}catch(e){}};
 setInterval(tick,150);tick();
 </script></body></html>"""

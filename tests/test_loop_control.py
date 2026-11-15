@@ -503,3 +503,31 @@ def test_vla_bring_then_straight_to_saved_pose(build):
     assert path[:, 1].min() > 19.0  # straight there: never up through the ready pose (lift -51.8)
     assert insp.done.wait(2.0) and c.L["cycles"][-1]["pose"] == [-24.2, 20.0, -24.2, 72.4, -17.2]
 
+
+
+def test_spin_and_save_records_label(build, tmp_path, monkeypatch):
+    import collect as C
+
+    c, clock, insp = build()
+    c.collect = C.Store(tmp_path / "ds")
+    d = tmp_path / "spin1"
+    d.mkdir()
+    for i in range(3):
+        (d / f"crop_{i:02d}.jpg").write_bytes(b"x")
+    insp.r.saved = [str(d)]
+    c.collect_command("spin")
+    assert "label" in c.collect_msg  # refuses without a label
+    c.collect_command("label", "cross")
+    c.measured[5] = 1.0
+    c.L["grasp"] = {"state": "empty", "pos": 1.0}
+    c.collect_command("spin")
+    assert "No brick" in c.collect_msg
+    c.L["grasp"] = {"state": "holding", "pos": 5.6}
+    c.collect_command("spin")
+    assert insp.done.wait(2.0)
+    for _ in range(200):
+        if c.phase != "collecting":
+            break
+        threading.Event().wait(0.01)
+    assert c.phase == "holding" and c.L["mode"] == "off"  # no hand-over to the VLA
+    assert c.collect.counts()["cross"] == {"spins": 1, "crops": 3}

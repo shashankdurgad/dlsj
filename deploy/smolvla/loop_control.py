@@ -37,6 +37,7 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import auto_control as A  # noqa: E402  (also puts the ultralytics overlay on sys.path)
+import collect as C  # noqa: E402
 import inspect_pose as IP  # noqa: E402
 import perception as P  # noqa: E402
 import smolvla_control as S  # noqa: E402
@@ -105,6 +106,9 @@ def make_loop_controller_class(base):
             # "vla_offset": the VLA's own bring, then this offset from where it stopped (tunable, saved per follower)
             self.ip_offset, self.ip_off_src = IP.load_offset(self.follower_id)
             self.tune_hold = False  # dashboard switch: pause at the camera so the offset can be nudged live
+            self.collect = C.Store()  # rig data for retraining the YOLO classifier
+            self.collect_label = None  # plain / circle / cross: every spin is saved under this TRUE label
+            self.collect_msg = ""
             self._bring_base = None
             insp = getattr(self.auto_inspector, "insp", None)
             if insp is not None and hasattr(insp, "crop_box"):
@@ -320,6 +324,54 @@ def make_loop_controller_class(base):
                 else:
                     self.ip_msg = "Spin now only works while holding at the camera"
 
+        # ------------------------------------------------------------------ rig data collection
+        def _record_spin(self, res: dict, source: str) -> None:
+            if self.collect_label and res.get("saved") and res.get("state") == "ok":
+                e = self.collect.add(self.collect_label, res["saved"], pred=res.get("outcome"), source=source)
+                n = self.collect.counts()[self.collect_label]
+                self.collect_msg = f"Saved spin {e['id']} as {self.collect_label} ({n['spins']} spins, {n['crops']} crops)"
+                self._event("collect", label=self.collect_label, entry=e["id"])
+
+        def collect_command(self, name: str, *args) -> None:
+            with self.lock:
+                if name == "label":
+                    lab = args[0] if args else "off"
+                    self.collect_label = lab if lab in C.LABELS else None
+                    self.collect_msg = f"Collecting as {self.collect_label}" if self.collect_label else "Collection off"
+                elif name == "spin":
+                    if self.L["mode"] == "running" or self.phase in ("running", "readying", "inspecting", "homing",
+                                                                       "moving", "posing", "collecting"):
+                        self.collect_msg = "Spin & save needs the loop off and the arm still"
+                        return
+                    if not self.collect_label:
+                        self.collect_msg = "Pick the brick's label first"
+                        return
+                    if self.L["grasp"].get("pos", 0.0) < LCFG.lost_below:
+                        self.collect_msg = "No brick in the gripper (close it on a brick first)"
+                        return
+                    if self.cmd is None:
+                        self.cmd = np.asarray(self.measured if self.measured is not None else self.arm.read(), float)
+                    self._insp_frames, self._insp_crops = [], []
+                    self.phase, self.collect_msg = "collecting", f"Spinning a {self.collect_label} brick..."
+                    threading.Thread(target=self._collect_job, args=(np.asarray(self.cmd, float).copy(),),
+                                     daemon=True, name="collect-spin").start()
+
+        def _collect_job(self, start_cmd) -> None:
+            try:
+                r = self.auto_inspector.inspect(self.arm, start_cmd)
+                res = {"state": r.status, "outcome": r.outcome, "saved": r.saved}
+            except Exception as e:  # noqa: BLE001
+                log.exception("collection spin failed")
+                res = {"state": "error", "saved": [], "outcome": None, "reason": str(e)}
+            with self.lock:
+                self.inspection = {**res, "bowl": None, "reason": res.get("reason", ""), "frames": len(self._insp_frames),
+                                   "seconds": None, "early_stop": False, "attempts": 1}
+                self._record_spin(res, "manual")
+                if res["state"] != "ok":
+                    self.collect_msg = f"Spin {res['state']}: not saved"
+                self.cmd = np.asarray(start_cmd, float)
+                self.phase = "holding"
+
         def _update_grasp(self) -> None:
             if self.measured is None or self.cmd is None:
                 return
@@ -532,6 +584,7 @@ def make_loop_controller_class(base):
             if self.phase == "inspecting":
                 return
             res = self.inspection or {}
+            self._record_spin(res, "loop")
             if res.get("state") == "ok" and self.stage == "place" and self.phase == "running":
                 self._cycle(outcome=res.get("outcome"), bowl=res.get("bowl"), frames=res.get("frames"),
                             inspect_s=res.get("seconds"), early=res.get("early_stop"))
@@ -716,6 +769,8 @@ def make_loop_controller_class(base):
                 d["loop"]["events"] = list(L["events"])[:12]
                 d["loop"]["inspect_frames"] = self._insp_frames[-12:]
                 d["perception"] = {k: v for k, v in self.perc.items() if k != "t"}
+                d["collect"] = {"label": self.collect_label, "counts": self.collect.counts(), "message": self.collect_msg,
+                                "busy": self.phase == "collecting"}
                 d["inspect_pose"] = {"pose": np.round(self.ip_pose, 1).tolist(), "source": self.ip_src,
                                      "joints": IP.JOINTS, "message": self.ip_msg, "mode": LCFG.bring_mode,
                                      "enabled": LCFG.bring_mode in ("fixed", "vla_pose"),
@@ -788,12 +843,45 @@ def wrap_handler(make_handler):
                 if self.path == "/classic":
                     self.path = "/"
                     return super().do_GET()
+                if self.path == "/collect":
+                    return self._send(200, C.PAGE.encode(), "text/html; charset=utf-8")
+                if self.path == "/collect/state":
+                    body = {"counts": ctl.collect.counts(), "entries": ctl.collect.view()}
+                    return self._send(200, json.dumps(body).encode(), "application/json")
+                if self.path.startswith("/collect/img?"):
+                    import re
+                    from urllib.parse import parse_qs, urlsplit
+
+                    q = parse_qs(urlsplit(self.path).query)
+                    d, f = Path(q.get("d", [""])[0]).resolve(), q.get("f", [""])[0]
+                    allowed = Path("outputs/auto_inspect").resolve()
+                    if re.fullmatch(r"crop_\d{2}\.jpg", f) and allowed in d.parents and (d / f).is_file():
+                        return self._send(200, (d / f).read_bytes(), "image/jpeg")
+                    return self._send(404, b"", "text/plain")
                 if self.path.startswith("/loop/strip.jpg"):
                     body = ctl.strip_jpeg()
                     return self._send(200, body, "image/jpeg") if body else self._send(204, b"", "text/plain")
                 return super().do_GET()
 
             def do_POST(self):
+                if self.path.startswith("/collect/"):
+                    parts = self.path.removeprefix("/collect/").split("/")
+                    try:
+                        if parts[0] == "set" and len(parts) == 2:
+                            ctl.collect_command("label", parts[1])
+                        elif parts[0] == "spin":
+                            ctl.collect_command("spin")
+                        elif parts[0] == "toggle" and len(parts) == 3:
+                            ctl.collect.update(parts[1], toggle=int(parts[2]))
+                        elif parts[0] == "label" and len(parts) == 3:
+                            ctl.collect.update(parts[1], label=parts[2])
+                        elif parts[0] == "delete" and len(parts) == 2:
+                            ctl.collect.update(parts[1], delete=True)
+                        else:
+                            return self._send(404, b"", "text/plain")
+                    except (KeyError, ValueError):
+                        return self._send(400, b"", "text/plain")
+                    return self._send(200, b"{}", "application/json")
                 if self.path.startswith("/pose/"):
                     parts = self.path.removeprefix("/pose/").split("/")
                     if parts[0] in ("goto", "save", "reset", "grip_close", "grip_open", "off_save", "off_reset", "spin",
