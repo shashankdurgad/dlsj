@@ -1,8 +1,189 @@
 {
  "exposure_scale": 0.715342794534056,
- "backdrop_gain": 1.8263030346821265,
- "dome_intensity": 1000.0,
- "key_intensity": 350.0,
- "table_ratio_last": 1.0230961993319267,
- "note": "linear tonemap; scale so the textured table renders like the real top-camera median (render_compare.py --calibrate)"
+ "backdrop_gain": 1.0,
+ "hall_gain": 1.0,
+ "dome_intensity": 2026.6,
+ "dome_rgb": [
+  0.9367,
+  1.0185,
+  1.1065
+ ],
+ "key_intensity": 127.7,
+ "key_angle_deg": 40.0,
+ "key_rot_xyz_deg": [
+  3.23,
+  -17.72,
+  0.0
+ ],
+ "key_rgb": [
+  0.9856,
+  1.0077,
+  0.943
+ ],
+ "ceiling_lights": [
+  {
+   "type": "rect",
+   "dir": [
+    -0.4623,
+    -0.0815,
+    0.8829
+   ],
+   "dist": 11.33,
+   "size": [
+    4.5,
+    0.25
+   ],
+   "axis": [
+    -0.2762,
+    -0.9611,
+    0.0
+   ],
+   "rgb": [
+    0.9856,
+    1.0077,
+    0.943
+   ],
+   "angle_deg": 4.0,
+   "intensity": 43.0
+  },
+  {
+   "type": "rect",
+   "dir": [
+    -0.289,
+    0.3699,
+    0.8829
+   ],
+   "dist": 11.33,
+   "size": [
+    4.5,
+    0.25
+   ],
+   "axis": [
+    -0.2762,
+    -0.9611,
+    0.0
+   ],
+   "rgb": [
+    0.9856,
+    1.0077,
+    0.943
+   ],
+   "angle_deg": 4.0,
+   "intensity": 43.0
+  },
+  {
+   "type": "rect",
+   "dir": [
+    -0.7185,
+    -0.6637,
+    0.2079
+   ],
+   "dist": 12.0,
+   "size": [
+    2.4,
+    0.25
+   ],
+   "axis": [
+    -0.2762,
+    -0.9611,
+    0.0
+   ],
+   "rgb": [
+    0.9856,
+    1.0077,
+    0.943
+   ],
+   "angle_deg": 4.0,
+   "intensity": 109.5
+  },
+  {
+   "type": "rect",
+   "dir": [
+    -0.2079,
+    -0.9558,
+    0.2079
+   ],
+   "dist": 12.0,
+   "size": [
+    2.4,
+    0.25
+   ],
+   "axis": [
+    -0.2762,
+    -0.9611,
+    0.0
+   ],
+   "rgb": [
+    0.9856,
+    1.0077,
+    0.943
+   ],
+   "angle_deg": 4.0,
+   "intensity": 109.5
+  },
+  {
+   "type": "rect",
+   "dir": [
+    0.3779,
+    -0.9022,
+    0.2079
+   ],
+   "dist": 12.0,
+   "size": [
+    2.4,
+    0.25
+   ],
+   "axis": [
+    -0.2762,
+    -0.9611,
+    0.0
+   ],
+   "rgb": [
+    0.9856,
+    1.0077,
+    0.943
+   ],
+   "angle_deg": 4.0,
+   "intensity": 109.5
+  }
+ ],
+ "note": "linear tonemap; flat TwinLook field names. Light fields written by sim/twin/lighting/make_rig.py (evidence and shares in sim/twin/lighting/log.md): dome carries most light, very soft overhead key (fluorescent ensemble), two faint 4.5 m strips 10 m up (plate highlights), three faint far strips across the hall (grazing table sheen), two warm lamps 1 m up, 6 m out along the inspect view, RTX flat ambient off. ceiling 'intensity' = irradiance at the workspace centre (distant-light units); exposure_scale / backdrop_gain / hall_gain are other agents'.",
+ "side_lights": [
+  {
+   "pos": [
+    -2.361,
+    -5.364,
+    1.0
+   ],
+   "radius": 0.25,
+   "intensity": 552.9,
+   "rgb": [
+    1.4143,
+    0.8736,
+    0.4217
+   ]
+  },
+  {
+   "pos": [
+    0.57,
+    -6.001,
+    1.0
+   ],
+   "radius": 0.25,
+   "intensity": 554.7,
+   "rgb": [
+    1.4143,
+    0.8736,
+    0.4217
+   ]
+  }
+ ],
+ "ambient_intensity": 0.0,
+ "shares": {
+  "dome": 0.745,
+  "key": 0.08,
+  "strip": 0.025,
+  "lamp": 0.06,
+  "far": 0.015
+ }
 }

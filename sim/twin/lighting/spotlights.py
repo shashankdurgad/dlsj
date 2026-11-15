@@ -175,8 +175,10 @@ def draw_lights(c: dict, rng, nominal: list[dict], num_envs: int, scale: float |
 
 def spot_radiance(strength: float, e_nominal: float, pos, aim, radius: float) -> float:
     """SphereLight intensity (normalize off) for `strength` x the nominal table irradiance at the aim point."""
+    from sim.twin.lighting.rig import sphere_radiance
+
     d = float(np.linalg.norm(np.asarray(pos, float) - np.asarray(aim, float)))
-    return strength * e_nominal * d ** 2 / (math.pi * max(radius, 1e-6) ** 2)
+    return sphere_radiance(strength * e_nominal, d, radius)
 
 
 def apply_spots(stage, set_attr, set_pose, env: int, spots: list[dict], e_nominal: float, n_slots: int) -> list[str]:

@@ -15,7 +15,8 @@ gain and white balance per image (the real RealSenses ran auto exposure / auto w
               the robot-mask centroid.
   highlight   per plate (connected component of bit 2): pixels brighter than the plate's median L* + 18 and less
               saturated: `area_*` = fraction of plate pixels, `iou`, `pos_err` = distance of the highlight centroids
-              relative to the plate centre in plate radii.
+              relative to the plate centre in plate radii; `{plate,table}_strength_*` = p99 - p50 of L* over the
+              region (the visual fit's highlight measure).
   tint        table chromaticity (log R/G, log B/G) of the image's left vs right third minus the middle (a coloured
               light from one side shows as a left / right difference): `tint_err` = mean |real - sim|.
 """
@@ -111,10 +112,23 @@ def _highlights(img, plate):
     return plate & (lab[..., 0] > L0 + 18) & (hsv[..., 1] < 0.75 * s0)
 
 
+def strength(img, region) -> float:
+    """Highlight strength of a region: p99 - p50 of Lab L* (visuals/fit/eval_visuals.py's 'highlight')."""
+    L = cv2.cvtColor(np.asarray(img, np.float32) / 255.0, cv2.COLOR_RGB2LAB)[..., 0][region]
+    p50, p99 = np.percentile(L, [50, 99])
+    return float(p99 - p50)
+
+
 def highlight(real, sim, masks) -> dict:
-    """Specular highlights on the glossy plates (see module doc)."""
-    acc = {k: [] for k in ("area_real", "area_sim", "iou", "pos_err")}
+    """Specular highlights on the glossy plates and the table (see module doc)."""
+    acc = {k: [] for k in ("area_real", "area_sim", "iou", "pos_err", "plate_strength_real", "plate_strength_sim",
+                           "table_strength_real", "table_strength_sim")}
     for r, s, m in zip(real, sim, masks, strict=True):
+        for bit, name in ((2, "plate"), (1, "table")):
+            reg = cv2.erode(((m & bit) > 0).astype(np.uint8), np.ones((11, 11), np.uint8)) > 0
+            if reg.sum() > 400:
+                acc[f"{name}_strength_real"].append(strength(r, reg))
+                acc[f"{name}_strength_sim"].append(strength(s, reg))
         n, lab = cv2.connectedComponents(cv2.erode(((m & 2) > 0).astype(np.uint8), np.ones((3, 3), np.uint8)))
         for k in range(1, n):
             p = lab == k
@@ -156,6 +170,25 @@ def tint(real, sim, masks) -> dict:
         ss.append(b)
     return dict(tint_err=round(float(np.mean(er)), 4), real_lr=np.mean(rr, 0).round(4).tolist(),
                 sim_lr=np.mean(ss, 0).round(4).tolist())
+
+
+def contrast(imgs, masks) -> dict:
+    """Global contrast / saturation per region (no AE / AWB normalisation: what the image looks like): mean and std of
+    sRGB luma and mean Lab chroma C* over table / plate pixels, averaged over images."""
+    out = {}
+    for bit, name in ((1, "table"), (2, "plate")):
+        acc = {"luma_mean": [], "luma_std": [], "chroma": []}
+        for img, m in zip(imgs, masks, strict=True):
+            reg = cv2.erode(((m & bit) > 0).astype(np.uint8), np.ones((11, 11), np.uint8)) > 0
+            if reg.sum() < 400:
+                continue
+            y = (np.asarray(img, np.float32) @ np.array([0.299, 0.587, 0.114], np.float32))[reg]
+            lab = cv2.cvtColor(np.asarray(img, np.float32) / 255.0, cv2.COLOR_RGB2LAB)[reg]
+            acc["luma_mean"].append(float(y.mean()))
+            acc["luma_std"].append(float(y.std()))
+            acc["chroma"].append(float(np.hypot(lab[:, 1], lab[:, 2]).mean()))
+        out[name] = {k: round(float(np.mean(v)), 2) for k, v in acc.items() if v}
+    return out
 
 
 def light_metrics(real, sim, masks, samples, cam: str = "top") -> dict:

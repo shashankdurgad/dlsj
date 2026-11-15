@@ -9,7 +9,8 @@ TwinLook fields; this module adds what lighting.json describes beyond them:
 * ceiling_lights: the fluorescent tubes ~10 m above the table whose reflections are the highlights on the glossy
   plates. Entry: {"dir": unit vector from the workspace centre TO the light, "intensity": irradiance it gives at the
   workspace centre on a surface facing it (distant-light units, before the exposure scale), "rgb", and either
-  "type": "rect" with "dist" (m), "size" ([long, short] m), "yaw_deg" (long axis about the light's axis), or the
+  "type": "rect" with "dist" (m), "size" ([long, short] m), "axis" (env direction of the long side, e.g. the table's
+  long edge) and/or "yaw_deg" (long side turned about the light's axis), or the
   legacy distant light ("angle_deg")}. Rect lights are global prims (/World/TwinCeil<i>) placed relative to env 0:
   10 m away, the direction changes by < 4 deg over neighbouring envs.
 * side_lights: warm lamps beside the station, per env (/World/envs/env_<e>/TwinSide<i>): {"pos" (env frame, m),
@@ -28,16 +29,21 @@ import numpy as np
 
 CENTER = np.array([0.30, 0.0, 0.0])  # workspace centre, env frame (table top ~ z 0)
 AMBIENT_KEY = "/rtx/sceneDb/ambientLightIntensity"
+# RTX renders sphere / rect / shaped (spot) lights 0.295 x as bright as the radiance formulas below predict relative to
+# a distant light of the same nominal irradiance (lighting/calib_units.py, out/lighting/units.json; the same factor for
+# all three types and sizes), so the area-light radiances are divided by it.
+RTX_AREA_UNIT = 0.295
+NO_SHADOW = ("HallVisual", "BackdropVisual")  # unlit stand-ins for the distant room: they must not block the lamps
 
 
 def rect_radiance(irradiance: float, dist: float, size) -> float:
     """USD RectLight intensity (radiance, normalize off) that gives `irradiance` at `dist` on a surface facing it."""
-    return float(irradiance) * dist ** 2 / max(float(size[0]) * float(size[1]), 1e-9)
+    return float(irradiance) * dist ** 2 / max(float(size[0]) * float(size[1]), 1e-9) / RTX_AREA_UNIT
 
 
 def sphere_radiance(irradiance: float, dist: float, radius: float) -> float:
     """USD SphereLight intensity (radiance, normalize off) that gives `irradiance` at `dist` (projected disk pi r^2)."""
-    return float(irradiance) * dist ** 2 / (math.pi * max(float(radius), 1e-6) ** 2)
+    return float(irradiance) * dist ** 2 / (math.pi * max(float(radius), 1e-6) ** 2) / RTX_AREA_UNIT
 
 
 def quat_z_to(direction) -> tuple:
@@ -64,13 +70,13 @@ def _pose(stage, path: str, pos, quat_xyzw):
     xf.AddOrientOp().Set(Gf.Quatf(float(w), float(x), float(y), float(z)))
 
 
-def _yawed(dirv, yaw_deg: float) -> tuple:
-    """Orientation of a rect light facing CENTER along -z, its long (x) axis horizontal, turned by yaw about
-    its axis."""
+def _yawed(dirv, yaw_deg: float, axis=None) -> tuple:
+    """Orientation of a rect light facing CENTER along -z, its long (x) axis along `axis` (env vector, projected
+    perpendicular to the light direction; default horizontal), turned by yaw about the light's axis."""
     from scipy.spatial.transform import Rotation
 
     d = np.asarray(dirv, float) / np.linalg.norm(dirv)
-    zx = np.cross([0.0, 0.0, 1.0], d)
+    zx = np.cross([0.0, 0.0, 1.0], d) if axis is None else np.asarray(axis, float) - (np.asarray(axis, float) @ d) * d
     x = zx / np.linalg.norm(zx) if np.linalg.norm(zx) > 1e-6 else np.array([1.0, 0.0, 0.0])
     y = np.cross(d, x)
     R = Rotation.from_matrix(np.stack([x, y, d], 1)) * Rotation.from_euler("z", yaw_deg, degrees=True)
@@ -81,14 +87,14 @@ def ceiling_pose(c: dict) -> tuple:
     """(position (3,), quat xyzw) of a ceiling light entry (env 0 frame; distant lights: position 0)."""
     if c.get("type", "distant") == "rect":
         d = np.asarray(c["dir"], float) / np.linalg.norm(c["dir"])
-        return CENTER + float(c.get("dist", 10.0)) * d, _yawed(d, float(c.get("yaw_deg", 0.0)))
+        return CENTER + float(c.get("dist", 10.0)) * d, _yawed(d, float(c.get("yaw_deg", 0.0)), c.get("axis"))
     return np.zeros(3), quat_z_to(c["dir"])
 
 
-def _ceiling(stage, i: int, c: dict, s: float) -> str:
+def _ceiling(stage, i: int, c: dict, s: float, prefix: str = "/World/TwinCeil") -> str:
     from pxr import Gf, UsdLux
 
-    path = f"/World/TwinCeil{i}"
+    path = f"{prefix}{i}"
     rgb = Gf.Vec3f(*map(float, c.get("rgb", (1.0, 1.0, 1.0))))
     if c.get("type", "distant") == "rect":
         size = c.get("size", (1.2, 0.3))
@@ -111,10 +117,10 @@ def _ceiling(stage, i: int, c: dict, s: float) -> str:
     return path
 
 
-def _side(stage, e: int, i: int, c: dict, s: float) -> str:
+def _side(stage, e: int, i: int, c: dict, s: float, name: str = "TwinSide") -> str:
     from pxr import Gf, UsdLux
 
-    path = f"/World/envs/env_{e}/TwinSide{i}"
+    path = f"/World/envs/env_{e}/{name}{i}"
     pos = np.asarray(c["pos"], float)
     lt = UsdLux.SphereLight.Define(stage, path)
     lt.CreateRadiusAttr(float(c.get("radius", 0.1)))
@@ -137,12 +143,31 @@ def apply_rtx(look) -> dict:
     return before
 
 
-def build(stage, look, num_envs: int) -> dict:
-    """Create the rig's ceiling tubes (global) and side lamps (per env) on the stage and apply the RTX settings."""
+def no_shadows(stage, num_envs: int) -> int:
+    """primvars:doNotCastShadows on the unlit hall cylinder / inspect backdrop (NO_SHADOW): they stand in for the room
+    far away, so lamps 6 m out and the low dome must shine past them. Returns the number of prims set."""
+    from pxr import Sdf, Usd
+
+    n = 0
+    for e in range(num_envs):
+        for name in NO_SHADOW:
+            root = stage.GetPrimAtPath(f"/World/envs/env_{e}/{name}")
+            for p in Usd.PrimRange(root) if root else []:
+                if p.GetTypeName() == "Mesh":
+                    p.CreateAttribute("primvars:doNotCastShadows", Sdf.ValueTypeNames.Bool).Set(True)
+                    n += 1
+    return n
+
+
+def build(stage, look, num_envs: int, prefix: str = "/World/TwinCeil", side_name: str = "TwinSide") -> dict:
+    """Create the rig's ceiling tubes (global, <prefix><i>) and side lamps (per env, env_<e>/<side_name><i>) on the
+    stage, stop the room stand-ins from casting shadows and apply the RTX settings."""
     s = look.scale()
-    ceil = [_ceiling(stage, i, c, s) for i, c in enumerate(look.ceiling_lights)]
-    side = [_side(stage, e, i, c, s) for e in range(num_envs) for i, c in enumerate(getattr(look, "side_lights", []))]
-    return {"ceiling": ceil, "side": side, "rtx_before": apply_rtx(look)}
+    ceil = [_ceiling(stage, i, c, s, prefix) for i, c in enumerate(look.ceiling_lights)]
+    side = [_side(stage, e, i, c, s, side_name) for e in range(num_envs)
+            for i, c in enumerate(getattr(look, "side_lights", []))]
+    return {"ceiling": ceil, "side": side, "no_shadow_prims": no_shadows(stage, num_envs),
+            "rtx_before": apply_rtx(look)}
 
 
 def refresh(stage, look) -> dict:
@@ -172,10 +197,14 @@ def nominal_lights(look) -> list[dict]:
     return out
 
 
+DOME_TO_DISTANT = 0.56  # RTX: a dome of intensity I lights the table like a zenith distant light of 0.56 I (basis_v1)
+
+
 def table_irradiance(look) -> float:
-    """Approximate direct irradiance of the rig on the horizontal table at CENTER (before the exposure scale; the dome
-    as a uniform sky above the hall cylinder's ~41 deg horizon: pi * I * (1 - sin^2(41 deg)))."""
-    e = math.pi * float(look.dome_intensity) * (1.0 - math.sin(math.radians(41.0)) ** 2)
+    """Approximate direct irradiance of the rig on the horizontal table at CENTER in distant-light units (before the
+    exposure scale): the dome by DOME_TO_DISTANT (measured with the hall cylinder in place), the others by their
+    irradiance x sin(elevation)."""
+    e = DOME_TO_DISTANT * float(look.dome_intensity)
     for L in nominal_lights(look):
         if L["kind"] != "dome":
             e += L["irradiance"] * max(0.0, float(L["dir"][2]))
