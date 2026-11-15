@@ -86,7 +86,8 @@ def _modal_dockerfile() -> Path:
     return dst
 
 
-def _image() -> modal.Image:
+def base_image() -> modal.Image:
+    """The twin image without the repo code (fanout.py adds its own code snapshot at container start)."""
     if not (ISAACLAB / "docker/Dockerfile.base").exists():
         if modal.is_local():
             raise SystemExit(f"missing {ISAACLAB}; run sim/twin/modal/prepare.sh first")
@@ -126,6 +127,13 @@ def _image() -> modal.Image:
                          "-exec sh -c 'printf \"#!/bin/sh\\nexit 0\\n\" > \"$1\"' _ {} \\; "
                          "| tee /opt/telemetry-disabled.txt && test -s /opt/telemetry-disabled.txt")
            .env(EULA | {"HF_HOME": HF, "TOKENIZERS_PARALLELISM": "false"}))
+    return img
+
+
+def _image() -> modal.Image:
+    img = base_image()
+    if not modal.is_local():
+        return img
     ign = ["twin/.build", "twin/assets/so101", "twin/out", "twin/data", "**/__pycache__", "**/.pytest_cache"]
     return (img.add_local_dir(LOCAL_REPO / "sim", f"{REPO}/sim", ignore=ign)
             .add_local_dir(LOCAL_REPO / "deploy", f"{REPO}/deploy", ignore=["**/__pycache__"]))

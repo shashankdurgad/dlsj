@@ -34,9 +34,74 @@ $M --task bench-molmo --gpu RTX-PRO-6000                     # MolmoAct2 latency
 * **Volumes**: `dlsj-twin-cache` (Kit / RTX shader / compute caches as one tar per GPU type, plus the URDF -> USD
   conversion), `dlsj-twin-hf` (HF_HOME, MolmoAct2 21 GB, 65 s download in a CPU container).
 * **CPU**: Modal's default is ~1 core (`nproc` = 1); Isaac functions request 8 cores, `bench-env` 6 per process.
-* **W&B**: training functions take `secrets=TRAIN_SECRETS` (`modal.Secret.from_name("dlsj-wandb")`). As of
-  2026-11-14 the workspace lists `wandb-dlsj`, `wandb`, `hf-akoniti`, `huggingface`, but no `dlsj-wandb`; a function
-  that attaches it fails until a secret by that name exists (or the name is changed here).
+* **W&B**: training functions take `secrets=TRAIN_SECRETS` (`modal.Secret.from_name("dlsj-wandb")`, exists since
+  2026-11-15); fan-out jobs get it with `--secret dlsj-wandb`.
+
+## Fan-out: many short twin jobs on many GPUs (`fanout.py`)
+For sweeps / render batches that would otherwise queue on watson / jarvis. Use it when parallel GPUs really save
+time (a sweep of independent runs); quick single checks stay on the GB10. Run from any checkout that has
+`sim/twin/modal/` (it runs `prepare.sh` itself if `sim/twin/.build/IsaacLab` is missing), on the Mac (Modal + brev ssh):
+```
+F="uv run --no-project --with modal --with pyyaml python sim/twin/modal/fanout.py"   # MODAL_PROFILE=desmond-zee (forced)
+$F run --dry-run --cmd "sim/twin/run.sh sim/twin/grasp_gate/gate.py --rung 3 --n 60 --set gripper.finray.effort_nm={0.4,1.2} --seed {0,1}"
+$F run --name effort-sweep --cmd "...same..."        # 4 jobs, results -> watson:sim/twin/out/modal_fanout/effort-sweep/
+$F run --cmd "sim/twin/run.sh X.py --a {a} --b {1,2}" --grid a=0.1,0.2   # {a,b} inline lists and --grid key=... -> {key}
+$F run --jobs jobs.yaml       # [{name, cmd, gpu?, timeout?, cpu?, memory?, env?}, ...] (YAML or JSON)
+$F run ... --secret dlsj-wandb --env WANDB_MODE=online   # secrets / env for every job
+$F data                       # (re)check the data Volumes; `run` does this too
+$F stop                       # stop any fan-out app still running (`run` does this at its end)
+```
+* **What it does**: (1) snapshots the box's live working tree (`--box watson` default, or `jarvis`): `git ls-files -co
+  --exclude-standard` of `sim/ dlsj/ deploy/` (so git-ignored data, `out/`, `.build/`, `assets/so101` never go),
+  files > `--max-file-mb 20` dropped, plus small inputs from `sim/twin/out` (json / npz / npy / pt / ... < 2 MB,
+  `out/scene`, `out/visual_fit/wood`, `out/visuals/top_median.png`; add more with `--include sim/twin/out/...`).
+  ~110 MB gz today, streamed through the Mac's scratchpad (deleted after the upload) into Volume `dlsj-twin-fanout`,
+  and kept on the box as `modal_fanout/<run>/code.tar.gz` (rerun the exact code on a GB10 from it). (2) checks the data
+  Volumes and fetches anything missing. (3) one Modal call + container per job (`single_use_containers`), default
+  `RTX-PRO-6000`, 8 cores, 32 GiB, `--timeout 1800` s per job (+ 300 s for prep / collection as the Modal timeout).
+  The repo is extracted at `/tmp/repo` (same layout as the box), `sim/twin/data/<x>` symlinks to the data Volume,
+  `sim/twin/data/hf` = `HF_HOME` = Volume `dlsj-twin-hf` (offline), Kit shader cache restored from `dlsj-twin-cache`,
+  GB10 Kit flags as default (`DLSJ_KIT_ARGS` unset; pass `--env DLSJ_KIT_ARGS=` to change). `sim/twin/run.sh X.py
+  args` / `X.py args` -> `isaaclab.sh -p X.py args`; `python ...` -> the Isaac venv; anything else -> bash.
+  (4) every file the job wrote under `sim/twin/out` (newer than its start), its `stdout.log` and `job.json` go to
+  `dlsj-twin-fanout:/runs/<run>/<job>/` and then to `<box>:~/Documents/dlsj/sim/twin/out/modal_fanout/<run>/<job>/`
+  (`out/<path under sim/twin/out>`), with `summary.txt` / `summary.json`; the summary table (job, exit code, command
+  wall, container time, key lines: `GATE_PASS ...`, `REPLAY {...}`, `*_OK`, tracebacks; `--key REGEX`) is printed.
+* **Spend guard**: at most `--max-containers 4` at once (5-8 need `--wide`, never more than 8); the cost estimate is
+  always printed, and a run whose upper bound (every job to its timeout, list prices) is above **$15** is refused
+  without `--yes-cost`; `--dry-run` prints jobs, estimate and snapshot size, launches nothing. Each run appends
+  `utc_start,run,box,jobs,jobs_ok,gpu,max_containers,wall_min,gpu_min,est_cost_usd,user` to
+  `<box>:sim/twin/out/modal_fanout/usage.csv` (container time measured in the job x list price; excludes the few
+  seconds of image load).
+* **Stopping**: the app is ephemeral (`app.run()`): it stops when the run ends, on errors and on Ctrl-C / SIGINT /
+  SIGTERM (also when started in the background); afterwards every `dlsj-twin-fanout` app still listed as running is
+  stopped with `modal app stop -y` and polled until none is. Tested: SIGINT and SIGTERM mid-job -> containers gone
+  within ~30 s, `modal app list` clean.
+* **Data Volumes** (`$F data`, HF downloads inside Modal on CPU containers, token from secret `hf-akoniti`, never
+  printed): `dlsj-twin-data` = `canonical/duplo_teleop_cal2_rgb_456` (`akoniti/dlsj-canonical`, 250 files 1.8 GB,
+  35 s), `posttrain_v3_1` (`akoniti/dlsj-posttrain-v3-1`, 2.4 GB, 43 s), `models/molmoact2_ft_8k`
+  (`akoniti/dlsj-molmoact2-ft-8k`, 22.4 GB, 116 s), `photos` (from the box's `sim/twin/data/photos`, private Volume
+  only), `MANIFEST.json`; `dlsj-twin-hf` += `allenai/MolmoAct2@e432d85f` (101 s) next to
+  `allenai/MolmoAct2-SO100_101@152569fe`. Generated textures live in the code tree (`sim/twin/visuals/textures`) or
+  the small `sim/twin/out` inputs above, so they travel with the snapshot. Other box data (e.g. `real_rollouts`) is
+  not mirrored; add it to `BOX_DATA` in `fanout.py` if a job needs it.
+* **Caveats**: the snapshot is the box's *live* tree, so a half-edited file from another agent goes too (the first
+  validation run hit a `NameError` in `grasp_gate/metrics.py` mid-edit; rerun after the edit). Outputs a job writes
+  outside `sim/twin/out` are not collected. Each job is a fresh Kit process (~10-20 s startup with the cached shaders).
+
+**Validation (2026-11-15, watson snapshots, RTX-PRO-6000)**:
+| run | jobs | wall (whole run) | per job: command / container | GPU-min | est. cost |
+|---|---|---|---|---|---|
+| `validate-gate-effort-2`: gate rung 3, n 60, effort {0.4, 1.2} x seed {0, 1} | 4 | 6.0 min (first, slow app start) | 24-29 s / 27-38 s | 2.1 | $0.13 |
+| `consistency-1`: gate e1.2 s0 twice, e0.4 s0, `validate_twin.py --only replay --episodes 12` | 4 | **1.8 min** (snapshot 14 s, upload 13 s, app 19 s, jobs 38-56 s, download + copy back 21 s) | 28 s (replay 48 s) / 33 s (52 s) | 2.5 | $0.15 |
+
+All tests incl. the signal tests came to ~$1.3 of GPU time (`usage.csv`). Consistency against a GB10 on the *same*
+snapshot (`consistency-1/code.tar.gz` extracted on watson, `run.sh`, docker): gate e0.4 s0 **50.0 % on both**, the
+same 60/60 per-episode success flags (one failure labelled tipped on the GB10, pushed on Modal); e1.2 s0 50.0 % GB10
+vs 48.3 % Modal (one episode of 60 flips), joint RMSE equal to 0.1 deg. Modal is deterministic run to run (the two
+e1.2 s0 jobs: identical 48.3 %). GB10 wall for one gate job: 1 min 55 s - 2 min 3 s through `run.sh` on a busy box;
+4 jobs on Modal in parallel ~1 min. So: x86 RTX-PRO-6000 results match the GB10 to within contact-sim noise
+(about one episode in 60); compare sweep arms within one platform.
 
 ## What works, what doesn't
 | | RTX-PRO-6000 (Blackwell server, driver 610.57.04, CUDA 13.3 UMD) |
