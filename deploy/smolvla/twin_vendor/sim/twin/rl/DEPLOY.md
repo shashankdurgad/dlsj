@@ -65,7 +65,7 @@ a close for as long as it outputs it.
 Per control tick: applied offset moves toward the target at <= `rate_per_tick` (meta: 5 mm xyz, 3 deg wrist; gripper
 immediate); the planned goal of this tick `g` becomes
 `g' = IK(g with wrist += offset_wrist, tip(g) + R(g) @ offset_xyz)` (2-step damped least squares on pan / lift /
-elbow, `sim/twin/rl/kin.py`, the calibration profile's joint offsets, URDF `so101_new_calib`), gripper
+elbow, `sim/twin/rl/kin.py` `Kin(meta joint_offsets, tip_local=meta tip_local)`, URDF `so101_new_calib`), gripper
 `clip(g_grip + offset_grip, 0, 100)`. Then the controller's own max-step (4 deg per tick) and the follower's
 `max_relative_target`, unchanged. Outside the gate: offset fades to 0 (above), then `g' = g`.
 
