@@ -1,5 +1,4 @@
 """Real wrist / inspect frames during the hold (how deep the brick sits between the jaws)."""
-import json
 import sys
 from pathlib import Path
 

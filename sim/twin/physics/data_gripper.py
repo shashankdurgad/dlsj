@@ -1,7 +1,5 @@
 """Real gripper readings in the cal2 dataset: closed-on-nothing, hold, open (plain python, no Isaac)."""
 import glob
-import json
-import sys
 from pathlib import Path
 
 import numpy as np
@@ -25,5 +23,6 @@ print("per-ep min state pct", np.percentile(mins, [0, 5, 25, 50, 75, 95, 100]).r
 print("per-ep min action pct", np.percentile(amins, [0, 5, 25, 50, 75, 95, 100]).round(2).tolist())
 # frames where the command is very low (operator squeezes) -> measured
 low = a[:, 5] < 1.0
-print("state where action<1: n", int(low.sum()), np.percentile(s[low, 5], [5, 50, 95]).round(2).tolist() if low.any() else None)
+print("state where action<1: n", int(low.sum()),
+      np.percentile(s[low, 5], [5, 50, 95]).round(2).tolist() if low.any() else None)
 print("lowest-state episodes", np.argsort(mins)[:8].tolist(), np.sort(mins)[:8].round(2).tolist())

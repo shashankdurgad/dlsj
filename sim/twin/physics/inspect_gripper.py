@@ -13,13 +13,13 @@ from app import launch  # noqa: E402
 
 app = launch(cameras=False)
 
-import numpy as np  # noqa: E402
 import isaaclab.sim as sim_utils  # noqa: E402
+import numpy as np  # noqa: E402
 import omni.usd  # noqa: E402
+import scene as rscene  # noqa: E402
 from isaaclab.scene import InteractiveScene  # noqa: E402
 from pxr import Usd, UsdGeom, UsdPhysics  # noqa: E402
 
-import scene as rscene  # noqa: E402
 from sim.twin.calib.profile import twin_profile  # noqa: E402
 
 prof = twin_profile()
@@ -88,6 +88,6 @@ for attr in ("joint_stiffness", "joint_damping", "joint_effort_limits", "joint_v
         print(attr.upper(), np.round(v[0].cpu().numpy(), 4).tolist(), flush=True)
 import warp as wp  # noqa: E402
 
-print("MASSES", dict(zip(rob.body_names, np.round(wp.to_torch(rob.root_view.get_masses())[0].cpu().numpy(), 4).tolist())),
-      flush=True)
+masses = np.round(wp.to_torch(rob.root_view.get_masses())[0].cpu().numpy(), 4).tolist()
+print("MASSES", dict(zip(rob.body_names, masses, strict=False)), flush=True)
 app.close()

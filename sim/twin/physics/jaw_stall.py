@@ -21,10 +21,10 @@ from app import launch  # noqa: E402
 app = launch(cameras=False)
 import isaaclab.sim as sim_utils  # noqa: E402
 import numpy as np  # noqa: E402
+import scene as rscene  # noqa: E402
 import torch  # noqa: E402
 from isaaclab.scene import InteractiveScene  # noqa: E402
 
-import scene as rscene  # noqa: E402
 from sim.twin.calib.profile import twin_profile  # noqa: E402
 from sim.twin.physics import apply as phys  # noqa: E402
 
@@ -47,7 +47,8 @@ _st = omni.usd.get_context().get_stage()
 for p in Usd.PrimRange(_st.GetPrimAtPath("/World/envs/env_0/Brick")):
     print("BRICKPRIM", p.GetPath(), p.GetTypeName(), p.HasAPI(UsdPhysics.CollisionAPI),
           UsdGeom.Cube(p).GetSizeAttr().Get() if p.IsA(UsdGeom.Cube) else "",
-          [str(o.GetOpName()) + str(o.Get()) for o in UsdGeom.Xformable(p).GetOrderedXformOps()] if p.IsA(UsdGeom.Xformable) else "",
+          [str(o.GetOpName()) + str(o.Get()) for o in UsdGeom.Xformable(p).GetOrderedXformOps()]
+          if p.IsA(UsdGeom.Xformable) else "",
           flush=True)
 print("post_spawn", json.dumps(phys.post_spawn(scene)), flush=True)
 sim.reset()
@@ -103,7 +104,7 @@ for k, (z, e) in enumerate(CASES):
                 "brick_moved_mm": round(float(np.linalg.norm(rel - h[0, k, 1:])) * 1000, 1)})
     print(out[-1], flush=True)
 res = {"target_q": args.target_q, "set": args.set, "cases": out}
-(REPO / "sim/twin/out/physics" / f"jaw_stall{'_' + '_'.join(s.split('=')[1] for s in args.set) if args.set else ''}.json"
- ).write_text(json.dumps(res, indent=1))
+suffix = "_" + "_".join(s.split("=")[1] for s in args.set) if args.set else ""
+(REPO / "sim/twin/out/physics" / f"jaw_stall{suffix}.json").write_text(json.dumps(res, indent=1))
 print("STALL", json.dumps(res), flush=True)
 app.close()

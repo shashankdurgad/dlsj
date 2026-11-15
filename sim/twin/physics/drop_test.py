@@ -44,7 +44,7 @@ def plot():
 
     fig, axes = plt.subplots(1, 2, figsize=(14, 4.6), sharey=True)
     res = {}
-    for ax, phys in zip(axes, ("off", "on")):
+    for ax, phys in zip(axes, ("off", "on"), strict=False):
         f = OUT / f"drop_{phys}.npz"
         if not f.exists():
             continue
@@ -60,7 +60,7 @@ def plot():
             ax.fill(pr[:, 0], pr[:, 1] + tz + 0.003, color="0.75", label="plate collider (profile)")
         ax.axhline(tz, color="saddlebrown", lw=1)
         cmap = plt.get_cmap("viridis")
-        for i, (kind, r0, h0) in enumerate(CASES):
+        for i, (kind, r0, _h0) in enumerate(CASES):
             if kind not in ("drop", "drop_low"):
                 continue
             tr = d["target"][:, i]  # (T, 3) plate-relative x, y, z(world-env)
@@ -93,10 +93,10 @@ from app import launch  # noqa: E402
 app = launch(cameras=False)
 import isaaclab.sim as sim_utils  # noqa: E402
 import numpy as np  # noqa: E402
+import scene as rscene  # noqa: E402
 import torch  # noqa: E402
 from isaaclab.scene import InteractiveScene  # noqa: E402
 
-import scene as rscene  # noqa: E402
 from sim.twin.calib.profile import twin_profile  # noqa: E402
 
 phys = None
@@ -126,7 +126,7 @@ if phys:  # physics DR smoke test: one draw, then back to nominal
 
         traceback.print_exc()
         info["dr_smoke"] = {"ok": False, "error": f"{type(ex).__name__}: {ex}"}
-O = scene.env_origins
+ORIGINS = scene.env_origins
 TZ = rscene.TABLE_TOP_Z
 bowls = list(layout.bowls)
 plate_obj = scene["bowl_purple"]
@@ -149,13 +149,13 @@ def place(obj, rows):
 # plates: purple at PLATE_XY, the others parked far away on the table
 for k, b in enumerate(bowls):
     xy = PLATE_XY if b == "purple" else (0.8, -0.4 + 0.4 * k)
-    place(scene[f"bowl_{b}"], [torch.cat([O[e] + torch.tensor([xy[0], xy[1], TZ + 0.003], device=dev),
+    place(scene[f"bowl_{b}"], [torch.cat([ORIGINS[e] + torch.tensor([xy[0], xy[1], TZ + 0.003], device=dev),
                                           torch.tensor([0, 0, 0, 1.0], device=dev)]) for e in range(n)])
 px, py = PLATE_XY
 floor_top = TZ + (0.003 if phys else 0.006)
 rows_b, rows_d = [], {i: [] for i in range(len(dis))}
 for e, (kind, r, h) in enumerate(CASES):
-    o = O[e].tolist()
+    o = ORIGINS[e].tolist()
     park = [(0.85, 0.45), (0.85, 0.30), (0.70, 0.45)]
     dpos = {i: [o[0] + park[i][0], o[1] + park[i][1], TZ + hb + 0.0005] for i in range(len(dis))}
     if kind in ("drop", "drop_low"):
@@ -192,10 +192,10 @@ for t in range(T):
     scene.write_data_to_sim()
     sim.step(render=False)
     scene.update(1 / 120)
-    p = (brick.data.root_pos_w - O).cpu().numpy()
+    p = (brick.data.root_pos_w - ORIGINS).cpu().numpy()
     tgt[t] = p - np.array([px, py, 0.0])
     for i, dobj in enumerate(dis):
-        dtr[t, i] = (dobj.data.root_pos_w - O).cpu().numpy()
+        dtr[t, i] = (dobj.data.root_pos_w - ORIGINS).cpu().numpy()
 summ = {"in_plate": 0, "on_rim": 0, "table": 0, "fell_through": 0}
 cases = []
 r_in = R_plate - 0.003

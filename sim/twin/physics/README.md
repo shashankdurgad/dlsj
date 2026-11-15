@@ -82,6 +82,26 @@ Plate: R 0.092 m, rim 23 mm above the table, 2 mm shell, floor top 3 mm above th
 0.75 R (photo). Bricks: `brick_mesh('2x2' | '2x4' | 'curved_2x2')`, `brick_hull_points` (exact convex collider; the
 curved slope is convex), `apply.brick_usd(kind)` writes a spawnable USD with a convex-hull collider.
 
+### Later keys (fin-ray fingers; details and gate numbers in `sim/twin/gripper/README.md`)
+* `gripper.finray.bend.*`: bending fins (hinged segments, articulation joints `fin_<fixed|jaw>_<a..e>`, actuator group
+  `fins` added by `patch_scene_cfg`). `gripper.finray.bias_rad` -0.242 (fin tips meet at the real closed reading
+  2.8), `gripper.finray.effort_nm` 0.74 (LeRobot `so_follower` gripper limits on a 12 V STS3215).
+* Friction pair: table combine `min` 0.15 / 0.12, fins `average`, bricks `max` -> fin-table 0.15, fin-brick 0.9,
+  brick-table 0.45.
+* DR (small shifts around the nominal): `dr.gripper_effort_nm` 0.6-0.9 (nominal 0.74), `dr.fin_stiffness_scale`
+  0.8-1.2 (`apply_physics_dr` writes the fin hinge stiffness x scale). A gripper-bias DR (+-0.02 rad) is not wired:
+  the bias is the profile's scalar used by the env's unit conversions, so it needs a per-episode hook in the env.
+* `table.compliant_contact_stiffness` / `_damping` (default off): spring table contact (`_material`), a stand-in for
+  the soft fin tips pressed into the table at the real close (FK of the recorded closes puts the CAD fin tips a
+  median 5 mm (W) / 8 mm (W9) below the table top).
+* `robot.limit_margin_deg` (default 0) / `robot.limit_margin_joints`: `post_spawn` opens the arm joints' USD limits
+  by that many degrees before `sim.reset()` (the demos pass wrist_flex +95 and shoulder_lift -100 deg). 8 deg: n=60
+  wrist_flex RMSE 1.67 -> 0.66 deg, lift unchanged (config `finray_limits8`).
+* `robot.joint_offsets_rad` (default unset): `patch_profile` replaces the profile's joint offsets, e.g. the joint
+  fit's W9 (`validate_gripper.py` configs `*_w9`).
+* `robot.arm_stiffness` (default unset): the arm actuator stiffness (scalar or {joint: N m/rad}); 20 on lift / elbow /
+  wrist_flex costs lift (72 %) and tracking (lift / elbow RMSE 3.5 deg) without seating the brick deeper.
+
 ### Remaining gaps
 * open-loop grasp depth (above); arm compliance / gravity sag beyond the encoder is not modelled;
 * a 3 cm release onto the rim lip can launch the brick ~2 cm (thin trimesh + 12 mm contact offset);

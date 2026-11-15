@@ -59,15 +59,26 @@ def _cams() -> dict:
 def joint_offsets() -> list | None:
     """Fitted joint offsets (rad, 6 incl. gripper) from align/joint_fit/result.json; None keeps joe_cal2's.
 
-    Fit W (wrist camera fixed to the fitted mount) replays real demos better than joe_cal2 (grasp gate rung 3:
-    72 % vs 63 % lift). DLSJ_JOINT_OFFSETS=joe_cal2 reverts to the old offsets.
+    Default W9: fit W (wrist camera fixed to the fitted mount) plus the 9 mm grasp-depth term, the grasp gate's pick
+    (rung 3, 60 held-out demos: joe_cal2 63 %, W 72 %, W9 73-77 % with rigid fins; 82 / 85 % with the B25C fins).
+    DLSJ_JOINT_OFFSETS=W or =joe_cal2 selects the others.
     """
-    if os.environ.get("DLSJ_JOINT_OFFSETS", "fit") == "joe_cal2":
+    which = os.environ.get("DLSJ_JOINT_OFFSETS", "W9")
+    if which == "joe_cal2":
         return None
     path = REPO / "sim/twin/align/joint_fit/result.json"
     if not path.exists():
         return None
-    rad = json.loads(path.read_text())["joint_offsets_rad_for_sim"]
+    res = json.loads(path.read_text())
+    if which == "W9" and "W9" in res.get("grasp_depth_candidates", {}):
+        rad = res["grasp_depth_candidates"]["W9"]["joint_offsets_rad_for_sim"]
+    elif which == "W9":  # an older result.json without the grasp-depth fits: fall back to W, loudly
+        print("[twin profile] WARNING: result.json has no W9 offsets, using fit W", flush=True)
+        rad = res["joint_offsets_rad_for_sim"]
+    elif which in ("W", "fit"):
+        rad = res["joint_offsets_rad_for_sim"]
+    else:
+        raise ValueError(f"DLSJ_JOINT_OFFSETS={which!r}: expected W9, W or joe_cal2")
     return [float(v) for v in rad[:5]] + [0.0]
 
 

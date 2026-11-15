@@ -130,9 +130,8 @@ def make(cfg, base=None, device: str = "cuda:0"):
     import os
 
     import isaaclab.sim as sim_utils
-    from isaaclab.scene import InteractiveScene
-
     from env import ResidualEnv
+    from isaaclab.scene import InteractiveScene
     from scene import build_scene_cfg, load_layout
 
     sim = sim_utils.SimulationContext(sim_utils.SimulationCfg(dt=1.0 / cfg.physics_hz, device=device))

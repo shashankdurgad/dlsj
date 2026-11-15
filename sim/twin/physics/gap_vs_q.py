@@ -16,11 +16,11 @@ app = launch(cameras=False)
 import isaaclab.sim as sim_utils  # noqa: E402
 import numpy as np  # noqa: E402
 import omni.usd  # noqa: E402
+import scene as rscene  # noqa: E402
 import torch  # noqa: E402
 from isaaclab.scene import InteractiveScene  # noqa: E402
 from pxr import Usd, UsdGeom  # noqa: E402
 
-import scene as rscene  # noqa: E402
 from sim.twin.calib.profile import twin_profile  # noqa: E402
 from sim.twin.physics import apply as phys  # noqa: E402
 
@@ -90,7 +90,7 @@ for q in np.linspace(-0.17, 0.6, 32).tolist() + [0.19, 0.2, 0.21, 0.22, 0.23]:
     g = (w - pg) @ Rg  # gripper frame
     zlo = g[:, 2].min()
     # inner face of the moving pad at heights above its lowest corner
-    def gap_at(dz):
+    def gap_at(dz, g=g, zlo=zlo):
         # interpolate the pad's inner face x at z = zlo + dz (inner face = the 4 corners with the smallest x)
         inner = g[INNER]
         zz, xx = inner[:, 2], inner[:, 0]

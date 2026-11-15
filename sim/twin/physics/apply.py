@@ -10,6 +10,10 @@ Interface for the core env (sim/twin/env/twin_env.py):
 All numbers live in params.json next to this file (load_params(path, overrides) to change them).
 
 What it changes and why (measurements: validate_physics.py, README in this folder):
+0. Fingers (`gripper.collider = "finray"`, the default): the real station has the XLeRobot soft gripper, printed
+   bases + TPU fin-ray fins (sim/twin/gripper). Convex fin pieces with PhysX compliant contact (TPU give, no solver
+   buzz), TPU-on-ABS friction, and the residual env's fingertip point (TIP_LOCAL) moved to these fins. The modes
+   below are the stock rigid jaw, kept for comparison.
 1. Finger colliders. The twin robot USD (URDF converter v0.3.2) instances its collision meshes: the convex hull
    colliders of the fixed finger (`wrist_roll_follower_so101_v1_1/...`) and moving jaw (`moving_jaw_so101_v1_1/...`)
    are instance proxies, so the residual env's `app.finger_pads` cannot disable them (it applies CollisionAPI to the
@@ -34,6 +38,8 @@ from __future__ import annotations
 import copy
 import json
 import math
+import os
+import sys
 from pathlib import Path
 
 import numpy as np
@@ -49,9 +55,12 @@ JAW_LINK = "moving_jaw_so101_v1_link"
 
 # ------------------------------------------------------------------------------------------------ params
 def load_params(path: str | Path | None = None, overrides=()) -> dict:
-    """Load params.json (+ 'dotted.key=json' overrides) into PARAMS and return it."""
+    """Load params.json (+ 'dotted.key=json' overrides) into PARAMS and return it. The environment variable
+    TWIN_PHYSICS_SET ('key=json;key=json') adds overrides for scripts without a --set option, e.g.
+    TWIN_PHYSICS_SET=gripper.collider=pads_cad for the stock-jaw benches."""
     p = json.loads(Path(path or PARAMS_JSON).read_text())
-    for ov in overrides or ():
+    env_ov = [o for o in os.environ.get("TWIN_PHYSICS_SET", "").split(";") if o]
+    for ov in [*env_ov, *(overrides or ())]:
         key, val = ov.split("=", 1)
         try:
             v = json.loads(val)
@@ -74,11 +83,65 @@ def _p() -> dict:
 
 
 # ------------------------------------------------------------------------------------------------ profile
+def finray() -> bool:
+    """True when the fin-ray fingers (sim/twin/gripper) are the active finger model."""
+    return _p()["gripper"]["collider"] == "finray"
+
+
+def jaw_material() -> dict:
+    """Physics material spec of the active finger contact surfaces."""
+    g = _p()["gripper"]
+    return g["finray"]["material"] if finray() else g["material"]
+
+
+def fin_bend() -> dict | None:
+    """The bending-fin spec (params.json gripper.finray.bend) when the fin-ray fingers are on and hinged, else None."""
+    if not finray():
+        return None
+    b = _p()["gripper"]["finray"].get("bend") or {}
+    return b if int(b.get("hinges", 0)) > 0 else None
+
+
+def grip_effort() -> float:
+    """Gripper servo effort limit (N m) for the active fingers."""
+    g = _p()["gripper"]
+    e = g["finray"].get("effort_nm") if finray() else None
+    return float(g["effort_nm"] if e is None else e)
+
+
+def tip_local() -> tuple:
+    """The fingertip / grasp point in the gripper_link frame for the active fingers (residual env TIP_LOCAL)."""
+    if finray():
+        from sim.twin.gripper import model
+
+        f = _p()["gripper"]["finray"]
+        if f.get("tip_local") is not None:  # explicit point (x, y, z) instead of the CAD-derived one
+            return tuple(f["tip_local"])
+        return model.tip_local(float(f["grasp_depth"]), extend=float(f.get("extend", 0.0)))
+    return tuple(_p()["gripper"].get("tip_local", (0.008, 0.0, -0.090)))
+
+
 def patch_profile(profile):
-    """Set the gripper bias that matches the finger colliders (in place; also returned)."""
-    b = _p()["gripper"].get("bias_rad")
+    """Set the gripper bias that matches the finger colliders (in place; also returned), and the residual env's
+    fingertip point: its module constant TIP_LOCAL (read by ResidualEnv.__init__ into `tip_local`, used by
+    `tip_w()`, the grasp check and the replays' brick placement)."""
+    g = _p()["gripper"]
+    b = g["finray"].get("bias_rad") if finray() else None
+    b = g.get("bias_rad") if b is None else b
     if profile is not None and b is not None:
         profile.grip_bias = float(b)
+    offs = (_p().get("robot") or {}).get("joint_offsets_rad")
+    if profile is not None and offs:  # e.g. the joint fit's W9 (align/joint_fit/result.json grasp_depth_candidates)
+        offs = [float(v) for v in offs][:6]
+        profile.joint_offsets = offs + [0.0] * (6 - len(offs))
+    renv = sys.modules.get("env")  # sim/residual_env/env.py, when the caller has it on sys.path
+    if renv is None or not hasattr(renv, "TIP_LOCAL"):
+        try:
+            import env as renv
+        except ImportError:
+            renv = None
+    if renv is not None and hasattr(renv, "TIP_LOCAL"):
+        renv.TIP_LOCAL = tuple(float(v) for v in tip_local())
     return profile
 
 
@@ -86,14 +149,22 @@ def patch_profile(profile):
 def _material(spec: dict):
     import isaaclab.sim as sim_utils
 
+    kw = {}
+    if spec.get("compliant_contact_stiffness"):  # spring contact (N/m), e.g. the table under the pressing fin tips
+        kw = {"compliant_contact_stiffness": float(spec["compliant_contact_stiffness"]),
+              "compliant_contact_damping": float(spec.get("compliant_contact_damping", 0.0))}
     return sim_utils.RigidBodyMaterialCfg(
         static_friction=spec["static_friction"], dynamic_friction=spec["dynamic_friction"],
         restitution=spec.get("restitution", 0.0), friction_combine_mode=spec.get("friction_combine", "average"),
-        restitution_combine_mode=spec.get("restitution_combine", "average"))
+        restitution_combine_mode=spec.get("restitution_combine", "average"), **kw)
 
 
 def _brick_kind(size) -> str:
-    return "2x4" if max(size[0], size[1]) > 0.045 else "2x2"
+    """Mass class from the footprint's long side: 2x2 (31.7 mm), curved_2x3 (LDraw 2302b, 47.7 mm), 2x4 (63.6 mm)."""
+    long_side = max(size[0], size[1])
+    if long_side > 0.056:
+        return "2x4"
+    return "curved_2x3" if long_side >= 0.040 else "2x2"
 
 
 def patch_scene_cfg(scene_cfg, profile=None):
@@ -105,13 +176,31 @@ def patch_scene_cfg(scene_cfg, profile=None):
     P = _p()
     g = P["gripper"]
     act = scene_cfg.robot.actuators.get("gripper")
+    bend = fin_bend()
+    if bend is not None and act is not None:  # the fin hinges (sim/twin/gripper/model.py) as spring-damper joints
+        from sim.twin.gripper import model as fin_model
+
+        names = [(w, i, f"fin_{w}_{fin_model.SEG_NAMES[i]}") for w in ("fixed", "jaw")
+                 for i in range(int(bend["hinges"]))]
+        k = {n: fin_model.joint_gains(bend, i, w)[0] for w, i, n in names}
+        c = {n: fin_model.joint_gains(bend, i, w)[1] for w, i, n in names}
+        scene_cfg.robot.actuators["fins"] = type(act)(joint_names_expr=["fin_.*"], stiffness=k, damping=c,
+                                                      effort_limit_sim=50.0, velocity_limit_sim=100.0)
+        rest = {n: fin_model.rest_angle(bend, i, w) for w, i, n in names}
+        if any(rest.values()):  # pre-curled hinges: their default position is the drive target the env holds
+            jp = dict(scene_cfg.robot.init_state.joint_pos or {})
+            jp.update(rest)
+            scene_cfg.robot.init_state.joint_pos = jp
     if act is not None:
-        act.effort_limit_sim = float(g["effort_nm"])
+        act.effort_limit_sim = grip_effort()
         if g.get("stiffness") is not None:
             act.stiffness = float(g["stiffness"])
         if g.get("damping") is not None:
             act.damping = float(g["damping"])
     R = P.get("robot") or {}
+    arm = scene_cfg.robot.actuators.get("arm")
+    if arm is not None and R.get("arm_stiffness") is not None:  # softer arm servos (dict joint -> N m/rad or scalar)
+        arm.stiffness = R["arm_stiffness"]
     ap = getattr(scene_cfg.robot.spawn, "articulation_props", None)
     if ap is not None:
         if R.get("solver_position_iterations"):
@@ -173,7 +262,39 @@ def post_spawn(env) -> dict:
     stage = omni.usd.get_context().get_stage()
     n = _num_envs(env)
     info = {"gripper": _finger_colliders(stage, n), "plates": _plate_colliders(stage, n)}
+    margin = float((_p().get("robot") or {}).get("limit_margin_deg", 0.0) or 0.0)
+    if margin:
+        info["joint_limits"] = _widen_limits(stage, n, margin)
     return info
+
+
+ARM_JOINTS = ("shoulder_pan", "shoulder_lift", "elbow_flex", "wrist_flex", "wrist_roll")
+
+
+def _widen_limits(stage, n: int, margin_deg: float) -> dict:
+    """Open the arm joints' URDF position limits by `margin_deg` on each side (params robot.limit_margin_deg;
+    robot.limit_margin_joints picks the joints, default the five arm joints). The cal2 demos go past the URDF's
+    wrist_flex +95 deg (8.5 % of frames, up to 3.5 deg) and shoulder_lift -100 deg (1.2 %, up to 6.9 deg), and PhysX
+    clamps there. Authored on the stage before sim.reset(), so the shared USD is unchanged."""
+    from pxr import Usd, UsdPhysics
+
+    names = set((_p().get("robot") or {}).get("limit_margin_joints") or ARM_JOINTS)
+    out = {}
+    for e in range(n):
+        root = stage.GetPrimAtPath(f"/World/envs/env_{e}/Robot")
+        if not root:
+            continue
+        for prim in Usd.PrimRange(root):
+            if prim.GetName() in names and prim.IsA(UsdPhysics.RevoluteJoint):
+                j = UsdPhysics.RevoluteJoint(prim)
+                lo, hi = j.GetLowerLimitAttr().Get(), j.GetUpperLimitAttr().Get()
+                if lo is None or hi is None:
+                    continue
+                j.GetLowerLimitAttr().Set(float(lo) - margin_deg)
+                j.GetUpperLimitAttr().Set(float(hi) + margin_deg)
+                if e == 0:
+                    out[prim.GetName()] = [round(float(lo) - margin_deg, 2), round(float(hi) + margin_deg, 2)]
+    return out
 
 
 def _physics_material(stage, path: str, spec: dict):
@@ -187,6 +308,9 @@ def _physics_material(stage, path: str, spec: dict):
     px = PhysxSchema.PhysxMaterialAPI.Apply(mat.GetPrim())
     px.CreateFrictionCombineModeAttr().Set(spec.get("friction_combine", "average"))
     px.CreateRestitutionCombineModeAttr().Set(spec.get("restitution_combine", "average"))
+    if spec.get("compliant_contact_stiffness"):  # spring contact (N/m per contact point) instead of a hard one
+        px.CreateCompliantContactStiffnessAttr().Set(float(spec["compliant_contact_stiffness"]))
+        px.CreateCompliantContactDampingAttr().Set(float(spec.get("compliant_contact_damping", 0.0)))
     return mat
 
 
@@ -261,6 +385,21 @@ def _finger_colliders(stage, n: int) -> dict:
             if p is not None and p.HasAPI(UsdPhysics.CollisionAPI):
                 p.RemoveAPI(UsdPhysics.CollisionAPI)
         if mode == "hull":  # leave the USD's convex hulls (for comparison only)
+            out["envs"] += 1
+            continue
+        if mode == "finray":  # printed bases + TPU fins (sim/twin/gripper) instead of the stock jaw hulls
+            from sim.twin.gripper import model
+
+            for link, base in ((grip, FIXED_FINGER), (jaw, MOVING_JAW)):
+                inst, _mesh = _collision_instance(link, base)
+                if inst is not None:
+                    inst.SetActive(False)
+            fin_mat = _physics_material(stage, "/World/PhysicsMaterials/TwinFin", g["finray"]["material"])
+            info = model.add_colliders(stage, grip, jaw, fin_mat, mat, g["finray"]["contact_offset"],
+                                       g["finray"]["rest_offset"], _bind_phys,
+                                       extend=float(g["finray"].get("extend", 0.0)), bend=fin_bend())
+            if e == 0:
+                out["finray"] = info
             out["envs"] += 1
             continue
         for link, base, inner_sign, pad_name in ((grip, FIXED_FINGER, +1.0, "TwinFixedPad"),
@@ -461,12 +600,12 @@ def apply_physics_dr(scene, draw: dict, env_ids=None):
         m = wp.to_torch(view.get_material_properties()).clone()
         key = id(view)
         if key not in _JAW_SHAPES:  # shapes carrying the jaw material at first call (nominal values)
-            jm = P["gripper"]["material"]
+            jm = jaw_material()
             _JAW_SHAPES[key] = ((m[0, :, 0] - jm["static_friction"]).abs() < 1e-4) & \
                 ((m[0, :, 1] - jm["dynamic_friction"]).abs() < 1e-4)
         sh = _JAW_SHAPES[key]
         if bool(sh.any()):
-            jm = P["gripper"]["material"]
+            jm = jaw_material()
             for i in ids.tolist():
                 m[i, sh, 0] = draw["jaw_friction"]
                 m[i, sh, 1] = draw["jaw_friction"] * jm["dynamic_friction"] / jm["static_friction"]
@@ -476,6 +615,15 @@ def apply_physics_dr(scene, draw: dict, env_ids=None):
         rob.write_joint_effort_limit_to_sim_index(limits=torch.full((len(ids), 1), float(draw["gripper_effort_nm"]),
                                                                     device=dev),
                                                   joint_ids=[j], env_ids=ids.to(dev))
+    fins = [i for i, n in enumerate(rob.joint_names) if n.startswith("fin_")]
+    if "fin_stiffness_scale" in draw and fins and fin_bend() is not None:  # bending-fin hinge stiffness x scale
+        from sim.twin.gripper import model as fin_model
+
+        b = fin_bend()
+        k = [fin_model.joint_gains(b, fin_model.SEG_NAMES.index(rob.joint_names[i][-1]),
+                                   "jaw" if "_jaw_" in rob.joint_names[i] else "fixed")[0] for i in fins]
+        stiff = torch.tensor(k, device=dev).repeat(len(ids), 1) * float(draw["fin_stiffness_scale"])
+        rob.write_joint_stiffness_to_sim_index(stiffness=stiff, joint_ids=fins, env_ids=ids.to(dev))
     return draw
 
 
@@ -486,8 +634,8 @@ def nominal_physics() -> dict:
     """The nominal values of the DR keys (to undo a draw)."""
     P = _p()
     return {"brick_friction": P["bricks"]["material"]["static_friction"],
-            "jaw_friction": P["gripper"]["material"]["static_friction"], "brick_mass_scale": 1.0,
-            "gripper_effort_nm": P["gripper"]["effort_nm"]}
+            "jaw_friction": jaw_material()["static_friction"], "brick_mass_scale": 1.0,
+            "gripper_effort_nm": grip_effort(), "fin_stiffness_scale": 1.0}
 
 
 def summary() -> dict:

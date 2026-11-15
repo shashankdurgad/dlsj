@@ -25,6 +25,8 @@ OUT = REPO / "sim/twin/out/physics"
 DATA = REPO / "sim/twin/data/canonical/duplo_teleop_cal2_rgb_456"
 J = ["shoulder_pan", "shoulder_lift", "elbow_flex", "wrist_flex", "wrist_roll", "gripper"]
 # name -> realism_gate args
+RIGID = ["--physics", "on", "--set", "bricks.max_depenetration_velocity=1000.0",
+         "--set", "robot.solver_position_iterations=64", "--set", "bricks.solver_position_iterations=64"]
 CONFIGS = {
     "baseline": ["--physics", "off"],  # residual env as left (app.finger_pads on the twin USD, joe_cal2 re-solved bias)
     "physics": ["--physics", "on"],  # params.json
@@ -60,16 +62,18 @@ CONFIGS = {
     "rigid_sdf": ["--physics", "on", "--set", "bricks.max_depenetration_velocity=1000.0",
                   "--set", "robot.solver_position_iterations=64", "--set", "bricks.solver_position_iterations=64",
                   "--set", "gripper.collider=sdf"],
-    "rigid_table_+5mm": ["--physics", "on", "--set", "bricks.max_depenetration_velocity=1000.0", "--set", "robot.solver_position_iterations=64", "--set", "bricks.solver_position_iterations=64", "--table_dz", "0.005"],
-    "rigid_table_+8mm": ["--physics", "on", "--set", "bricks.max_depenetration_velocity=1000.0", "--set", "robot.solver_position_iterations=64", "--set", "bricks.solver_position_iterations=64", "--table_dz", "0.008"],
-    "rigid_table_+12mm": ["--physics", "on", "--set", "bricks.max_depenetration_velocity=1000.0", "--set", "robot.solver_position_iterations=64", "--set", "bricks.solver_position_iterations=64", "--table_dz", "0.012"],
+    "rigid_table_+5mm": RIGID + ["--table_dz", "0.005"],
+    "rigid_table_+8mm": RIGID + ["--table_dz", "0.008"],
+    "rigid_table_+12mm": RIGID + ["--table_dz", "0.012"],
     "baseline_table_+8mm": ["--physics", "off", "--table_dz", "0.008"],
     "bias_fit": ["--physics", "on", "--set", "gripper.bias_rad=0.072"],
-    "bias_fit_thick": ["--physics", "on", "--set", "gripper.bias_rad=0.072", "--set", "gripper.pad.max_thickness=0.016"],
+    "bias_fit_thick": ["--physics", "on", "--set", "gripper.bias_rad=0.072",
+                       "--set", "gripper.pad.max_thickness=0.016"],
     "bias_fit_sdf": ["--physics", "on", "--set", "gripper.bias_rad=0.072", "--set", "gripper.collider=sdf"],
     "bias_fit_eff2.9": ["--physics", "on", "--set", "gripper.bias_rad=0.072", "--set", "gripper.effort_nm=2.9"],
     "bias_fit_eff0.6": ["--physics", "on", "--set", "gripper.bias_rad=0.072", "--set", "gripper.effort_nm=0.6"],
-    "bias_fit_mu0.9": ["--physics", "on", "--set", "gripper.bias_rad=0.072", "--set", "gripper.material.static_friction=0.9",
+    "bias_fit_mu0.9": ["--physics", "on", "--set", "gripper.bias_rad=0.072",
+                       "--set", "gripper.material.static_friction=0.9",
                        "--set", "gripper.material.dynamic_friction=0.8"],
 }
 
@@ -77,7 +81,8 @@ CONFIGS = {
 def run_config(name: str, extra: list[str]) -> Path:
     out = OUT / f"gate_{name}"
     log = OUT / f"gate_{name}.log"
-    cmd = [sys.executable, str(HERE / "realism_gate.py"), "--skip", "step", "--trace", "1", "--out", str(out)] + CONFIGS[name] + extra
+    cmd = [sys.executable, str(HERE / "realism_gate.py"), "--skip", "step", "--trace", "1", "--out", str(out),
+           *CONFIGS[name], *extra]
     t0 = time.time()
     with open(log, "w") as f:
         r = subprocess.run(cmd, stdout=f, stderr=subprocess.STDOUT)
@@ -155,7 +160,8 @@ def analyse(name: str) -> dict | None:
 
 
 def table(rows: list[dict]) -> str:
-    h = ("| config | grasp | lift >= 3 cm | inspect view | held reading (lifted eps) / real | brick tilt in grip (deg) | jaw gap held (mm, brick 31.7) / pad inside brick "
+    h = ("| config | grasp | lift >= 3 cm | inspect view | held reading (lifted eps) / real | brick tilt in grip (deg) "
+         "| jaw gap held (mm, brick 31.7) / pad inside brick "
          "| RMSE pan/lift/elbow/wflex/wroll/grip (deg) |\n")
     h += "|---|---|---|---|---|---|---|---|\n"
     for r in rows:

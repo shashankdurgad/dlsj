@@ -1,7 +1,7 @@
 {
  "_doc": "Twin physics numbers (sim/twin/physics/apply.py). Units: m, kg, N m, rad. See README.md for sources and the measurements behind each choice.",
  "gripper": {
-  "collider": "pads_cad",
+  "collider": "finray",
   "bias_rad": 0.105,
   "effort_nm": 1.2,
   "stiffness": null,
@@ -25,18 +25,55 @@
   },
   "sdf": {
    "resolution": 256
+  },
+  "tip_local": [
+   0.008,
+   0.0,
+   -0.09
+  ],
+  "finray": {
+   "_doc": "XLeRobot TPU fin-ray fingers (sim/twin/gripper). material = the fin contact surface (TPU on ABS); compliant contact stiffness in N/m per contact point; grasp_depth = TIP_LOCAL height above the fin tip (m); extend = experiment switch; tip_local = explicit [x, y, z] override. bias_rad -0.10 = the linear servo map fitted on open wrist frames (q = 0.0229 u - 0.099; perception's jaw_fit 0.02406 u - 0.118); effort 0.74 N m = LeRobot so_follower gripper Overload_Torque 25 % of the 12 V STS3215 stall (Max_Torque_Limit 50 % = 1.47 N m peak)",
+   "bias_rad": -0.1,
+   "grasp_depth": 0.015,
+   "contact_offset": 0.002,
+   "rest_offset": 0.0,
+   "material": {
+    "static_friction": 0.9,
+    "dynamic_friction": 0.8,
+    "restitution": 0.0,
+    "friction_combine": "average",
+    "compliant_contact_stiffness": 10000.0,
+    "compliant_contact_damping": 60.0
+   },
+   "effort_nm": 0.74,
+   "extend": 0.0,
+   "tip_local": null,
+   "bend": {
+    "_doc": "bending TPU fins (sim/twin/gripper/model.py): hinges per fin (0 = rigid fin); slices true = a 12 mm clamped root (root_len) + N equal slices, false = cut at the CAD convex pieces (1-3 hinges); stiffness N m/rad and damping N m s/rad per hinge (scalar or list root -> tip; stiffness_jaw_nm_per_rad optional for the moving fin); segment mass kg; joint limit deg; curl_gearing = mimic coupling of the distal hinges (unstable, keep 0); rest_curl_deg = distal pre-curl toward the other fin (deg; 8 seats the brick 2 mm deeper but lifts 72 % vs 78 %)",
+    "hinges": 4,
+    "stiffness_nm_per_rad": 2.5,
+    "damping_nms_per_rad": 0.01,
+    "segment_mass_kg": 0.003,
+    "limit_deg": 45.0,
+    "slices": true,
+    "root_len": 0.012,
+    "curl_gearing": 0.0,
+    "rest_curl_deg": 0.0
+   }
   }
  },
  "bricks": {
   "mass_kg": {
    "2x2": 0.00675,
    "2x4": 0.012,
-   "curved_2x2": 0.0055
+   "curved_2x2": 0.0055,
+   "curved_2x3": 0.0093
   },
   "material": {
    "static_friction": 0.45,
    "dynamic_friction": 0.38,
-   "restitution": 0.1
+   "restitution": 0.1,
+   "friction_combine": "max"
   },
   "contact_offset": 0.002,
   "rest_offset": 0.0,
@@ -47,15 +84,17 @@
   "stabilization_threshold": 0.0001
  },
  "table": {
-  "static_friction": 0.5,
-  "dynamic_friction": 0.42,
-  "restitution": 0.0
+  "static_friction": 0.15,
+  "dynamic_friction": 0.12,
+  "restitution": 0.0,
+  "friction_combine": "min",
+  "_doc": "varnished table top. combine min + fins average + bricks max gives the pairs: fin-table 0.15 (the TPU fin tip slides when the jaw sweeps over the table), brick-table 0.45 / 0.38 (the brick's own value), fin-brick 0.9 / 0.8 (the fin's)"
  },
  "plates": {
   "collider": "profile_mesh",
   "radius": 0.092,
   "radius_by_colour": {},
-  "rim_h": 0.023,
+  "rim_h": 0.0238,
   "wall": 0.002,
   "floor_frac": 0.75,
   "floor_h": 0.003,
@@ -74,8 +113,8 @@
    0.7
   ],
   "jaw_friction": [
-   0.3,
-   0.9
+   0.7,
+   1.2
   ],
   "brick_mass_scale": [
    0.85,
@@ -83,12 +122,17 @@
   ],
   "gripper_effort_nm": [
    0.6,
-   1.8
+   0.9
+  ],
+  "fin_stiffness_scale": [
+   0.8,
+   1.2
   ]
  },
  "robot": {
   "solver_position_iterations": 64,
   "solver_velocity_iterations": 4,
-  "max_depenetration_velocity": null
+  "max_depenetration_velocity": null,
+  "limit_margin_deg": 8.0
  }
 }

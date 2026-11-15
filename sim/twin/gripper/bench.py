@@ -1,0 +1,124 @@
+"""Fin-ray grasp bench (gravity off): a 31.7 mm brick between the open fins at several depths, the jaw commanded
+closed past contact (as the servo does). Reports where the jaw stalls (reading in gripper units), how far the fins
+sink into the brick (compliant contact = the TPU give), and the 120 Hz buzz of the jaw and brick after it settles.
+
+    sim/twin/run.sh sim/twin/gripper/bench.py --tag k4000 [--efforts 0.4 0.7] \
+        [--set gripper.finray.material.compliant_contact_stiffness=4000]
+Writes sim/twin/out/gripper/bench_<tag>.json.
+"""
+import argparse
+import json
+import sys
+from pathlib import Path
+
+REPO = Path(__file__).resolve().parents[3]
+ap = argparse.ArgumentParser()
+ap.add_argument("--set", action="append", default=[])
+ap.add_argument("--tag", default="run")
+ap.add_argument("--efforts", type=float, nargs="*", default=[], help="gripper effort limits (N m) to test")
+ap.add_argument("--target_units", type=float, default=2.7, help="closing command (real hold command ~2.7)")
+ap.add_argument("--dr_check", action="store_true", help="apply one physics DR draw, print the fin stiffness, exit")
+args = ap.parse_args()
+sys.path.insert(0, str(REPO / "sim/residual_env"))
+from app import launch
+
+app = launch(cameras=False)
+import isaaclab.sim as sim_utils
+import numpy as np
+import scene as rscene
+import torch
+from isaaclab.scene import InteractiveScene
+
+from sim.twin.calib.profile import twin_profile
+from sim.twin.gripper import model
+from sim.twin.physics import apply as phys
+
+phys.load_params(None, args.set)
+prof = phys.patch_profile(twin_profile())
+layout = rscene.load_layout(str(REPO / "sim/realism/scene_params.json"))
+DEPTHS = [0.006, 0.012, 0.020, 0.030, 0.040]  # brick centre above the fixed fin tip (m)
+EFFORTS = args.efforts or [phys.PARAMS["gripper"]["effort_nm"]]
+CASES = [(d, e) for e in EFFORTS for d in DEPTHS]
+n = len(CASES)
+sim = sim_utils.SimulationContext(sim_utils.SimulationCfg(dt=1 / 120, device="cuda:0", gravity=(0.0, 0.0, 0.0)))
+scfg = phys.patch_scene_cfg(rscene.build_scene_cfg(n, layout, False, profile=prof), prof)
+scene = InteractiveScene(scfg)
+print("post_spawn", json.dumps(phys.post_spawn(scene)), flush=True)
+sim.reset()
+scene.reset()
+dev = sim.device
+rob, brick = scene["robot"], scene["brick"]
+gi = rob.joint_names.index("gripper")
+if args.dr_check:
+    draw = phys.apply_physics_dr(scene, phys.sample_physics_dr(np.random.default_rng(0)))
+    fin_ids = [i for i, nm in enumerate(rob.joint_names) if nm.startswith("fin_")]
+    k = getattr(rob.data.joint_stiffness, "torch", rob.data.joint_stiffness)
+    print("DR_CHECK", json.dumps(draw), "fin stiffness env0", [round(float(v), 3) for v in k[0, fin_ids]], flush=True)
+    raise SystemExit(0)
+bg = rob.body_names.index("gripper_link")
+ids = torch.arange(n, device=dev)
+rob.write_joint_effort_limit_to_sim_index(limits=torch.tensor([[e] for _, e in CASES], device=dev), joint_ids=[gi],
+                                          env_ids=ids)
+jp = rob.data.default_joint_pos.clone()
+jp[:, gi] = 0.5
+rob.write_joint_state_to_sim(jp, torch.zeros_like(jp))
+rob.set_joint_position_target(jp)
+for _ in range(5):
+    scene.write_data_to_sim()
+    sim.step(render=False)
+    scene.update(1 / 120)
+
+
+def qapply(q, v):
+    """Rotate v by quaternion q (xyzw)."""
+    xyz, w = q[..., :3], q[..., 3:]
+    t = 2.0 * torch.cross(xyz, v, dim=-1)
+    return v + w * t + torch.cross(xyz, t, dim=-1)
+
+
+tip_z = float(model.geometry()["fixed_tip"][2])
+tip_y = float(model.geometry()["fixed_tip"][1])
+local = torch.tensor([[model.fixed_face_x(tip_z + d) + model.BRICK_W / 2 + 0.0005, tip_y, tip_z + d]
+                      for d, _ in CASES], device=dev, dtype=torch.float32)
+pg, qg = rob.data.body_pos_w[:, bg], rob.data.body_quat_w[:, bg]
+brick.write_root_pose_to_sim(torch.cat([pg + qapply(qg, local), qg], -1), env_ids=ids)
+brick.write_root_velocity_to_sim(torch.zeros(n, 6, device=dev), env_ids=ids)
+q_cmd = args.target_units * prof.grip_scale + prof.grip_bias
+hist = []
+for t in range(300):
+    tgt = jp.clone()
+    tgt[:, gi] = max(q_cmd, 0.5 - 0.03 * (t + 1))  # ~3.6 rad/s closing, like the servo
+    rob.set_joint_position_target(tgt)
+    scene.write_data_to_sim()
+    sim.step(render=False)
+    scene.update(1 / 120)
+    pgb, qgb = rob.data.body_pos_w[:, bg], rob.data.body_quat_w[:, bg]
+    conj = torch.cat([-qgb[:, :3], qgb[:, 3:]], -1)
+    rel = qapply(conj, brick.data.root_pos_w - pgb)
+    hist.append(torch.cat([rob.data.joint_pos[:, gi:gi + 1], rel], -1).cpu().numpy())
+h = np.stack(hist)
+fin_ids = [i for i, nm in enumerate(rob.joint_names) if nm.startswith("fin_")]  # bending-fin hinges, if any
+fin_q = rob.data.joint_pos[:, fin_ids].cpu().numpy() if fin_ids else np.zeros((n, 0))
+print("joint_names", rob.joint_names, flush=True)
+out = []
+for k, (d, e) in enumerate(CASES):
+    tail = h[-60:, k]
+    q_end, rel = float(tail[:, 0].mean()), tail[:, 1:].mean(0)
+    depth_end = float(rel[2]) - tip_z
+    out.append({"depth_mm": round(d * 1e3, 1), "effort": e, "q_stall": round(q_end, 4),
+                "reading_units": round((q_end - prof.grip_bias) / prof.grip_scale, 2),
+                "depth_end_mm": round(depth_end * 1e3, 1),
+                "sink_total_mm": round((model.BRICK_W - model.gap(q_end, depth_end)) * 1e3, 2),
+                "q_buzz_p2p_mrad": round(float(np.ptp(tail[:, 0])) * 1e3, 3),
+                "brick_buzz_rms_um": round(float(np.sqrt(((tail[:, 1:] - rel) ** 2).sum(1).mean())) * 1e6, 1),
+                "brick_moved_mm": round(float(np.linalg.norm(rel - h[0, k, 1:])) * 1e3, 1),
+                "fin_deg": {rob.joint_names[i]: round(float(np.degrees(fin_q[k, j])), 1)
+                            for j, i in enumerate(fin_ids)}})
+    print(out[-1], flush=True)
+res = {"q_cmd": round(q_cmd, 4), "grip_bias": prof.grip_bias, "set": args.set, "tip_local": list(phys.tip_local()),
+       "cases": out}
+dst = REPO / "sim/twin/out/gripper"
+dst.mkdir(parents=True, exist_ok=True)
+(dst / f"bench_{args.tag}.json").write_text(json.dumps(res, indent=1))
+print("BENCH", json.dumps(res), flush=True)
+app.close()
