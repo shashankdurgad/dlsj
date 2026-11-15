@@ -1,0 +1,441 @@
+{
+ "title": "DLSJ: closed-loop defect sorting on a Core Ultra laptop",
+ "tagline": "A VLA picks every brick, an NPU detector reads it while the wrist spins it, and the arm sorts it. Perceive, detect, reason, act and optimise, all on one Intel Core Ultra Series 3 laptop.",
+ "pipeline": [
+  {
+   "step": "Perceive",
+   "device": "NPU",
+   "what": "Top camera: YOLO brick detector finds the bricks left on the table and the plates; the next brick's colour becomes the VLA prompt."
+  },
+  {
+   "step": "Act: pick",
+   "device": "GPU",
+   "what": "MolmoAct2 (fine-tuned, OpenVINO INT8/FP16 + real-time chunking) picks the brick; the gripper reading confirms the grasp."
+  },
+  {
+   "step": "Act: bring",
+   "device": "GPU",
+   "what": "The same VLA brings the brick to the inspection camera; the spin starts when the arm settles."
+  },
+  {
+   "step": "Detect",
+   "device": "NPU",
+   "what": "The wrist rolls the brick through ~180 deg; the held-brick YOLO (v5, plain / marked) reads ~61 frames, ~4 ms each."
+  },
+  {
+   "step": "Reason",
+   "device": "CPU",
+   "what": "Evidence rule over all frames: marked needs enough confident marked frames, plain needs >= 80 % plain; uncertain -> re-spin -> defective."
+  },
+  {
+   "step": "Act: place",
+   "device": "GPU",
+   "what": "Plain -> yellow plate, marked or uncertain -> purple plate; then straight on to the next brick."
+  },
+  {
+   "step": "Optimise",
+   "device": "GPU",
+   "what": "PyTorch -> OpenVINO, INT8, RTC: 34x faster and 36x less energy per action chunk than the stock baseline."
+  }
+ ],
+ "sections": [
+  {
+   "id": "data",
+   "title": "Data collection",
+   "lead": "Teleoperated demonstrations on the real rig (leader arm -> follower), recorded with our teleop recorder and imported into the Physical AI Studio project: three cameras, 640x480 at 30 fps, plus joint states and actions.",
+   "stats": [
+    {
+     "value": "456",
+     "label": "demos in the current calibration",
+     "note": "105,382 frames; 409 train / 44 validation episodes"
+    },
+    {
+     "value": "~1,100",
+     "label": "teleop episodes in total",
+     "note": "456 current-calibration + 517 older pick-and-place + 133 pick-only (older calibration)"
+    },
+    {
+     "value": "3",
+     "label": "cameras",
+     "note": "wrist + top for the policy; inspection camera for the detector"
+    },
+    {
+     "value": "2,351",
+     "label": "labelled rig crops",
+     "note": "38 labelled spins collected on the robot for the YOLO models (9 plain, 15 circle, 14 cross)"
+    }
+   ],
+   "tables": [
+    {
+     "title": "Datasets",
+     "columns": [
+      "dataset",
+      "episodes",
+      "used for"
+     ],
+     "rows": [
+      [
+       "cal2 teleop, 3-stage prompts",
+       "456 (105k frames)",
+       "MolmoAct2 LoRA fine-tune"
+      ],
+      [
+       "older pick-and-place / pick-only",
+       "517 / 133",
+       "earlier policies (pi0.5, SmolVLA, ACT)"
+      ],
+      [
+       "post-train v3.1 demos",
+       "public HF dataset",
+       "expert rows for the grasp residual"
+      ],
+      [
+       "rig inspection spins",
+       "38 spins, 2,351 crops",
+       "evaluating and retraining the held-brick YOLO"
+      ]
+     ]
+    }
+   ],
+   "bullets": [
+    "Three phases per demo, each with its own prompt: pick up the <colour> brick, bring it to the inspection camera, place it in the <colour> bowl.",
+    "Auto-exposure and white balance locked on every camera; the cameras never move.",
+    "Data collection is built into the dashboard: label the brick, press Spin & save, and every crop is stored for retraining."
+   ],
+   "caveats": [
+    "Older-calibration episodes were recorded before a recalibration and are not in the current fine-tune."
+   ]
+  },
+  {
+   "id": "training",
+   "title": "Post-training",
+   "lead": "Fine-tune a robot foundation model on our rig, then teach it to grasp better in a calibrated digital twin.",
+   "stats": [
+    {
+     "value": "8.3 -> 2.8 deg",
+     "label": "error vs the human demos",
+     "note": "zero-shot MolmoAct2-SO100_101 -> our LoRA fine-tune (8k steps), same 60 frames"
+    },
+    {
+     "value": "8k",
+     "label": "LoRA steps",
+     "note": "rank 64, AI2 recipe; 4x B300 on Modal; 5.5k steps: 3.5 deg"
+    },
+    {
+     "value": "7.4 -> 14.8 %",
+     "label": "residual RL in sim",
+     "note": "SAC residual over a scripted stand-in base, 256 held-out episodes (Isaac Lab)"
+    },
+    {
+     "value": "58 %",
+     "label": "first-attempt pick, prior only",
+     "note": "8k MolmoAct2 in the Isaac Lab digital twin: the baseline the DICE-RL grasp residual is trained to raise"
+    }
+   ],
+   "tables": [
+    {
+     "title": "Policy accuracy (error vs recorded demos, joints)",
+     "columns": [
+      "model",
+      "error"
+     ],
+     "rows": [
+      [
+       "MolmoAct2-SO100_101, zero-shot",
+       "8.34 deg"
+      ],
+      [
+       "LoRA fine-tune, 5.5k steps",
+       "3.52 deg"
+      ],
+      [
+       "LoRA fine-tune, 8k steps (deployed)",
+       "2.80 deg"
+      ]
+     ]
+    }
+   ],
+   "bullets": [
+    "LoRA fine-tune of AI2's MolmoAct2 (already trained on SO-100/101) with our three-stage prompts.",
+    "Isaac Lab digital twin of the station: fitted servo response, fin-ray gripper, camera calibration (table-level error 2.7 -> 0.4 cm), deployment drift.",
+    "DICE-RL grasp residual: a small, bounded correction (+-3.5 cm, +-10 deg wrist) on the pick stage, trained with the real 8k model in the loop; deployable live as off / shadow / on.",
+    "Weight-space programming: an experimental wrist-edit of the 8k checkpoint (2.84 deg, not yet arm-tested)."
+   ],
+   "caveats": [
+    "The 7.4 -> 14.8 % residual result uses a scripted stand-in base in sim, not the real policy.",
+    "The DICE-RL residual's sim result is not published yet; 58 % is the prior-only baseline.",
+    "Robustness guarantees in sim: not yet measured."
+   ]
+  },
+  {
+   "id": "inspection",
+   "title": "Defect detection on the NPU",
+   "lead": "The inspection camera watches the brick while the wrist spins it; a held-brick YOLO reads every frame on the NPU, and an evidence rule decides.",
+   "stats": [
+    {
+     "value": "37 / 38",
+     "label": "rig spins right (v5, plain vs marked)",
+     "note": "0 uncertain, 1 disputed label; 29/29 marked, 8/9 plain"
+    },
+    {
+     "value": "~4 ms",
+     "label": "per frame on the NPU",
+     "note": "OpenVINO, held-brick YOLO26n v5"
+    },
+    {
+     "value": "61",
+     "label": "frames per spin",
+     "note": "continuous roll, ~8 s including the return"
+    },
+    {
+     "value": "3",
+     "label": "model families evaluated",
+     "note": "Anomalib PatchCore, YOLO classifier, held-brick YOLO detectors"
+    }
+   ],
+   "tables": [
+    {
+     "title": "Rig evaluation, 38 labelled spins, real decision rule",
+     "columns": [
+      "inspector",
+      "right",
+      "uncertain",
+      "wrong"
+     ],
+     "rows": [
+      [
+       "YOLO v2 classifier on a centre crop",
+       "27",
+       "3",
+       "8"
+      ],
+      [
+       "held-brick box -> v2 classifier on the crop",
+       "31",
+       "2",
+       "5"
+      ],
+      [
+       "held-cube YOLO26n v4 (plain / circle / cross)",
+       "37",
+       "0",
+       "1"
+      ],
+      [
+       "held-brick YOLO26n v5 (plain / marked), live",
+       "37",
+       "0",
+       "1"
+      ]
+     ]
+    },
+    {
+     "title": "Anomaly ensemble (earlier, 116 held-out crops)",
+     "columns": [
+      "method",
+      "result"
+     ],
+     "rows": [
+      [
+       "Anomalib PatchCore (Studio-trained)",
+       "15/16 plain accepted, 54/58 crosses and 50/55 circles flagged"
+      ],
+      [
+       "detector + PatchCore + YOLO ensemble",
+       "88 correct / 1 wrong / 27 uncertain"
+      ],
+      [
+       "YOLO v2 classifier",
+       "97.4 % test accuracy"
+      ]
+     ]
+    }
+   ],
+   "bullets": [
+    "Held-brick detection ignores bricks lying on the table, so the background can't fool it.",
+    "Uncertain after one re-spin counts as defective: the safe direction.",
+    "Two plates: plain -> yellow, marked (circle or cross) -> purple."
+   ],
+   "caveats": [
+    "The rig spins are one session; overlap with the detector's training data is unknown. The one miss is a brick whose label is disputed."
+   ]
+  },
+  {
+   "id": "runtime",
+   "title": "Runtime optimisation",
+   "lead": "Same 60 recorded frames, stock PyTorch vs what runs on the robot: OpenVINO on the Arc iGPU, INT8 weights, real-time chunking.",
+   "stats": [
+    {
+     "value": "34x",
+     "label": "faster per action chunk",
+     "note": "10,770 ms -> 313 ms"
+    },
+    {
+     "value": "36x",
+     "label": "less energy per chunk",
+     "note": "437 J -> 12 J (CPU package, RAPL)"
+    },
+    {
+     "value": "4.5x",
+     "label": "less memory",
+     "note": "26.8 GB -> 5.9 GB"
+    },
+    {
+     "value": "3x",
+     "label": "more accurate",
+     "note": "8.3 deg -> 2.8 deg vs the demos"
+    }
+   ],
+   "tables": [
+    {
+     "title": "Baseline vs now",
+     "columns": [
+      "",
+      "baseline: stock PyTorch, CPU",
+      "now: OpenVINO GPU INT8 + RTC"
+     ],
+     "rows": [
+      [
+       "latency per 30-action chunk",
+       "10,770 ms",
+       "313 ms"
+      ],
+      [
+       "p99",
+       "11,679 ms",
+       "317 ms"
+      ],
+      [
+       "peak RAM",
+       "26.8 GB",
+       "5.9 GB"
+      ],
+      [
+       "energy per chunk (package)",
+       "437 J",
+       "12 J"
+      ],
+      [
+       "error vs demos",
+       "8.34 deg",
+       "2.80 deg"
+      ],
+      [
+       "30 Hz control loop",
+       "waits ~11 s per chunk",
+       "never idle (chunk lands before the queue runs dry)"
+      ]
+     ]
+    },
+    {
+     "title": "What each step bought",
+     "columns": [
+      "step",
+      "effect"
+     ],
+     "rows": [
+      [
+       "PyTorch -> OpenVINO on the Arc iGPU",
+       "10,770 -> 362 ms (PyTorch on the GPU crashed the device)"
+      ],
+      [
+       "INT8 weight-only quantisation",
+       "362 -> 285 ms, 20 -> 6 GB, accuracy unchanged (0.24 deg)"
+      ],
+      [
+       "Real-time chunking (RTC)",
+       "+27 ms per call, no stalls; hand-off jump 2.6 -> 1.2 deg"
+      ],
+      [
+       "Fine-tuning (LoRA)",
+       "no extra compute; error 8.4 -> 2.8 deg"
+      ],
+      [
+       "Graph, kernel and runtime checks",
+       "already optimal: no gain (documented)"
+      ],
+      [
+       "YOLO on the NPU, perception only when needed",
+       "~4-6 ms per frame; servo-read errors gone"
+      ],
+      [
+       "Continuous spin",
+       "61 frames in 8.2 s vs 12 frames in 11.2 s"
+      ]
+     ]
+    }
+   ],
+   "charts": [
+    {
+     "title": "Latency per action chunk (ms)",
+     "unit": "ms",
+     "bars": [
+      [
+       "stock PyTorch CPU",
+       10770
+      ],
+      [
+       "OpenVINO GPU FP16",
+       362
+      ],
+      [
+       "OpenVINO GPU INT8",
+       285
+      ],
+      [
+       "INT8 + RTC (deployed)",
+       313
+      ]
+     ]
+    },
+    {
+     "title": "Energy per action chunk (J)",
+     "unit": "J",
+     "bars": [
+      [
+       "stock PyTorch CPU",
+       437
+      ],
+      [
+       "OpenVINO GPU INT8 + RTC",
+       12
+      ]
+     ]
+    }
+   ],
+   "bullets": [
+    "Device split: VLA on the Arc GPU, held-brick YOLO on the NPU, cameras and the 30 Hz control loop on the CPU.",
+    "The GPU draws a little more power while running (38.7 W vs 31.8 W package) but finishes each chunk 44x sooner."
+   ],
+   "caveats": [
+    "Baseline is the zero-shot model; fine-tuning doesn't change the compute.",
+    "The power run's baseline took 13.7 s per chunk (warm machine) vs 10.8 s in the latency run.",
+    "The robot currently runs the FP16 export of the same model (~360 ms per chunk); INT8 is the benchmarked configuration."
+   ]
+  },
+  {
+   "id": "studio",
+   "title": "Physical AI Studio",
+   "lead": "The hub for the whole workflow: robots with the current calibration, recording, the project's datasets, and the model registry the robot loads its policy from.",
+   "stats": [
+    {
+     "value": "1",
+     "label": "registry entry drives the robot",
+     "note": "MolmoAct2 SO-101 cal2 3-stage LoRA, step 8000 (OpenVINO INT8 + RTC)"
+    },
+    {
+     "value": "456",
+     "label": "episodes in the Studio dataset",
+     "note": "cal2 teleop, 3-stage prompts"
+    }
+   ],
+   "tables": [],
+   "bullets": [
+    "The loop resolves its policy through the Studio model registry and checks it against Studio before running.",
+    "Older recordings (517 pick-and-place, 133 pick-only) and the SmolVLA fallback live in the same project.",
+    "Studio robots carry the current arm calibration (synced and read back)."
+   ],
+   "caveats": []
+  }
+ ]
+}
