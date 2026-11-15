@@ -28,12 +28,12 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
-KEEP_LOOP = ("mode", "step", "cycle", "attempts", "tallies", "cycles", "step_s", "target", "grasp")
+KEEP_LOOP = ("mode", "step", "cycle", "attempts", "tallies", "cycles", "step_s", "target", "grasp", "started")
 
 
 def trim(snap: dict) -> dict:
     """The fields the page draws (the console snapshot also carries config, events and collection state)."""
-    out = {k: snap.get(k) for k in ("phase", "stage", "bowl", "bowls", "brick", "latency_ms", "latency_median_ms",
+    out = {k: snap.get(k) for k in ("phase", "stage", "prompt", "bowl", "bowls", "brick", "latency_ms", "latency_median_ms",
                                     "chunk_age_s", "chunks", "inflight", "measured", "cmd", "blend")}
     loop = snap.get("loop") or {}
     out["loop"] = {k: loop.get(k) for k in KEEP_LOOP} if loop else None
@@ -76,6 +76,7 @@ class Source:
             snap, t_ok = dict(self.snap), self.t_ok
         out = trim(snap) if snap else {}
         out["link"] = {"age_s": None if not t_ok else round(time.time() - t_ok, 2)}
+        out["now"] = time.time()
         if out.get("policy") is None and self.policy_hint:
             out["policy"] = self.policy_hint
         return out
@@ -121,12 +122,15 @@ class MockRobot:
              70 + 10 * math.sin(2 * w), 15 * math.sin(3 * w), 35 if 0.2 < ph < 0.35 or ph > 0.85 else 6]
         cmd = [v + random.uniform(-1.5, 1.5) for v in q]
         table = [b for i, b in enumerate(cls.bricks) if i != n % len(cls.bricks)]
-        return {"phase": "running", "stage": stage, "bowl": bowl, "bowls": list(cls.bowls), "brick": brick,
+        prompt = {"pick": f"pick up the {brick} brick", "bring": "bring the brick to the inspection camera",
+                  "place": f"place the brick in the {bowl} bowl"}[stage]
+        return {"phase": "running", "stage": stage, "prompt": prompt, "bowl": bowl, "bowls": list(cls.bowls), "brick": brick,
                 "latency_ms": round(300 + 25 * math.sin(t * 1.7) + random.uniform(-15, 15), 1),
                 "latency_median_ms": 312.0, "chunk_age_s": round((t % 0.33), 2), "chunks": 2, "inflight": True,
                 "measured": [round(v, 2) for v in q], "cmd": [round(v, 2) for v in cmd], "blend": "rtc(h=15, g=3.0)",
                 "loop": {"mode": "running", "step": step, "cycle": n + 1, "attempts": 0, "tallies": dict(cls.tallies),
                          "cycles": cur, "step_s": round(ph * period, 1), "target": table[0] if table else None,
+                         "started": cls.t0,
                          "grasp": {"state": "holding" if stage != "pick" else "open"}},
                 "perception": {"table": table, "sorted": [], "workspace": [0, 60, 560, 480],
                                "plates": [{"colour": "yellow", "cx": 480, "cy": 120, "r": 55},
