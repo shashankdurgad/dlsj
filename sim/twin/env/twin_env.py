@@ -76,7 +76,8 @@ class TwinEnvCfg:
     # control / episode
     episode_s: float = 30.0
     max_relative_target: float = 10.0  # LeRobot clamp, units per tick (1000 = off, as in teleop replays)
-    meas_noise: bool = True  # measured-state noise (A1 per-joint std) on obs["state"]
+    meas_noise: bool = False  # Gaussian state noise; off: the play model's quantised encoder replaces it
+    play: bool = True  # joint play / hold band / sag / encoder model fitted from data (sim/twin/dynamics)
     settle_ticks: int = 4  # physics ticks after a reset (bricks drop 0.5 mm, arm holds) before the first obs
     # scene
     layout: str = "sample"  # "sample": residual env layout distributions (seeded) | "nominal": fixed layout
@@ -265,6 +266,11 @@ class TwinEnv:
                       meas_noise=cfg.meas_noise, episode_s=cfg.episode_s, instructions=dict(cfg.instructions),
                       target_size=cfg.target_size, **cfg.residual_kw)
         self.residual = ResidualEnv(rcfg, None, self.sim, self.scene, layout, cfg.device)
+        self.play = None
+        if cfg.play:
+            from sim.twin.dynamics.play import PlayCfg, install
+
+            self.play = install(self.residual, PlayCfg())
         # the twin's measured cameras (the residual env loaded joe_cal2's inspect camera for its in-view check)
         self.residual.profile = self.profile
         # gripper unit mapping of the twin profile (the physics layer may re-solve the bias for its finger colliders)

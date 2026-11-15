@@ -63,7 +63,9 @@ PROPS = {
     # white box (centre x, y; size x, y, z)
     "box_center": (-0.03, 0.36),
     "box_size": (0.24, 0.13, 0.115),
-    "ovh_foot": (0.446, -0.375),  # overhead tripod: the one foot the top camera sees
+    # overhead tripod foot: seen in one session only (the tripod moves between sessions), so off by default;
+    # set to (0.446, -0.375) to show it
+    "ovh_foot": None,
     # robot base clamp (blue bracket centre x, y, size), black bar under the edge
     "clamp_bracket": ((-0.06, -0.03), (0.075, 0.03, 0.035)),
 }
@@ -281,8 +283,9 @@ def add_props(num_envs: int = 1, profile=None, colliders: bool = True, clip_tabl
             _collider_box(stage, f"{root}/WhiteBoxCollider", (bc[0], bc[1], TABLE_Z + bsz[2] / 2), bsz)
             info["colliders"].append("WhiteBox")
         # ---- overhead camera tripod: the visible rubber foot
-        foot = np.r_[PROPS["ovh_foot"], TABLE_Z]
-        _mesh(stage, f"{root}/OverheadFoot", tube_mesh(foot, foot + [0, 0, 0.03], 0.02), M["rubber"])
+        if PROPS["ovh_foot"] is not None:
+            foot = np.r_[PROPS["ovh_foot"], TABLE_Z]
+            _mesh(stage, f"{root}/OverheadFoot", tube_mesh(foot, foot + [0, 0, 0.03], 0.02), M["rubber"])
     return info
 
 
