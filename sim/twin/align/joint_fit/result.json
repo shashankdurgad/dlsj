@@ -1,0 +1,519 @@
+{
+ "_source": "sim/twin/align/joint_fit (fit 'W'; see README.md). Units: rad, m. Silhouettes of the arm links and gripper body only (the real TPU fin-ray fingers are not modelled: URDF jaws excluded).",
+ "fit": "W",
+ "joint_offsets_rad_for_sim": [
+  -0.07994283087225337,
+  0.006686100704140219,
+  -0.0858637006352052,
+  -0.01694144113339518,
+  -1.6802706497515691,
+  0.0
+ ],
+ "joint_offsets_deg": {
+  "shoulder_pan": -4.58,
+  "shoulder_lift": 0.383,
+  "elbow_flex": -4.92,
+  "wrist_flex": -0.971,
+  "wrist_roll": -96.272
+ },
+ "delta_vs_joe_cal2_deg": {
+  "shoulder_pan": -4.58,
+  "shoulder_lift": 3.419,
+  "elbow_flex": -3.67,
+  "wrist_flex": 3.186,
+  "wrist_roll": 7.142
+ },
+ "bootstrap_sd_deg": {
+  "shoulder_pan": NaN,
+  "shoulder_lift": NaN,
+  "elbow_flex": NaN,
+  "wrist_flex": NaN,
+  "wrist_roll": NaN
+ },
+ "n_bootstrap": 0,
+ "spread_across_fits_deg (B3 top+inspect, C0, C, W)": {
+  "shoulder_pan": 1.782,
+  "shoulder_lift": 0.788,
+  "elbow_flex": 1.355,
+  "wrist_flex": 1.048,
+  "wrist_roll": 10.486
+ },
+ "joe_cal2_offsets_rad": [
+  0.0,
+  -0.0529840809375952,
+  -0.02180408625806328,
+  -0.07254370037136444,
+  -1.8049189487815467,
+  0.0
+ ],
+ "all_fits_offsets_rad": {
+  "B0": [
+   0.0,
+   -0.0529840809375952,
+   -0.02180408625806328,
+   -0.07254370037136444,
+   -1.8049189487815467
+  ],
+  "B1": [
+   -0.05172056623032688,
+   -0.005215029829487808,
+   -0.01731992986110907,
+   -0.016055888294479667,
+   -1.7067480166569793
+  ],
+  "B2": [
+   -0.021753177906965612,
+   -0.0051936407846399565,
+   -0.023182630671441707,
+   -0.01513746644146801,
+   -1.697690357451736
+  ],
+  "B3": [
+   -0.05074883562807736,
+   -0.003863893470637071,
+   -0.06368100665463378,
+   0.001349308714908501,
+   -1.8065226552495572
+  ],
+  "C0": [
+   -0.04884969245209648,
+   -0.007064183052604471,
+   -0.08732263177613495,
+   -0.013703447676055858,
+   -1.8632800477988944
+  ],
+  "C": [
+   -0.04884654108335395,
+   -0.007059525035828219,
+   -0.08574125111700416,
+   -0.013677172786770206,
+   -1.8602357762457706
+  ],
+  "joe_cal2 (current twin)": [
+   0.0,
+   -0.0529840809375952,
+   -0.02180408625806328,
+   -0.07254370037136444,
+   -1.8049189487815467
+  ],
+  "W": [
+   -0.07994283087225337,
+   0.006686100704140219,
+   -0.0858637006352052,
+   -0.01694144113339518,
+   -1.6802706497515691
+  ]
+ },
+ "wrist_camera_mount": {
+  "source": "fixed to sim/twin/robot/wrist_mount.json",
+  "frame": "gripper_link",
+  "local_to_cv": [
+   [
+    0.975102,
+    -0.041203,
+    0.217897
+   ],
+   [
+    -0.156161,
+    -0.825226,
+    0.542786
+   ],
+   [
+    0.15745,
+    -0.563298,
+    -0.811113
+   ]
+  ],
+  "position_local": [
+   -0.004027,
+   0.053296,
+   -0.04946
+  ],
+  "fx": 343.0686589401076,
+  "fy": 340.63022488177603,
+  "cx": 339.26142395487193,
+  "cy": 236.01045040972252,
+  "dist": [
+   0.05430527410096403,
+   -0.06627378330976615,
+   -0.0003352643224875529,
+   -0.00022849638552169453,
+   0.0019670978061707674
+  ],
+  "note": "physical camera rotation; use with the measured intrinsics + distortion"
+ },
+ "inspect_camera": {
+  "world_to_cv": [
+   [
+    -0.9658323733234834,
+    0.25536763759400605,
+    -0.04421760181177712
+   ],
+   [
+    0.061832693691922784,
+    0.0613645346043141,
+    -0.9961983295928566
+   ],
+   [
+    -0.25168342144672406,
+    -0.964894690400177,
+    -0.0750579230089559
+   ]
+  ],
+  "position": [
+   0.3809578018360859,
+   0.14379212893712356,
+   0.10643265281930382
+  ],
+  "fx": 605.0665283203125,
+  "fy": 604.3594970703125,
+  "cx": 309.6224670410156,
+  "cy": 252.01724243164062,
+  "note": "fitted on the recorded episodes (2026-11-14), start = ChArUco measurement"
+ },
+ "grasp_depth_candidates": {
+  "_note": "W9 / WS9 (D9 / S9): fitted with a grasp-depth term (fingertip 9 mm below joe_cal2 at every gripper-close frame) plus the cameras; WE (E): offsets + sag from the cameras alone. sag: q[lift, elbow, wrist_flex] += sag * static gravity torque (fk.SO101.gravity_torque, URDF masses + 20 g camera on gripper_link). Compare heldout_loss with C (cameras only).",
+  "best_heldout_loss": {
+   "top": 5.900786251831695,
+   "inspect": 13.457099032172021,
+   "table": 14.900786518995247
+  },
+  "best_fingertip_dz_mm": -5.439329513570764,
+  "W9": {
+   "joint_offsets_rad_for_sim": [
+    -0.0819432805284035,
+    0.017274543575871923,
+    -0.08054798740044437,
+    -0.03023370954585218,
+    -1.6803820368077729,
+    0.0
+   ],
+   "joint_offsets_deg": {
+    "shoulder_pan": -4.695,
+    "shoulder_lift": 0.99,
+    "elbow_flex": -4.615,
+    "wrist_flex": -1.732,
+    "wrist_roll": -96.279
+   },
+   "sag_rad_per_Nm_lift_elbow_wflex": [
+    0.0,
+    0.0,
+    0.0
+   ],
+   "fingertip_dz_vs_joe_cal2_mm_heldout_mean": -8.303483919222174,
+   "heldout_loss": {
+    "top": 5.891228364707657,
+    "inspect": 13.764311001948775,
+    "table": 14.923833422389869
+   },
+   "wrist_camera_local_to_cv": [
+    [
+     0.975102,
+     -0.041203,
+     0.217897
+    ],
+    [
+     -0.156161,
+     -0.825226,
+     0.542786
+    ],
+    [
+     0.15745,
+     -0.563298,
+     -0.811113
+    ]
+   ],
+   "wrist_camera_position_local": [
+    -0.004027,
+    0.053296,
+    -0.04946
+   ]
+  },
+  "WS9": {
+   "joint_offsets_rad_for_sim": [
+    -0.0912416733719548,
+    -0.0529840809375952,
+    -0.02180408625806328,
+    -0.07254370037136444,
+    -1.6800984436331026,
+    0.0
+   ],
+   "joint_offsets_deg": {
+    "shoulder_pan": -5.228,
+    "shoulder_lift": -3.036,
+    "elbow_flex": -1.249,
+    "wrist_flex": -4.156,
+    "wrist_roll": -96.263
+   },
+   "sag_rad_per_Nm_lift_elbow_wflex": [
+    0.04328014400796235,
+    0.022165168619875074,
+    -0.2550567751029181
+   ],
+   "fingertip_dz_vs_joe_cal2_mm_heldout_mean": -7.412580962611952,
+   "heldout_loss": {
+    "top": 6.000303346991971,
+    "inspect": 13.674993483360455,
+    "table": 14.389267563000793
+   },
+   "wrist_camera_local_to_cv": [
+    [
+     0.975102,
+     -0.041203,
+     0.217897
+    ],
+    [
+     -0.156161,
+     -0.825226,
+     0.542786
+    ],
+    [
+     0.15745,
+     -0.563298,
+     -0.811113
+    ]
+   ],
+   "wrist_camera_position_local": [
+    -0.004027,
+    0.053296,
+    -0.04946
+   ]
+  },
+  "WE": {
+   "joint_offsets_rad_for_sim": [
+    -0.07994278068144654,
+    0.006686198652674828,
+    -0.08586371050338114,
+    -0.016941471008228542,
+    -1.6802688898539242,
+    0.0
+   ],
+   "joint_offsets_deg": {
+    "shoulder_pan": -4.58,
+    "shoulder_lift": 0.383,
+    "elbow_flex": -4.92,
+    "wrist_flex": -0.971,
+    "wrist_roll": -96.272
+   },
+   "sag_rad_per_Nm_lift_elbow_wflex": [
+    -6.702958011428752e-07,
+    -8.47537877057336e-08,
+    -1.0638492199668316e-06
+   ],
+   "fingertip_dz_vs_joe_cal2_mm_heldout_mean": -5.439232012411213,
+   "heldout_loss": {
+    "top": 5.900803295705758,
+    "inspect": 13.457097992537584,
+    "table": 14.900772501250255
+   },
+   "wrist_camera_local_to_cv": [
+    [
+     0.975102,
+     -0.041203,
+     0.217897
+    ],
+    [
+     -0.156161,
+     -0.825226,
+     0.542786
+    ],
+    [
+     0.15745,
+     -0.563298,
+     -0.811113
+    ]
+   ],
+   "wrist_camera_position_local": [
+    -0.004027,
+    0.053296,
+    -0.04946
+   ]
+  }
+ },
+ "grasp_depth_analytic": {
+  "_note": "single-parameter changes on top of the fit that put the fingertip GRASP_DROP lower at the gripper-close frames (median over 456 episodes, linearised); camera cost from the 1-D profiles around C (stage2.json, loss at +2 deg vs 0, px)",
+  "fingertip_dz_mm_per_deg": {
+   "pan": -8.436065637718038e-06,
+   "lift": -3.924645124369408,
+   "elbow": -2.811555433028752,
+   "wflex": -0.6057382862884251,
+   "wroll": 0.026403673661065663,
+   "sag_lift": -1.8041302535404744,
+   "sag_elbow": -0.7099841613371558,
+   "sag_wflex": -0.015242203682312716
+  },
+  "lift_only": {
+   "delta_deg": 2.29,
+   "joint_offsets_rad_for_sim": [
+    -0.07994283087225337,
+    0.04671000801339749,
+    -0.0858637006352052,
+    -0.01694144113339518,
+    -1.6802706497515691,
+    0.0
+   ],
+   "camera_loss_change_at_+2deg": {
+    "top": -0.17,
+    "inspect": 0.6,
+    "table": 0.99,
+    "grasp": -2.79
+   }
+  },
+  "elbow_only": {
+   "delta_deg": 3.2,
+   "joint_offsets_rad_for_sim": [
+    -0.07994283087225337,
+    0.006686100704140219,
+    -0.029994401088699232,
+    -0.01694144113339518,
+    -1.6802706497515691,
+    0.0
+   ],
+   "camera_loss_change_at_+2deg": {
+    "top": -0.21,
+    "inspect": 0.61,
+    "table": 1.21,
+    "grasp": -3.51
+   }
+  },
+  "wflex_only": {
+   "delta_deg": 14.86,
+   "joint_offsets_rad_for_sim": [
+    -0.07994283087225337,
+    0.006686100704140219,
+    -0.0858637006352052,
+    0.24237786595873645,
+    -1.6802706497515691,
+    0.0
+   ],
+   "camera_loss_change_at_+2deg": {
+    "top": -0.02,
+    "inspect": 0.41,
+    "table": 0.78,
+    "grasp": -0.86
+   }
+  },
+  "sag_lift_only": {
+   "sag_deg_per_Nm": 4.99,
+   "sag_rad_per_Nm_lift_elbow_wflex": [
+    0.08706668067409895,
+    0.0,
+    0.0
+   ],
+   "joint_offsets_rad_for_sim": [
+    -0.07994283087225337,
+    0.006686100704140219,
+    -0.0858637006352052,
+    -0.01694144113339518,
+    -1.6802706497515691,
+    0.0
+   ]
+  },
+  "sag_elbow_only": {
+   "sag_deg_per_Nm": 12.68,
+   "sag_rad_per_Nm_lift_elbow_wflex": [
+    0.0,
+    0.2212438547694531,
+    0.0
+   ],
+   "joint_offsets_rad_for_sim": [
+    -0.07994283087225337,
+    0.006686100704140219,
+    -0.0858637006352052,
+    -0.01694144113339518,
+    -1.6802706497515691,
+    0.0
+   ]
+  }
+ },
+ "heldout_per_camera": {
+  "joe_cal2 (current twin)": {
+   "top": {
+    "loss": 6.927546282365666,
+    "iou": 0.2902248930139233,
+    "n": 132
+   },
+   "inspect": {
+    "loss": 15.014246345131086,
+    "iou": 0.16640110694359508,
+    "n": 131
+   },
+   "table": {
+    "loss": 15.776472751787775,
+    "iou": 68.86792452830188,
+    "n": 106
+   },
+   "grasp": {
+    "loss": 8.893813592013416,
+    "iou": 6.063734220208031,
+    "n": 152
+   }
+  },
+  "C": {
+   "top": {
+    "loss": 5.960167167567186,
+    "iou": 0.3259144664575461,
+    "n": 132
+   },
+   "inspect": {
+    "loss": 12.42205125277686,
+    "iou": 0.18359617171472964,
+    "n": 129
+   },
+   "table": {
+    "loss": 12.77686513756251,
+    "iou": 50.943396226415096,
+    "n": 106
+   },
+   "grasp": {
+    "loss": 9.303995559446642,
+    "iou": 3.463273662006053,
+    "n": 152
+   }
+  },
+  "joe_cal2 offsets + wrist_mount": {
+   "top": {
+    "loss": 6.927546282365666,
+    "iou": 0.2902248930139233,
+    "n": 132
+   },
+   "inspect": {
+    "loss": 15.014246345131086,
+    "iou": 0.16640110694359508,
+    "n": 131
+   },
+   "table": {
+    "loss": 22.66291771620659,
+    "iou": 66.12264150943396,
+    "n": 106
+   },
+   "grasp": {
+    "loss": 9.0,
+    "iou": 0.0,
+    "n": 152
+   }
+  },
+  "W": {
+   "top": {
+    "loss": 5.900786251831695,
+    "iou": 0.32073645087898667,
+    "n": 132
+   },
+   "inspect": {
+    "loss": 13.457099032172021,
+    "iou": 0.1575165098231495,
+    "n": 119
+   },
+   "table": {
+    "loss": 14.900786518995247,
+    "iou": 59.20754716981132,
+    "n": 106
+   },
+   "grasp": {
+    "loss": 3.8934303920977213,
+    "iou": -5.439329513570764,
+    "n": 152
+   }
+  }
+ }
+}
