@@ -1,10 +1,21 @@
 #!/bin/bash
 # THE RUN-TIME LOOP: closed-loop brick sorting + perception dashboard (loop_control.py) on http://<xps>:${PORT:-8020}/
-# EXPORT defaults to the newest fine-tuned MolmoAct2 (8k steps). Extra args go to loop_control.py / smolvla_control.py.
+# The policy is chosen by its Physical AI Studio model ID (STUDIO_MODEL, default: the fine-tuned MolmoAct2 8k,
+# registered in the "dlsj brick sorting" project): dlsj.deploy.studio_registry checks it against Studio and gives
+# the export dir. EXPORT=<dir> overrides with a plain export folder. Extra args go to loop_control.py /
+# smolvla_control.py.
 cd ~/inference/dlsj-smolvla
 export PYTHONPATH=$PWD
+PY=~/desmond/venvs/pi05rt/bin/python
 mkdir -p ~/inference/logs/loop
-exec ~/desmond/venvs/pi05rt/bin/python ~/inference/deploy/smolvla/loop_control.py \
+STUDIO_MODEL=${STUDIO_MODEL-22fb0973-b9df-4c10-bca7-8af2a8f9739d}
+if [ -z "${EXPORT:-}" ] && [ -n "$STUDIO_MODEL" ]; then
+  EXPORT=$($PY -m dlsj.deploy.studio_registry resolve "$STUDIO_MODEL") || {
+    echo "Physical AI Studio model $STUDIO_MODEL could not be resolved (see above); EXPORT=<dir> runs a plain export" >&2
+    exit 1
+  }
+fi
+exec $PY ~/inference/deploy/smolvla/loop_control.py \
   --export ${EXPORT:-$HOME/inference/exports/molmo_opt/ft_cal2_456_8k/rtc_int8} --device GPU --cache-dir ~/inference/ov_cache \
   --training-tasks ~/inference/deploy/molmoact2/finetune_cal2_456.json --brick blue \
   --pick-prompt "pick up the {brick} brick" --bring-prompt "bring the brick to the inspection camera" \

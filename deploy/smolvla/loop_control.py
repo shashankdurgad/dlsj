@@ -51,6 +51,28 @@ LCFG = SimpleNamespace(bring_mode="vla", use_inspect_pose=False, pose_speed=30.0
                        verify_conf=0.25, verify_frames=8, verify_timeout=10.0, max_verify_fails=2,
                        log_dir="~/inference/logs/loop")
 STEPS = ["survey", "pick", "bring", "tune", "inspect", "place", "home", "verify"]
+STUDIO: dict = {}  # Physical AI Studio model record of the loaded policy (dashboard), see studio_info()
+
+
+def studio_info(rest: list[str]) -> dict:
+    """The Physical AI Studio model behind `--export` (run_loop.sh resolves STUDIO_MODEL to the export dir).
+
+    Read from the `studio_model.json` that `dlsj.deploy.studio_registry` keeps next to the export; {} for an export
+    that did not come from Studio. Never raises: the dashboard line is informational.
+    """
+    export = S._arg(rest, "--export")
+    if not export:
+        return {}
+    try:
+        from dlsj.deploy.studio_registry import record_for_export
+
+        rec = record_for_export(export)
+    except Exception:  # noqa: BLE001
+        return {}
+    if not rec:
+        return {}
+    keep = ("model_id", "name", "policy", "version", "project_name", "dataset_name", "dataset_id", "backend")
+    return {**{k: rec.get(k) for k in keep}, "device": S._arg(rest, "--device") or ""}
 
 
 class FrameStream:
@@ -785,6 +807,7 @@ def make_loop_controller_class(base):
                 d["perception"].pop("inspect_seen", None)
                 d["loop"]["config"] = {"hold": [LCFG.hold_min, LCFG.hold_max], "lost_below": LCFG.lost_below,
                                        "open_above": LCFG.open_above}
+            d["studio"] = STUDIO
             return d
 
         def stop(self) -> None:
@@ -959,6 +982,10 @@ def main() -> None:
         pc.make_handler = wrap_handler(pc.make_handler)
 
     S.add_home_button = add_home_and_loop
+    STUDIO.update(studio_info(rest))
+    if STUDIO:
+        print(f"policy: Physical AI Studio model '{STUDIO['name']}' ({STUDIO['policy']}, id {STUDIO['model_id']}, "
+              f"trained on '{STUDIO.get('dataset_name')}')", flush=True)  # logging is configured later, in S.main
     sys.argv = [sys.argv[0], *rest]
     S.main()
 

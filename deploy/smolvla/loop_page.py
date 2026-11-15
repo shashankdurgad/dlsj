@@ -71,7 +71,7 @@ th{color:var(--mute);font-weight:500;text-align:left;padding:4px 6px;border-bott
  </div>
  <div class="col">
   <section class="card"><h2>Act &middot; VLA <em id="vlaph"></em></h2><div class="prompt" id="prompt">&ndash;</div>
-   <dl class="kv"><dt>Inference</dt><dd id="lat">&ndash;</dd><dt>Actions queued</dt><dd id="q">&ndash;</dd><dt>Chunking</dt><dd id="bl">&ndash;</dd><dt>Stage time</dt><dd id="st">&ndash;</dd></dl></section>
+   <dl class="kv"><dt>Model</dt><dd id="model">&ndash;</dd><dt>Inference</dt><dd id="lat">&ndash;</dd><dt>Actions queued</dt><dd id="q">&ndash;</dd><dt>Chunking</dt><dd id="bl">&ndash;</dd><dt>Stage time</dt><dd id="st">&ndash;</dd></dl></section>
   <section class="card"><h2>Grasp check <em id="gnum"></em></h2><div class="gstate" id="gstate">&ndash;</div>
    <div class="gauge" id="gauge"><div class="band" id="band"></div><div class="cmd" id="gcmd"></div><div class="pos" id="gpos"></div></div>
    <div class="mute" style="font-size:12px">white = gripper position, blue = command, green band = holding a brick (4&ndash;9). Holding = squeezing an object at brick width.</div></section>
@@ -130,6 +130,7 @@ async function tick(){let r;try{r=await fetch('/ctl/state').then(x=>x.json());wi
  const step=lp.step==='release'?'place':lp.step,order=STEPS.map(s=>s[0]),cur=order.indexOf(step);
  order.forEach((s,i)=>{const c=$('c_'+s);c.className='chip'+(s===step?' on':'')+(cur>=0&&i<cur&&lp.mode==='running'?' done':'')});
  $('prompt').textContent=r.phase==='running'?r.prompt:(r.phase==='inspecting'?'(policy paused: inspecting)':'(policy idle)');
+ const sm=r.studio||{};$('model').textContent=sm.name?`${sm.name} · Physical AI Studio · ${sm.backend==='openvino'?'OpenVINO':sm.backend||''} ${sm.device||''}`:'–';$('model').title=sm.model_id?`Studio model ${sm.model_id}, trained on ${sm.dataset_name||sm.dataset_id}`:'';
  $('vlaph').textContent=r.phase;$('lat').textContent=r.latency_ms!=null?`${r.latency_ms} ms (median ${r.latency_median_ms})`:'–';
  $('q').textContent=r.queued;$('bl').textContent=r.blend||'–';$('st').textContent=(lp.step_s??'–')+' s';
  const g=lp.grasp||{},cfg=lp.config||{hold:[4,9]},sc=v=>Math.max(0,Math.min(100,v/40*100));

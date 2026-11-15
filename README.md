@@ -26,6 +26,14 @@ No ACT: one π0.5 model handles pick and place by instruction (Intel's reference
 
 **Phase 2 (extension):** bricks are numbered; a number reader on the `top` camera (NPU) and a planner sort them, π0.5 picks each brick in order, and `inspect` re-checks the number and defects before placing. See PLAYBOOK §8.2.
 
+## Physical AI Studio
+
+The Studio project **dlsj brick sorting** on the XPS holds the robot, the three cameras, the environment, the
+training dataset and the deployed VLA (MolmoAct2 fine-tuned with Studio's training library, exported with Studio's
+OpenVINO exporter). The run-time loop (`deploy/smolvla/run_loop.sh`) picks its policy by **Studio model ID** and
+runs it with Studio's runtime (`physicalai`, OpenVINO on the GPU). Details, IDs and commands:
+[deploy/studio/README.md](deploy/studio/README.md).
+
 ## Timeline
 
 1. **0–1 h:** XPS is ready (`ssh xps`); verify the arm and the three cameras; write down the kickoff rules.

@@ -341,6 +341,10 @@ pip install "physicalai[so101,realsense]"
 5. **Run:** on the Models screen use **Run model**, choose backend **OpenVINO** and device **GPU**. Studio's built-in inference supports only **GPU or CPU**, so NPU work (Anomalib, or the stretch action-expert split) runs through our own OpenVINO / `physicalai` runtime code.
 6. **HF token:** π0.5 needs `HF_TOKEN` (read-only, with PaliGemma access) in `application/docker/.env`, then `docker compose up -d --force-recreate`.
 
+**Status (15 Nov):** project "dlsj brick sorting" holds the environment, the cal2 3-stage dataset (456 episodes) and
+the deployed MolmoAct2 model (Studio library training on Modal, Studio OpenVINO export, INT8 + RTC); the loop
+resolves its policy by Studio model ID. See `deploy/studio/README.md`.
+
 **Manual fallback flow:** record on the XPS → push the dataset to the HF Hub → **train on cloud/team RTX** (CUDA, bf16) → download the checkpoint → `physicalai export --backend openvino` (INT8) → run on the XPS.
 - **Studio on CUDA:** the Studio configs default to `accelerator: gpu`, which is what you want on RTX. The XPU flags in 4.2 are only needed when training on Intel. Studio also ships a trainer container (`application/docker/docker-compose.trainer.yaml`).
 - **π0.5 GPU size:** ≥24 GB to fine-tune; 48–80 GB (RTX 6000 Ada / L40S / A100 / H100) is comfortable. Plain fine-tune first; SnapFlow 1-step distillation is optional (~12 GPU-h).

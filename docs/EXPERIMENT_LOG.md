@@ -142,6 +142,7 @@ Other research done in conversation (not separate reports):
 - Main policy track: MolmoAct2 LoRA SFT; prompts: 3-phase canonical, bowl as the only parameter; text length 128 trained in.
 - Deployment: OpenVINO on the Arc GPU, INT8 preferred on data (FP16 if accuracy concerns after fine-tune), RTC on.
 - RL: out of scope for deployment; demo video only, real policy as base, scripted fallback (done). Real-policy run cancelled (checkpoint transfer too slow).
+- **Physical AI Studio is the model registry (15 Nov)**: the cal2 3-stage training set (456 episodes, exact training prompts) and the MolmoAct2 8k INT8+RTC export are in the Studio project (dataset `db961a58…`, model `22fb0973…`, Studio copy sha256-identical to the deployed files); `run_loop.sh` resolves the policy by Studio model ID (`dlsj.deploy.studio_registry`), the dashboard shows it. `deploy/studio/README.md`.
 
 ## 9. Open items
 - Supervised arm test of `auto_control.py` (spin, decision, automatic place).
