@@ -13,6 +13,11 @@ ARGS=(--rm --init --name "$NAME" --device nvidia.com/gpu=all --network host --ip
       -v dlsj-twin-kitcache:/isaac-sim/kit/cache -v dlsj-twin-ovcache:/root/.cache/ov
       -v dlsj-twin-glcache:/root/.cache/nvidia/GLCache -v dlsj-twin-computecache:/root/.nv/ComputeCache
       -v dlsj-twin-ovdata:/root/.local/share/ov/data)
+# pass secrets by NAME only (the value never appears on a command line)
+for v in WANDB_API_KEY HF_TOKEN; do [ -n "${!v:-}" ] && ARGS+=(-e "$v"); done
+if [ "${1:-}" = "--bash-c" ]; then  # sim/twin/run.sh --bash-c "cmd; cmd"  (a shell command in the container)
+  exec docker run "${ARGS[@]}" --entrypoint bash "${IMAGE:-dlsj/twin:latest}" -c "$2"
+fi
 if [ "${1:-}" = "--shell" ]; then
   exec docker run -it "${ARGS[@]}" --entrypoint bash "${IMAGE:-dlsj/twin:latest}"
 fi

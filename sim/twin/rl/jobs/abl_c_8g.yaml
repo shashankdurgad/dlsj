@@ -1,0 +1,6 @@
+- name: abl_c
+  gpu: RTX-PRO-6000:8
+  cpu: 64
+  memory: 393216
+  timeout: 6600
+  cmd: bash -c "/opt/isaaclab-venv/bin/python -m pip install -q --target /tmp/pylibs wandb==0.31.0 >/dev/null 2>&1; /opt/isaaclab-venv/bin/python sim/twin/rl/multi_image.py --gpus 8 --procs_per_gpu 2 --run abl_c --minutes 90 --stagger_s 8 --wandb '--wandb_project dlsj-twin-dicerl --wandb_entity sfb5s44zhz-university-of-cambridge --pylibs /tmp/pylibs' -- --detector yolo --latent 0 --top_target 0 --veto 0 --start ready --K 1 --bc_weight 2 --dr ramp --dr_scale 0.5 --spot_scale 1.0 --dr_ramp_eps 0,500 --phys_dr 1 --play_dr 1 --clutter abl_c --p_near 0.5 --eval_every_min 20 --eval_eps 40 --eval_dr_eps 8 --expert sim/twin/out/rl/expert_img8k_prior.pt --drift_joint_sd 3,3,3,1,0,0"

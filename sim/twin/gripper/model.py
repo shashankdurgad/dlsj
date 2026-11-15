@@ -258,11 +258,29 @@ def _define_mesh(stage, path: str, verts: np.ndarray, faces: np.ndarray, flat_no
     return mesh
 
 
+WIDTH_AXIS = {"fixed": 1, "jaw": 2}  # the fin-width axis (= the hinge axis, gripper y) in each link frame
+
+
+def narrow(which: str, pts: np.ndarray, origin: np.ndarray, scale: float) -> np.ndarray:
+    """Fin collider points (segment frame, `origin` = the segment's origin in the link frame) squeezed to `scale` x
+    their width about the fin's mid-plane (opt-in gripper.finray.collider_width_scale; 1 = the CAD width)."""
+    if scale == 1.0:
+        return pts
+    a = WIDTH_AXIS[which]
+    v = geometry()[f"{which}_fin_v"][:, a].astype(float)
+    mid = 0.5 * (v.min() + v.max())
+    out = np.array(pts, float)
+    out[:, a] = (out[:, a] + origin[a] - mid) * scale + mid - origin[a]
+    return out
+
+
 def add_colliders(stage, grip_prim, jaw_prim, fin_material, base_material, contact_offset: float,
-                  rest_offset: float, bind, extend: float = 0.0, bend: dict | None = None) -> dict:
+                  rest_offset: float, bind, extend: float = 0.0, bend: dict | None = None,
+                  width_scale: float = 1.0) -> dict:
     """Convex-hull colliders of both fingers under the physics links: the rigid printed bases (one hull each) and
     the fins (`n_segments()` hulls each, named TwinFin<k>). `bind(prim, material)` binds a physics material. With
-    `bend` (params.json gripper.finray.bend, hinges > 0) the fin hulls go on hinged segments (see `segments`)."""
+    `bend` (params.json gripper.finray.bend, hinges > 0) the fin hulls go on hinged segments (see `segments`).
+    `width_scale` narrows the fin colliders across the fin (see `narrow`; the visuals keep the CAD width)."""
     from pxr import PhysxSchema, UsdGeom, UsdPhysics
 
     geo = geometry()
@@ -277,8 +295,8 @@ def add_colliders(stage, grip_prim, jaw_prim, fin_material, base_material, conta
             _ensure_xform(stage, paths[j], seg["origin"] - seg["parent_origin"])
         pieces = [(str(link.GetPath()), "TwinFinBase", geo[f"{which}_base_v"], None, base_material)]
         for j, seg in enumerate(chain):
-            pieces += [(paths[j], name, (pts - seg["origin"]).astype(np.float32), faces, fin_material)
-                       for name, pts, faces in seg["pieces"]]
+            pieces += [(paths[j], name, narrow(which, pts - seg["origin"], seg["origin"], float(width_scale))
+                        .astype(np.float32), faces, fin_material) for name, pts, faces in seg["pieces"]]
         for parent, name, verts, faces, mat in pieces:
             if faces is None:  # the hull approximation only reads the points; any valid face list will do
                 faces = np.array([[0, k, k + 1] for k in range(1, len(verts) - 1)], np.int32)
@@ -294,7 +312,7 @@ def add_colliders(stage, grip_prim, jaw_prim, fin_material, base_material, conta
             made.append(name)
         if hinges:
             joints += add_hinges(stage, link.GetPath(), which, chain, bend)
-    out = {"pieces_per_env": len(made), "extend": float(extend), "fin_joints": joints,
+    out = {"pieces_per_env": len(made), "extend": float(extend), "fin_joints": joints, "width_scale": width_scale,
            "fixed_tip": np.round(geo["fixed_tip"] + fin_shift("fixed", extend), 4).tolist()}
     if hinges and (bend or {}).get("fin_contact"):
         out["fin_contact"] = enable_fin_contact(stage, grip_prim, seg_paths, str(bend["fin_contact"]))

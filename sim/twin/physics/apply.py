@@ -405,7 +405,8 @@ def _finger_colliders(stage, n: int) -> dict:
             fin_mat = _physics_material(stage, "/World/PhysicsMaterials/TwinFin", g["finray"]["material"])
             info = model.add_colliders(stage, grip, jaw, fin_mat, mat, g["finray"]["contact_offset"],
                                        g["finray"]["rest_offset"], _bind_phys,
-                                       extend=float(g["finray"].get("extend", 0.0)), bend=fin_bend())
+                                       extend=float(g["finray"].get("extend", 0.0)), bend=fin_bend(),
+                                       width_scale=float(g["finray"].get("collider_width_scale", 1.0)))
             if e == 0:
                 out["finray"] = info
             out["envs"] += 1

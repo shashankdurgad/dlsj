@@ -5,6 +5,9 @@ sink into the brick (compliant contact = the TPU give), and the 120 Hz buzz of t
     sim/twin/run.sh sim/twin/gripper/bench.py --tag k4000 [--efforts 0.4 0.7] \
         [--set gripper.finray.material.compliant_contact_stiffness=4000]
     sim/twin/run.sh sim/twin/gripper/bench.py --tag e --empty 2.9 0 -3   # closed EMPTY at these commands (units)
+    sim/twin/run.sh sim/twin/gripper/bench.py --tag lat --depths 15 --lateral 0 10 20 30 [--yaw 0 45] --lift_g 2
+        # brick offset along gripper y (the fin-width axis) / yawed about gripper z; --lift_g pulls the brick toward
+        # the fin tips with that many g after the squeeze (1 s) and reports whether it stays (`held`)
 Writes sim/twin/out/gripper/bench_<tag>.json (--out to change the folder). Every case also reports the fin tip-to-tip
 distance (hinged fins: the distal segments' tips; rigid fins: the CAD tips).
 """
@@ -24,6 +27,10 @@ ap.add_argument("--empty", type=float, nargs="*", default=None,
                 help="closed-empty bench: no brick, one env per closing command (gripper units)")
 ap.add_argument("--depths", type=float, nargs="*", default=[], help="brick centre above the fixed fin tip (mm)")
 ap.add_argument("--out", default="sim/twin/out/gripper", help="output folder (repo-relative)")
+ap.add_argument("--lateral", type=float, nargs="*", default=[], help="brick offsets along gripper y (mm)")
+ap.add_argument("--yaw", type=float, nargs="*", default=[], help="brick yaw about gripper z (deg)")
+ap.add_argument("--lift_g", type=float, default=0.0,
+                help="after the squeeze, pull the brick toward the fin tips with this many g for 1 s (0 = off)")
 args = ap.parse_args()
 sys.path.insert(0, str(REPO / "sim/residual_env"))
 from app import launch
@@ -47,6 +54,7 @@ EFFORTS = args.efforts or [phys.grip_effort()]
 EMPTY = args.empty is not None
 CASES = [(0.02, e, u) for e in EFFORTS for u in (args.empty or [args.target_units])] if EMPTY else \
     [(d, e, args.target_units) for e in EFFORTS for d in DEPTHS]
+CASES = [(*c, la / 1e3, yw) for c in CASES for yw in (args.yaw or [0.0]) for la in (args.lateral or [0.0])]
 n = len(CASES)
 sim = sim_utils.SimulationContext(sim_utils.SimulationCfg(dt=1 / 120, device="cuda:0", gravity=(0.0, 0.0, 0.0)))
 scfg = phys.patch_scene_cfg(rscene.build_scene_cfg(n, layout, False, profile=prof), prof)
@@ -65,7 +73,7 @@ if args.dr_check:
     raise SystemExit(0)
 bg = rob.body_names.index("gripper_link")
 ids = torch.arange(n, device=dev)
-rob.write_joint_effort_limit_to_sim_index(limits=torch.tensor([[e] for _, e, _u in CASES], device=dev), joint_ids=[gi],
+rob.write_joint_effort_limit_to_sim_index(limits=torch.tensor([[e] for _, e, *_r in CASES], device=dev), joint_ids=[gi],
                                           env_ids=ids)
 jp = rob.data.default_joint_pos.clone()
 jp[:, gi] = 0.5
@@ -87,13 +95,18 @@ def qapply(q, v):
 tip_z = float(model.geometry()["fixed_tip"][2])
 tip_y = float(model.geometry()["fixed_tip"][1])
 local = torch.tensor([[model.fixed_face_x(tip_z + d) + model.BRICK_W / 2 + 0.0005, tip_y, tip_z + d]
-                      for d, _, _u in CASES], device=dev, dtype=torch.float32)
+                      for d, *_r in CASES], device=dev, dtype=torch.float32)
+local[:, 1] += torch.tensor([c[3] for c in CASES], device=dev)
 if EMPTY:  # brick parked 0.3 m to the side (along the jaw axis), clear of the fins
     local[:, 1] = 0.3
 pg, qg = rob.data.body_pos_w[:, bg], rob.data.body_quat_w[:, bg]
-brick.write_root_pose_to_sim(torch.cat([pg + qapply(qg, local), qg], -1), env_ids=ids)
+half = torch.tensor([[0.0, 0.0, np.sin(np.radians(c[4]) / 2), np.cos(np.radians(c[4]) / 2)] for c in CASES],
+                    device=dev, dtype=torch.float32)  # yaw about gripper z (xyzw)
+qb = torch.cat([qg[:, 3:] * half[:, :3] + half[:, 3:] * qg[:, :3] + torch.cross(qg[:, :3], half[:, :3], dim=-1),
+                qg[:, 3:] * half[:, 3:] - (qg[:, :3] * half[:, :3]).sum(-1, keepdim=True)], -1)
+brick.write_root_pose_to_sim(torch.cat([pg + qapply(qg, local), qb], -1), env_ids=ids)
 brick.write_root_velocity_to_sim(torch.zeros(n, 6, device=dev), env_ids=ids)
-q_cmd_t = torch.tensor([u * prof.grip_scale + prof.grip_bias for _, _, u in CASES], device=dev)
+q_cmd_t = torch.tensor([u * prof.grip_scale + prof.grip_bias for _, _, u, *_r in CASES], device=dev)
 q_cmd = float(q_cmd_t[0])
 TIP_OFF = {}
 
@@ -144,11 +157,24 @@ for t in range(300):
     gaps.append(torch.linalg.norm(tp["fixed"] - tp["jaw"], dim=-1).cpu().numpy())
 h = np.stack(hist)
 gp = np.stack(gaps)
+pull = None
+if args.lift_g and not EMPTY:  # pull test: the brick's weight x lift_g toward the fin tips (gripper -z), 1 s
+    m = float(phys._p()["bricks"]["mass_kg"]["2x2"])
+    down = qapply(rob.data.body_quat_w[:, bg], torch.tensor([[0.0, 0.0, -1.0]], device=dev).expand(n, 3))
+    brick.permanent_wrench_composer.set_forces_and_torques_index(
+        forces=(down * m * 9.81 * args.lift_g)[:, None, :].contiguous(), body_ids=[0], env_ids=ids, is_global=True)
+    for _t in range(120):
+        scene.write_data_to_sim()
+        sim.step(render=False)
+        scene.update(1 / 120)
+    pgb, qgb = rob.data.body_pos_w[:, bg], rob.data.body_quat_w[:, bg]
+    conj = torch.cat([-qgb[:, :3], qgb[:, 3:]], -1)
+    pull = qapply(conj, brick.data.root_pos_w - pgb).cpu().numpy()
 fin_ids = [i for i, nm in enumerate(rob.joint_names) if nm.startswith("fin_")]  # bending-fin hinges, if any
 fin_q = rob.data.joint_pos[:, fin_ids].cpu().numpy() if fin_ids else np.zeros((n, 0))
 print("joint_names", rob.joint_names, flush=True)
 out = []
-for k, (d, e, u) in enumerate(CASES):
+for k, (d, e, u, la, yw) in enumerate(CASES):
     tail = h[-60:, k]
     q_end, rel = float(tail[:, 0].mean()), tail[:, 1:].mean(0)
     depth_end = float(rel[2]) - tip_z
@@ -165,7 +191,13 @@ for k, (d, e, u) in enumerate(CASES):
                                 for j, i in enumerate(fin_ids)}})
         print(out[-1], flush=True)
         continue
-    out.append({"depth_mm": round(d * 1e3, 1), "effort": e, "q_stall": round(q_end, 4), **tip_gap,
+    extra = {}
+    if args.lateral or args.yaw:
+        extra = {"lateral_mm": round(la * 1e3, 1), "yaw_deg": yw}
+    if pull is not None:
+        slip = float(np.linalg.norm(pull[k] - rel))
+        extra.update(pull_slip_mm=round(slip * 1e3, 1), held=bool(slip < 0.005))
+    out.append({"depth_mm": round(d * 1e3, 1), "effort": e, "q_stall": round(q_end, 4), **tip_gap, **extra,
                 "reading_units": round((q_end - prof.grip_bias) / prof.grip_scale, 2),
                 "depth_end_mm": round(depth_end * 1e3, 1),
                 "sink_total_mm": round((model.BRICK_W - model.gap(q_end, depth_end)) * 1e3, 2),
