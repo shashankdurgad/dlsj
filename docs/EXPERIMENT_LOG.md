@@ -48,6 +48,23 @@ Other research done in conversation (not separate reports):
   The detector needs ultralytics, installed as an overlay (`~/inference/pydeps/ultra`, `--no-deps`) so Desmond's
   `pi05rt` venv is unchanged. Arm test pending (supervised).
 
+- **Top-camera brick finding + end-of-loop YOLO verification (15 Nov).** The loop's top survey ran the released
+  detector (`brick-detector-v1` = GitHub release `brick-auto-ensemble-v1` `detector_openvino_model`, hashes match) on
+  the full 640 px frame at its default conf 0.5. It was trained on inspection-camera close-ups; the ~40 px top-view
+  bricks scored **0.13–0.43** (all missed) while the yellow plate scored 0.61. On the same frame at 960 px they scored
+  0.53–0.65. Fix (`perception.detect_tiled`): 2×2 overlapping tiles of the 560×420 work area, each letterboxed to 640
+  (≈2× zoom), cross-tile NMS; boxes cut by a tile border only fill in where no whole box exists. Its own detector
+  instance (`--top-detector`, OpenVINO on the NPU when the dlsj checkout has `make_brick_detector`, else ultralytics on
+  CPU) at conf 0.25; survey counts bricks at ≥ 0.3. **25 live top frames from a running loop (15 Nov):** old pipeline
+  0–2 bricks per frame, tiled 1–5, every brick on the table found whenever the arm is home (0.42–0.75), no false
+  boxes at home; one false box on the arm while it is out over the table (not counted: survey/verify only count with
+  the arm home). New **verify** step: when the survey sees an empty table from home, the loop does not stop; it takes 8
+  top frames, and a brick counts only if it is seen at the same spot (±20 px) in ≥ half of them. Clear → done
+  ("Verified clear"). Bricks → survey again; after 2 such re-surveys → pause with a message (never a false "done").
+  Dashboard: "Verify" chip and verify status. 4 new loop tests + 3 perception tests; 24 tests pass. **(open)**: an
+  empty-table test on the real camera (false positives there would block "done"); the gripper fingertips scored
+  0.23–0.35 on older-setup frames when just outside the home ignore box.
+
 ## 3. Policies
 ### π0.5
 - Fine-tune `w3joe/pi05-junction-so101-20261114` (action-expert-only, ~2300 updates), later `ft9060`.
@@ -85,7 +102,11 @@ Other research done in conversation (not separate reports):
 | OpenVINO GPU INT8 + RTC | 312 | 318 | 34.6x | 5.9 GB |
 
   PyTorch on the Arc GPU (XPU) crashed the device (`UR_RESULT_ERROR_DEVICE_LOST`) and froze the XPS → CPU is the PyTorch baseline. Thermals: run straight after the CPU row, INT8 measured 538 ms (throttled); 285 ms after a 10-min cool-down. With RTC every chunk lands before the 30 Hz queue runs dry.
-- **After the LoRA** (scaffolding `deploy/molmoact2/optimize.py`): re-test steps 5–6 and INT8 on the fine-tuned checkpoint, export RTC, add rows to the baseline table **(open)**.
+- **After the LoRA (14 Nov, `bench/molmoact2_after.md`)**: deployed fine-tuned 8k, OpenVINO GPU INT8 + RTC: **313 ms
+  median (p99 317) vs 10,770 ms baseline = 34.4x**, 5.9 vs 26.8 GB, error vs demos **2.80 vs 8.34 deg**; 5.5k: 314 ms,
+  3.52 deg. Steps 5 / text 128 still not tried on the fine-tuned model (`optimize.py` variants; the 8k model was not
+  trained at 128 tokens). Loop: inspection ~6 ms/frame on the NPU, continuous spin 61 frames in 8.2 s (vs 12 in
+  11.2 s), cycle time median 35.3 s per brick over 20 bricks.
 - Recipe note: AI2's LoRA (connector + action expert fully trained) vs Studio's default (LoRA everywhere) have identical inference cost; A's fully trained expert may be more INT8-sensitive (fallback: expert in FP16, 380 ms).
 
 ## 5. Datasets
@@ -146,6 +167,9 @@ Other research done in conversation (not separate reports):
 
 ## 9. Open items
 - Supervised arm test of `auto_control.py` (spin, decision, automatic place).
-- Post-LoRA optimisation run (`optimize.py`) and new baseline rows.
+- Empty-table check of the loop's YOLO verification on the real top camera; deploy the newer
+  `dlsj/inspect/brick_detector.py` (`make_brick_detector`) to `~/inference/dlsj-smolvla` so the top detector runs on
+  the NPU, not ultralytics on the CPU.
+- Post-LoRA levers: steps 5 and text 128 on the fine-tuned model (`optimize.py`); baseline-vs-now table done.
 - RL demo with the real policy: not done (checkpoint stuck on the XPS); code ready (`modal_demo.py::train`).
 - Pick-prompt mismatch between the two prepared datasets.
