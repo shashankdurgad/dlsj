@@ -1,0 +1,95 @@
+{
+  "teaser": {
+    "type": "video",
+    "src": "../media/teaser.mp4",
+    "poster": "../media/teaser.jpg",
+    "caption": "The SO-101 picking a brick and bringing it to the inspection camera (real robot, 1x)."
+  },
+  "gallery": [
+    {
+      "type": "video",
+      "layout": "tall",
+      "src": "../media/sort_portrait.mp4",
+      "poster": "../media/sort_portrait.jpg",
+      "caption": "Sorting bricks into the plates (real robot, phone view)."
+    },
+    {
+      "type": "video",
+      "src": "../media/teaser.mp4",
+      "poster": "../media/teaser.jpg",
+      "caption": "The SO-101 picking a brick and bringing it to the inspection camera (real robot, 1x)."
+    },
+    {
+      "type": "video",
+      "src": "../media/real_vs_sim_cams.mp4",
+      "poster": "../media/real_vs_sim_cams.jpg",
+      "caption": "A recorded teleop demo (top row) and the Isaac Lab digital twin replaying the same joint commands (bottom row), seen from the top, wrist and inspection cameras."
+    },
+    {
+      "type": "video",
+      "src": "../media/real_vs_sim_top.mp4",
+      "poster": "../media/real_vs_sim_top.jpg",
+      "caption": "Real and simulated top camera at the same instant, registered by the fitted camera model."
+    },
+    {
+      "type": "image",
+      "src": "../media/twin.jpg",
+      "caption": "The live 3D digital twin: the arm follows the real joint angles; plates and bricks come from the top camera."
+    },
+    {
+      "type": "image",
+      "src": "../media/mission.jpg",
+      "caption": "Mission control during a run: top, inspection and wrist cameras live."
+    },
+    {
+      "type": "image",
+      "src": "../media/arm_overhead.jpg",
+      "caption": "The arm placing a brick, seen from above the cell."
+    },
+    {
+      "type": "image",
+      "src": "../media/held_crops.jpg",
+      "caption": "What the NPU inspector sees: plain bricks (top row) and marked bricks with a circle or cross (bottom row)."
+    },
+    {
+      "type": "image",
+      "src": "../media/how.jpg",
+      "caption": "Each step of the loop on its engine: GPU, NPU or CPU."
+    },
+    {
+      "type": "image",
+      "src": "../media/detection.jpg",
+      "caption": "Rig evaluation of every inspector we tried."
+    },
+    {
+      "type": "image",
+      "src": "../media/val_curve.jpg",
+      "caption": "Validation action error over the 8k-step LoRA fine-tune of MolmoAct2 (409 demos, 4x B300)."
+    },
+    {
+      "type": "image",
+      "src": "../media/posttraining.jpg",
+      "caption": "Post-training: LoRA fine-tune, Isaac Lab digital twin and residual RL."
+    },
+    {
+      "type": "image",
+      "src": "../media/residual_rl.jpg",
+      "caption": "Residual RL in simulation: a small network learns bounded corrections on top of the frozen policy. First-attempt pick success 12.5% to 75% in sim."
+    },
+    {
+      "type": "image",
+      "src": "../media/wsp.jpg",
+      "caption": "Weight-space pickup: a closed-form edit of the action head with no gradient training, 24% lower wrist error."
+    },
+    {
+      "type": "image",
+      "src": "../media/sim_robust.jpg",
+      "caption": "A calibrated Isaac twin with randomised cameras, friction, mass and joints: 20% to 80% of real demos replay successfully."
+    },
+    {
+      "type": "image",
+      "src": "../media/runtime.jpg",
+      "caption": "Runtime optimisation, baseline against now."
+    }
+  ]
+}
