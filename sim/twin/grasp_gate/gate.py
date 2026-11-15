@@ -51,7 +51,10 @@ ap.add_argument("--kind", default="auto", choices=["auto", "auto3", "2x2"],
                      "curved 2x3 as the env's curved 2x2")
 ap.add_argument("--labels", default="", help="brick kind / resting pose labels json (brick_labels.json): the target is "
                                              "spawned in the labelled pose (2x4 as the 2x4 box, curved as 2x2)")
-ap.add_argument("--label_map", default="", help="'a=b,...': treat labelled pose a as b (e.g. side_x=side_y)")
+ap.add_argument("--label_map", default="auto",
+                help="'a=b,...': treat labelled pose a as b (e.g. side_x=side_y); 'auto' = side_x=side_y with the "
+                     "stud-less box colliders (a side_x box would be squeezed over 19.2 mm instead of the stud tips' "
+                     "23.6 mm), none with the LDraw colliders (physics contact.brick_collider); '' = none")
 ap.add_argument("--label_poses", default="up,down,side_x,side_y", help="which labelled poses to apply (others stay up)")
 ap.add_argument("--rung0_cam", default="joe", choices=["joe", "fit"], help="top-camera model of the rung-0 brick pose")
 ap.add_argument("--sag", default="",
@@ -130,14 +133,23 @@ boff = [float(v) for v in args.brick_off_grip.split(",")]
 ARM = env.jidx[:5]
 labels = json.loads(Path(args.labels).read_text())["episodes"] if args.labels else {}
 use_poses = set(args.label_poses.split(","))
-pose_map = dict(kv.split("=") for kv in args.label_map.split(",") if kv)
+from sim.twin.contact.hook import brick_collider, rest_lift_m  # noqa: E402
+
+_P = phys._p() if phys is not None else {}
+COLLIDER = brick_collider(_P)
+label_map = args.label_map if args.label_map != "auto" else ("side_x=side_y" if COLLIDER == "box" else "")
+pose_map = dict(kv.split("=") for kv in label_map.split(",") if kv)
+DOWN = 0.0096 + rest_lift_m("down", _P)  # upside down: on its 4.4 mm studs with the LDraw colliders
 _S = math.sqrt(0.5)
-# brick-local rotation (xyzw) and centre height above the table (m) per (kind index, pose); the 2x2 hull is
-# body-centred with 4.4 mm studs on +z, the 2x4 is a plain box (local x = long side, across the jaw after reset_envs)
-POSE = {(0, "up"): ((0, 0, 0, 1), 0.0096), (0, "down"): ((1, 0, 0, 0), 0.0140),
+# brick-local rotation (xyzw) and centre height above the table (m) per (kind index, pose); bricks are body-centred,
+# studs on +z, local x = long side (across the jaw after reset_envs); kind 2 = the curved 2x3 (side_x: on a flat
+# long side, studs along the jaw axis, long axis across the fingers)
+POSE = {(0, "up"): ((0, 0, 0, 1), 0.0096), (0, "down"): ((1, 0, 0, 0), DOWN),
         (0, "side_x"): ((0, _S, 0, _S), 0.01585), (0, "side_y"): ((-_S, 0, 0, _S), 0.01585),
-        (1, "up"): ((0, 0, 0, 1), 0.0096), (1, "down"): ((1, 0, 0, 0), 0.0096),
-        (1, "side_x"): ((-_S, 0, 0, _S), 0.0159), (1, "side_y"): ((-_S, 0, 0, _S), 0.0159)}
+        (1, "up"): ((0, 0, 0, 1), 0.0096), (1, "down"): ((1, 0, 0, 0), DOWN),
+        (1, "side_x"): ((-_S, 0, 0, _S), 0.0159), (1, "side_y"): ((-_S, 0, 0, _S), 0.0159),
+        (2, "up"): ((0, 0, 0, 1), 0.0096), (2, "down"): ((1, 0, 0, 0), DOWN),
+        (2, "side_x"): ((0.5, 0.5, 0.5, 0.5), 0.01585), (2, "side_y"): ((0.5, 0.5, 0.5, 0.5), 0.01585)}
 
 
 def qmul(a, b):
@@ -229,7 +241,8 @@ def run_batch(batch):
         for k, e in enumerate(pad):
             lab = labels.get(str(e))
             if lab is not None and args.kind != "2x2":
-                kind[k] = 1 if lab["kind"] == "2x4" else 0
+                kind[k] = 1 if lab["kind"] == "2x4" else \
+                    2 if lab["kind"] == "curved_2x3" and env.objs[2] is not None else 0
     dxy[:, 0] += torch.cos(yc) * boff[0] - torch.sin(yc) * boff[1]
     dxy[:, 1] += torch.sin(yc) * boff[0] + torch.cos(yc) * boff[1]
     z = torch.zeros(N, device=dev)
@@ -329,7 +342,7 @@ res = summarise(per)
 res.update(grasp_cfg={k: getattr(cfg, k, None) for k in ("play", "distractors", "plates", "max_horizon_s")},
            rung=args.rung, drive=drive, place=place, n_fk_fallback=n_fallback[0], n_labelled=n_labelled[0],
            joint_offsets_deg=[round(math.degrees(float(v)), 2) for v in env.profile.joint_offsets[:5]], tag=tag,
-           finray=finray,
+           finray=finray, brick_collider=COLLIDER, label_map=label_map,
            profile=env.profile.name,
            physics_set=os.environ.get("TWIN_PHYSICS_SET", ""), tip_local=[round(float(v), 4) for v in env.tip_local],
            args={k: v for k, v in vars(args).items() if k not in ("tag",)},

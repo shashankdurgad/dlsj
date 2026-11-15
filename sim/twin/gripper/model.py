@@ -267,11 +267,12 @@ def add_colliders(stage, grip_prim, jaw_prim, fin_material, base_material, conta
 
     geo = geometry()
     hinges = int((bend or {}).get("hinges", 0))
-    made, joints = [], []
+    made, joints, seg_paths = [], [], {}
     for which, link in (("fixed", grip_prim), ("jaw", jaw_prim)):
         chain = segments(which, hinges, extend, bool((bend or {}).get("slices", False)),
                          float((bend or {}).get("root_len", 0.012)))
         paths = segment_paths(link.GetPath(), chain)
+        seg_paths[which] = paths[1:]
         for j, seg in enumerate(chain[1:], start=1):
             _ensure_xform(stage, paths[j], seg["origin"] - seg["parent_origin"])
         pieces = [(str(link.GetPath()), "TwinFinBase", geo[f"{which}_base_v"], None, base_material)]
@@ -293,8 +294,51 @@ def add_colliders(stage, grip_prim, jaw_prim, fin_material, base_material, conta
             made.append(name)
         if hinges:
             joints += add_hinges(stage, link.GetPath(), which, chain, bend)
-    return {"pieces_per_env": len(made), "extend": float(extend), "fin_joints": joints,
-            "fixed_tip": np.round(geo["fixed_tip"] + fin_shift("fixed", extend), 4).tolist()}
+    out = {"pieces_per_env": len(made), "extend": float(extend), "fin_joints": joints,
+           "fixed_tip": np.round(geo["fixed_tip"] + fin_shift("fixed", extend), 4).tolist()}
+    if hinges and (bend or {}).get("fin_contact"):
+        out["fin_contact"] = enable_fin_contact(stage, grip_prim, seg_paths, str(bend["fin_contact"]))
+    if hinges and (bend or {}).get("soft_curl_gain"):  # opt-in software curl; nothing is installed otherwise
+        from sim.twin.gripper import curl
+
+        out["soft_curl"] = curl.install(bend)
+    return out
+
+
+def enable_fin_contact(stage, grip_prim, seg_paths: dict, mode: str = "segments") -> dict:
+    """Opt-in (`gripper.finray.bend.fin_contact`): contact between the two fins only. The articulation's
+    self-collision is switched on and every pair of its bodies is filtered (UsdPhysics FilteredPairsAPI) except the
+    fixed fin's hinged segments against the moving fin's ("segments" / true), or only the two tip segments ("tips").
+    Joint-connected bodies never collide in PhysX, so the clamped roots on the links stay out of it."""
+    from pxr import PhysxSchema, Usd, UsdPhysics
+
+    root = grip_prim
+    while root and not root.HasAPI(UsdPhysics.ArticulationRootAPI):
+        root = root.GetParent()
+    robot = grip_prim
+    while robot and robot.GetName() != "Robot" and robot.GetParent():
+        robot = robot.GetParent()
+    if not root or not root.HasAPI(UsdPhysics.ArticulationRootAPI):  # the root API may sit on a sibling link
+        root = next((p for p in Usd.PrimRange(robot) if p.HasAPI(UsdPhysics.ArticulationRootAPI)), None)
+    if root is None:
+        return {"error": "no articulation root"}
+    PhysxSchema.PhysxArticulationAPI.Apply(root).CreateEnabledSelfCollisionsAttr().Set(True)
+    bodies = [p for p in Usd.PrimRange(robot) if p.HasAPI(UsdPhysics.RigidBodyAPI)]
+    fx, jw = [str(p) for p in seg_paths["fixed"]], [str(p) for p in seg_paths["jaw"]]
+    if mode == "tips":
+        fx, jw = fx[-1:], jw[-1:]
+    allowed = {(a, b) for a in fx for b in jw} | {(b, a) for a in fx for b in jw}
+    n = 0
+    for i, a in enumerate(bodies):
+        rel = None
+        for b in bodies[i + 1:]:
+            if (str(a.GetPath()), str(b.GetPath())) in allowed:
+                continue
+            if rel is None:
+                rel = UsdPhysics.FilteredPairsAPI.Apply(a).CreateFilteredPairsRel()
+            rel.AddTarget(b.GetPath())
+            n += 1
+    return {"root": str(root.GetPath()), "bodies": len(bodies), "filtered_pairs": n, "allowed_pairs": len(allowed) // 2}
 
 
 def _split_fin_visual(which: str, chain: list[dict], extend: float) -> list[tuple[np.ndarray, np.ndarray]]:

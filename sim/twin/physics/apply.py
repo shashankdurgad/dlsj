@@ -235,6 +235,10 @@ def patch_scene_cfg(scene_cfg, profile=None):
             sp.physics_material = _material(pl["material"])
             if pl["collider"] == "profile_mesh":
                 sp.collision_props = sim_utils.CollisionPropertiesCfg(collision_enabled=False)
+    if P.get("contact"):  # opt-in contact / brick keys (sim/twin/contact/hook.py; params.json has none)
+        from sim.twin.contact import hook as contact_hook
+
+        contact_hook.patch_scene_cfg(scene_cfg, P)
     patch_profile(profile)
     return scene_cfg
 
@@ -265,6 +269,10 @@ def post_spawn(env) -> dict:
     margin = float((_p().get("robot") or {}).get("limit_margin_deg", 0.0) or 0.0)
     if margin:
         info["joint_limits"] = _widen_limits(stage, n, margin)
+    if _p().get("contact"):  # opt-in contact / brick keys (sim/twin/contact/hook.py)
+        from sim.twin.contact import hook as contact_hook
+
+        info["contact"] = contact_hook.post_spawn(stage, n, _p())
     return info
 
 

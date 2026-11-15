@@ -165,6 +165,8 @@ class BrickPool:
         draws / de-overlapped table draws) and colours of every assigned body."""
         import torch
 
+        from sim.twin.contact.hook import rest_lift_m
+
         env, r = self.env, self.env.residual
         dev = env.device
         o = env.scene.env_origins
@@ -182,6 +184,8 @@ class BrickPool:
                 x, y, yaw, on = self._draw(rng, d, plates, taken, lay)
             taken.append(np.array([x, y]))
             z = TABLE_Z + h / 2 + 0.0005 + (PLATE_FLOOR if on else 0.0)
+            if d.get("upside_down"):  # on its studs with the LDraw colliders (physics contact.brick_collider)
+                z += rest_lift_m("down")
             pose = torch.tensor([[x, y, z, *_quat(yaw, d.get("upside_down", False))]], device=dev)
             pose[:, :3] += o[:1]
             obj.write_root_pose_to_sim(pose)
@@ -192,6 +196,7 @@ class BrickPool:
             q = p[0, 3:7].detach().cpu().numpy()
             yaw = 2.0 * math.atan2(float(q[2]), float(q[3]))
             p[0, 3:7] = torch.tensor(_quat(yaw, True), device=dev)
+            p[0, 2] += rest_lift_m("down")
             r.brick.write_root_pose_to_sim(p)
         self.colors(plan)
 
