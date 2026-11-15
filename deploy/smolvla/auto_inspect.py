@@ -30,6 +30,7 @@ log = logging.getLogger("auto_inspect")
 
 BOWL = {"none": "yellow", "circle": "orange", "cross": "purple", "marked": "purple"}  # marked: binary v5 (two plates)
 FALLBACK_BOWL = "purple"  # uncertain after the re-spin: treat as defective (PLAYBOOK REASON rule)
+# Both are read at decision time, so the console's plate routing (loop_control `/routing/...`) edits them in place.
 
 
 @dataclass
@@ -185,7 +186,7 @@ class AutoInspector:
                 return InspectResult(outcome, BOWL[outcome], res.summary.get("reason", ""), "ok", attempt, frames,
                                      early, time.perf_counter() - t0, saved)
             log.info("inspection uncertain (attempt %d): %s", attempt, res.summary.get("reason") if res else "")
-        return InspectResult("unknown", FALLBACK_BOWL, "uncertain after re-inspection -> defective (purple)", "ok",
+        return InspectResult("unknown", FALLBACK_BOWL, f"uncertain after re-inspection -> {FALLBACK_BOWL} plate", "ok",
                              self.max_attempts, frames, early, time.perf_counter() - t0, saved)
 
     def stop(self) -> None:

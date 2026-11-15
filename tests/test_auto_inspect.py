@@ -67,6 +67,25 @@ def test_plain_brick_goes_to_yellow(tmp_path):
     assert res.status == "ok" and res.outcome == "none" and res.bowl == "yellow"
 
 
+def test_routing_table_decides_the_bowl_at_inspection_time(tmp_path, monkeypatch):
+    import auto_inspect as AI
+    import loop_control as LC
+
+    monkeypatch.setattr(AI, "BOWL", dict(AI.BOWL))  # the console edits these in place; restore them afterwards
+    monkeypatch.setattr(AI, "FALLBACK_BOWL", AI.FALLBACK_BOWL)
+    LC.set_routing("plain", "purple")
+    LC.set_routing("cross", "orange")
+    assert LC.routing_table()["plain"] == "purple" and LC.routing_table()["cross"] == "orange"
+    arm, cams, ai = make((999.0, 1000.0), tmp_path)  # plain
+    res = ai.inspect(arm, arm.goal().copy())
+    cams.stop()
+    assert res.outcome == "none" and res.bowl == "purple"
+    arm, cams, ai = make((-200.0, 200.0), tmp_path)  # cross
+    res = ai.inspect(arm, arm.goal().copy())
+    cams.stop()
+    assert res.outcome == "cross" and res.bowl == "orange"
+
+
 def test_lost_grasp_stops_and_reports(tmp_path):
     arm, cams, ai = make((999.0, 1000.0), tmp_path)
     arm.brick_at = 0.0

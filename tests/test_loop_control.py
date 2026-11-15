@@ -103,6 +103,8 @@ def build(monkeypatch, tmp_path):
         monkeypatch.setattr(S, "BRING", "bring the brick to the inspection camera")
         fake_ai = types.ModuleType("auto_inspect")
         fake_ai.make_auto_inspector = lambda *a, **kw: insp
+        fake_ai.BOWL = {"none": "yellow", "circle": "orange", "cross": "purple", "marked": "purple"}
+        fake_ai.FALLBACK_BOWL = "purple"
         fake_hw = types.ModuleType("dlsj.loop.hardware")
         fake_hw.StreamCameras = lambda c: c
         monkeypatch.setitem(sys.modules, "auto_inspect", fake_ai)
@@ -129,12 +131,12 @@ def run(c, clock, seconds, grip=None, cmd_grip=None, pose=None):
         c.tick()
 
 
-def see_bricks(c, clock, n, colour="blue"):
+def see_bricks(c, clock, n, colour="blue", frames=12):
+    """`n` bricks steady on the table (same place in every frame) over `frames` survey frames."""
     t = clock.now
     with c.lock:
-        c.perc.update(t=t, target={"colour": colour, "box": [1, 2, 3, 4], "conf": 0.8} if n else None)
-        for k in range(12):
-            c._count_hist.append((t + k * 0.25, n))
+        for k in range(frames):
+            c._count_hist.append((t + k * 0.25, [_brick(100 + 60 * i, 300, 0.8, colour) for i in range(n)]))
 
 
 def test_full_cycle_then_done(build):
@@ -330,9 +332,8 @@ def test_unclear_colour_pauses(build):
     run(c, clock, 1.2)
     t = clock.now
     with c.lock:
-        c.perc.update(t=t, target=None)
         for k in range(12):
-            c._count_hist.append((t + k * 0.25, 1))
+            c._count_hist.append((t + k * 0.25, [_brick(200, 300, 0.8, "?")]))
     clock.now += 9.0
     run(c, clock, 0.1)
     assert c.L["mode"] == "paused"
@@ -582,3 +583,195 @@ def test_bring_to_camera_with_the_vla_then_hold(build):
             break
     assert c.phase == "holding" and "Spin & save" in c.collect_msg and c.L["mode"] == "off"
 
+
+
+def test_survey_flicker_does_not_block_the_empty_table(build):
+    """A phantom in 1 of 12 frames (the backdrop past the table edge did this on 14 Nov): still verified empty."""
+    c, clock, _ = build()
+    c.loop_command("start")
+    run(c, clock, 1.2)
+    t = clock.now
+    with c.lock:
+        for k in range(12):
+            c._count_hist.append((t + k * 0.25, [_brick(500, 60, 0.35)] if k == 5 else []))
+    clock.now += 3.0
+    run(c, clock, 0.1)
+    assert c.L["step"] == "verify" and c.L["cycle"] == 0
+
+
+def test_survey_picks_the_steady_brick_not_the_flicker(build):
+    c, clock, _ = build()
+    c.loop_command("start")
+    run(c, clock, 1.2)
+    t = clock.now
+    with c.lock:
+        for k in range(12):
+            frame = [_brick(200, 300, 0.6, "red")]
+            if k in (3, 7):
+                frame.append(_brick(500, 60, 0.9, "blue"))  # brighter, but only 2 of 12 frames
+            c._count_hist.append((t + k * 0.25, frame))
+    clock.now += 3.0
+    run(c, clock, 0.1)
+    assert c.L["step"] == "pick" and c.brick == "red"
+
+
+def test_survey_waits_for_enough_frames_before_picking(build):
+    c, clock, _ = build()
+    c.loop_command("start")
+    run(c, clock, 1.2)
+    see_bricks(c, clock, 1, frames=2)
+    clock.now += 0.6
+    run(c, clock, 0.05)
+    assert c.L["step"] == "survey"
+
+
+# ---- plate routing: which plate each outcome goes to, changed live from the console -------------------------------------
+
+
+class RoutedInspector(StubInspector):
+    """Decides the bowl at inspect time from auto_inspect's BOWL / FALLBACK_BOWL, like the real AutoInspector."""
+
+    def __init__(self, outcome):
+        super().__init__(outcome=outcome, bowl=None)
+
+    def inspect(self, arm, start_cmd):
+        ai = sys.modules["auto_inspect"]
+        self.r.bowl = ai.BOWL[self.r.outcome] if self.r.outcome in ai.BOWL else ai.FALLBACK_BOWL
+        return super().inspect(arm, start_cmd)
+
+
+def drive_to_place(c, clock, insp):
+    """Start the loop and run one brick up to the decision (step 'place')."""
+    c.loop_command("start")
+    run(c, clock, 1.2)
+    see_bricks(c, clock, 1, "blue")
+    clock.now += 3.0
+    run(c, clock, 0.1)
+    run(c, clock, 1.0, grip=30.0, cmd_grip=30.0)
+    run(c, clock, 1.0, grip=5.6, cmd_grip=0.0)
+    with c.lock:
+        c.perc["inspect_seen"] = {"t": clock.now + 10, "conf": 0.7, "close": True}
+    run(c, clock, 5.0, grip=5.6, cmd_grip=0.0, pose=np.ones(5))
+    assert insp.done.wait(2.0)
+    for _ in range(100):
+        if c.phase != "inspecting":
+            break
+        threading.Event().wait(0.01)
+    run(c, clock, 0.1, grip=5.6, cmd_grip=0.0)
+    assert c.L["step"] == "place"
+
+
+def test_routing_defaults_are_in_the_snapshot(build):
+    c, _, _ = build()
+    assert c.snapshot()["routing"] == {"plain": "yellow", "circle": "orange", "cross": "purple", "marked": "purple",
+                                       "uncertain": "purple"}
+
+
+def test_routing_change_decides_the_next_brick_and_the_place_prompt(build):
+    c, clock, insp = build(RoutedInspector("cross"))
+    c.routing_command("cross", "yellow")
+    assert c.snapshot()["routing"]["cross"] == "yellow"
+    drive_to_place(c, clock, insp)
+    assert c.bowl == "yellow" and c.inspection["bowl"] == "yellow"
+    assert S.fill(S.PLACE, colour=c.bowl) == "place the brick in the yellow bowl"  # the trained prompt, new colour
+    run(c, clock, 1.5, grip=30.0, cmd_grip=30.0)
+    run(c, clock, 1.0, grip=30.0, cmd_grip=30.0)
+    assert c.L["tallies"] == {"yellow": 1} and c.L["cycles"][-1]["bowl"] == "yellow"
+
+
+def test_routing_uncertain_uses_the_fallback_plate(build):
+    c, clock, insp = build(RoutedInspector("unknown"))
+    c.routing_command("uncertain", "orange")
+    drive_to_place(c, clock, insp)
+    assert c.bowl == "orange" and S.fill(S.PLACE, colour=c.bowl) == "place the brick in the orange bowl"
+
+
+def test_routing_change_after_the_decision_does_not_move_this_brick(build):
+    c, clock, insp = build(RoutedInspector("cross"))
+    drive_to_place(c, clock, insp)
+    assert c.bowl == "purple"
+    c.routing_command("cross", "yellow")  # mid-cycle: the decision is already made
+    c.routing_command("uncertain", "yellow")
+    assert c.bowl == "purple" and c.inspection["bowl"] == "purple"
+    run(c, clock, 1.5, grip=30.0, cmd_grip=30.0)
+    run(c, clock, 1.0, grip=30.0, cmd_grip=30.0)
+    assert c.L["tallies"] == {"purple": 1}
+    assert c.snapshot()["routing"]["cross"] == "yellow"  # ...but the next brick follows the new table
+
+
+def test_routing_rejects_bad_outcomes_and_colours(build):
+    c, _, _ = build()
+    before = c.snapshot()["routing"]
+    for outcome, colour in [("cross", "pink"), ("cross", "Yellow"), ("triangle", "yellow"), ("none", "yellow"),
+                            ("cross", None), ("", "purple")]:
+        with pytest.raises(ValueError):
+            c.routing_command(outcome, colour)
+    assert c.snapshot()["routing"] == before
+
+
+def test_routing_reset_restores_the_default_table(build):
+    c, _, _ = build()
+    for o, col in [("plain", "purple"), ("circle", "yellow"), ("cross", "orange"), ("marked", "yellow"),
+                   ("uncertain", "yellow")]:
+        c.routing_command(o, col)
+    assert c.snapshot()["routing"] == {"plain": "purple", "circle": "yellow", "cross": "orange", "marked": "yellow",
+                                       "uncertain": "yellow"}
+    c.routing_command("reset")
+    assert c.snapshot()["routing"] == LC.ROUTE_DEFAULT
+
+
+def test_parse_routing_flag():
+    assert LC.parse_routing("plain=purple, uncertain=orange") == {"plain": "purple", "uncertain": "orange"}
+    assert LC.parse_routing("") == {}
+    for bad in ("plain=pink", "triangle=yellow", "plain"):
+        with pytest.raises(ValueError):
+            LC.parse_routing(bad)
+
+
+def test_routing_endpoint_validates_and_updates(build):
+    import json
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+    from urllib.error import HTTPError
+    from urllib.request import Request, urlopen
+
+    c, _, _ = build()
+
+    def make_handler(streams, ctl):
+        class Base(BaseHTTPRequestHandler):
+            def log_message(self, *a):
+                pass
+
+            def _send(self, code, body, ctype):
+                self.send_response(code)
+                self.send_header("Content-Type", ctype)
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def do_POST(self):
+                self._send(404, b"base", "text/plain")
+
+        return Base
+
+    srv = ThreadingHTTPServer(("127.0.0.1", 0), LC.wrap_handler(make_handler)({}, c))
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+
+    def post(path):
+        try:
+            with urlopen(Request(f"http://127.0.0.1:{srv.server_port}{path}", method="POST")) as r:
+                return r.status, r.read()
+        except HTTPError as e:
+            return e.code, b""
+
+    try:
+        status, body = post("/routing/cross/orange")
+        assert status == 200 and json.loads(body)["cross"] == "orange"
+        assert post("/routing/plain/purple")[0] == 200
+        assert post("/routing/cross/pink")[0] == 400
+        assert post("/routing/triangle/yellow")[0] == 400
+        assert post("/routing/cross")[0] == 404 or post("/routing/cross")[0] == 400
+        assert c.snapshot()["routing"]["cross"] == "orange" and c.snapshot()["routing"]["plain"] == "purple"
+        assert post("/routing/reset")[0] == 200
+        assert c.snapshot()["routing"] == LC.ROUTE_DEFAULT
+    finally:
+        srv.shutdown()

@@ -86,7 +86,7 @@ def make_auto_controller_class(base):
                 res = self.auto_inspector.inspect(self.arm, start_cmd)
             except Exception as e:  # noqa: BLE001  never leave the arm without a decision
                 log.exception("inspection failed")
-                res = SimpleNamespace(outcome="unknown", bowl="purple", reason=f"error: {e}", status="error",
+                res = SimpleNamespace(outcome="unknown", bowl=_fallback_bowl(), reason=f"error: {e}", status="error",
                                       attempts=0, frames=0, early_stop=False, seconds=0.0, saved=[])
             with self.lock:
                 self.inspection = {"state": res.status, "outcome": res.outcome, "bowl": res.bowl,
@@ -117,6 +117,16 @@ def make_auto_controller_class(base):
             return d
 
     return AutoController
+
+
+def _fallback_bowl() -> str:
+    """The plate for an uncertain / failed inspection: auto_inspect.FALLBACK_BOWL (the console can change it)."""
+    try:
+        import auto_inspect
+
+        return getattr(auto_inspect, "FALLBACK_BOWL", "purple")
+    except Exception:  # noqa: BLE001
+        return "purple"
 
 
 def main() -> None:

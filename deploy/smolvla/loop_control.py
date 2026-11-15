@@ -47,8 +47,8 @@ import smolvla_control as S  # noqa: E402
 log = logging.getLogger("loop_control")
 # hold_min/lost_below: the grasp residual squeezes harder (cmd 0) and the fin-ray reads 2.9-3.5 on a brick; an empty
 # closed gripper settles at 1.0-2.1 (traces 14 Nov). Without the residual a brick reads 5.2-5.7, inside the band too.
-LCFG = SimpleNamespace(bring_mode="vla", spin_grasp_check=False, spin_continuous=True, spin_speed=90.0, use_inspect_pose=False, pose_speed=30.0, nudge_speed=15.0, hold_min=2.6, hold_max=9.0, lost_below=2.4, open_above=12.0, pick_timeout=45.0,
-                       bring_timeout=25.0, place_timeout=40.0, max_cycles=12, max_attempts=5,
+LCFG = SimpleNamespace(bring_mode="vla", spin_grasp_check=False, spin_continuous=True, spin_speed=90.0, use_inspect_pose=False, pose_speed=30.0, nudge_speed=15.0, hold_min=2.5, hold_max=11.5, lost_below=2.3, open_above=12.0, pick_timeout=45.0,
+                       bring_timeout=20.0, place_timeout=40.0, max_cycles=12, max_attempts=5,
                        max_misses=5, miss_below=2.4, stuck_closed_s=5.0,
                        workspace=(0, 60, 560, 480), empty_seconds=2.0, perception_hz=4.0, held_min_px=150,
                        held_band=(0.25, 0.75), fg_frac=0.35,
@@ -105,6 +105,55 @@ class FrameStream:
         pass
 
 
+# Plate routing: which plate each inspection outcome goes to. The table lives in auto_inspect's BOWL / FALLBACK_BOWL
+# (the decision code reads them when it decides); the console edits them in place. "plain" is BOWL["none"], "uncertain"
+# is FALLBACK_BOWL (unclear after the re-spin). Only the three colours the policy was trained on are allowed.
+ROUTE_OUTCOMES = ("plain", "circle", "cross", "marked", "uncertain")
+ROUTE_COLOURS = ("yellow", "orange", "purple")
+ROUTE_DEFAULT = {"plain": "yellow", "circle": "orange", "cross": "purple", "marked": "purple", "uncertain": "purple"}
+_ROUTE_KEY = {"plain": "none"}  # outcome name in the console -> key of auto_inspect.BOWL
+
+
+def parse_routing(text: str) -> dict:
+    """"plain=yellow,circle=orange,..." -> {outcome: colour} (only the outcomes given). ValueError when invalid."""
+    out = {}
+    for part in filter(None, (p.strip() for p in text.split(","))):
+        k, _, v = part.partition("=")
+        k, v = k.strip(), v.strip()
+        if k not in ROUTE_OUTCOMES or v not in ROUTE_COLOURS:
+            raise ValueError(f"bad routing entry {part!r}: outcome one of {ROUTE_OUTCOMES}, colour one of {ROUTE_COLOURS}")
+        out[k] = v
+    return out
+
+
+def _routing_module():
+    import auto_inspect as AI
+
+    if not hasattr(AI, "BOWL"):
+        AI.BOWL = {"none": "yellow", "circle": "orange", "cross": "purple", "marked": "purple"}
+    if not hasattr(AI, "FALLBACK_BOWL"):
+        AI.FALLBACK_BOWL = "purple"
+    return AI
+
+
+def routing_table() -> dict:
+    AI = _routing_module()
+    t = {o: AI.BOWL.get(_ROUTE_KEY.get(o, o), ROUTE_DEFAULT[o]) for o in ROUTE_OUTCOMES if o != "uncertain"}
+    t["uncertain"] = AI.FALLBACK_BOWL
+    return {o: t[o] for o in ROUTE_OUTCOMES}
+
+
+def set_routing(outcome: str, colour: str) -> None:
+    """Route `outcome` to `colour` for every decision made from now on. ValueError for anything not whitelisted."""
+    if outcome not in ROUTE_OUTCOMES or colour not in ROUTE_COLOURS:
+        raise ValueError(f"routing {outcome!r} -> {colour!r}")
+    AI = _routing_module()
+    if outcome == "uncertain":
+        AI.FALLBACK_BOWL = colour
+    else:
+        AI.BOWL[_ROUTE_KEY.get(outcome, outcome)] = colour  # in place: decisions read this dict
+
+
 def make_loop_controller_class(base):
     auto = A.make_auto_controller_class(base)
 
@@ -152,7 +201,7 @@ def make_loop_controller_class(base):
             self.perc = {"t": 0.0, "table": [], "sorted": [], "plates": [], "target": None, "inspect_seen": None,
                          "inspect": None, "workspace": list(LCFG.workspace), "verify": None}
             self._plates: dict[str, P.Plate] = {}
-            self._count_hist: collections.deque = collections.deque(maxlen=64)  # (t, n bricks on the table)
+            self._count_hist: collections.deque = collections.deque(maxlen=64)  # (t, bricks on the table) while the arm is home
             self._pose_hist: collections.deque = collections.deque(maxlen=60)  # 2 s at 30 Hz
             self._grip_hist: collections.deque = collections.deque(maxlen=15)
             self._insp_frames: list[dict] = []
@@ -213,6 +262,17 @@ def make_loop_controller_class(base):
             self._goto("paused", message)
 
         # ------------------------------------------------------------------ operator commands
+        def routing_command(self, outcome: str, colour: str | None = None) -> None:
+            """/routing/<outcome>/<colour>, or /routing/reset. A decision already made (self.bowl) is not touched."""
+            with self.lock:
+                if outcome == "reset":
+                    for o, c in ROUTE_DEFAULT.items():
+                        set_routing(o, c)
+                    self._event("routing", message="Plate routing reset to the default")
+                else:
+                    set_routing(outcome, colour)
+                    self._event("routing", message=f"Plate routing: {outcome} -> {colour}")
+
         def loop_command(self, name: str) -> None:
             with self.lock:
                 if name == "start":
@@ -272,8 +332,7 @@ def make_loop_controller_class(base):
                     self._vla_bring_t0 = None
                 else:
                     el = time.monotonic() - self._vla_bring_t0
-                    settled = (len(self._pose_hist) >= 60
-                               and float(np.ptp(np.stack(self._pose_hist)[:, :5], axis=0).max()) < 2.5)
+                    settled = self._at_camera_still()
                     if (el > 4.0 and self._held_for("vla_bring_settled", settled, 0.5)) or el > LCFG.bring_timeout:
                         self._vla_bring_t0 = None
                         self._hold_here()
@@ -432,7 +491,9 @@ def make_loop_controller_class(base):
                 return
             g, c = float(self.measured[5]), float(self.cmd[5])
             still = len(self._grip_hist) >= 10 and (max(self._grip_hist) - min(self._grip_hist)) < 0.6
-            squeezing = c < g - 1.0  # commanded further closed than the fingers can go: something is between them
+            # closing on something: commanded no more open than the fingers are. Thin bricks held on edge and wide
+            # grips are often closed to the brick's width (cmd ~ reading) rather than squeezed past it.
+            squeezing = c < g + 0.5
             if LCFG.hold_min <= g <= LCFG.hold_max and squeezing and still:
                 state = "holding"
             elif g < LCFG.lost_below and c < LCFG.lost_below + 2:
@@ -491,16 +552,22 @@ def make_loop_controller_class(base):
                 return
             from_home = self.L.get("survey_from", "home") == "home"
             since = self.L["since"] + 0.8
-            recent = [n for t, n in self._count_hist if t >= since]
-            if len(recent) >= max(3, int(LCFG.empty_seconds * LCFG.perception_hz * 0.6)) and max(recent) == 0:
+            # Only bricks seen at the same place in at least half the recent frames count, as in the final verify:
+            # a detector flicker (backdrop past the table edge, cables; 4-9 % of frames on 14 Nov) neither blocks the
+            # empty-table check nor becomes a pick target.
+            recent = [tb for t, tb in self._count_hist if t >= since]
+            steady = P.persistent_bricks(recent)
+            need = max(3, int(LCFG.empty_seconds * LCFG.perception_hz * 0.6))
+            if len(recent) >= need and not steady:
                 if not from_home:  # the arm may hide bricks from up here: only the view from home decides
                     return self._go_home("No bricks seen from here: going home to check the whole table")
                 return self._start_verify()
             if self.L["cycle"] >= LCFG.max_cycles:
                 self._pause(f"Reached --max-cycles {LCFG.max_cycles}")
                 return
-            target = self.perc.get("target")
-            if not recent or target is None or self.perc["t"] < since:
+            ok = [b for b in steady if b["colour"] in P.TRAINING_COLOURS]
+            target = max(ok, key=lambda b: (b["colour_conf"] > 0.4, b["conf"])) if ok else None
+            if len(recent) < need or target is None:
                 if self._elapsed() > 8.0:
                     if not from_home:
                         return self._go_home("Nothing clear to pick from here: going home to look again")
@@ -568,6 +635,14 @@ def make_loop_controller_class(base):
                 self._cycle(result="pick timeout")
                 self._go_home(f"No grasp after {LCFG.pick_timeout:.0f} s: going home to retry")
 
+        def _at_camera_still(self) -> bool:
+            """Bring-to-camera only: the arm has stopped (< 2.5 deg over the last 2 s) on pan, lift, elbow and wrist
+            flex. Wrist roll is left out: the spin turns it anyway, and the VLA keeps twitching it 2-4 deg at the camera,
+            which held "arrived" off until the 25 s timeout (14 Nov: 2 of 5 cycles; replay of 135 brings: 17 faster,
+            none slower)."""
+            return (len(self._pose_hist) >= 60
+                    and float(np.ptp(np.stack(self._pose_hist)[:, :4], axis=0).max()) < 2.5)
+
         def _step_bring(self) -> None:
             if self.phase == "stopped":
                 self._mover = None
@@ -604,8 +679,7 @@ def make_loop_controller_class(base):
             # "finished" = < 2.5 deg over the last 2 s on every joint. The VLA's last stretch towards the camera is a slow
             # 2-4 deg/s creep; a 0.67 s window called that "still" and spun ~10-15 deg short of where the manual runs
             # pressed M (traces, 15 Nov). Manual M presses came after 4.5-8 s of bring at <= ~1 deg/s.
-            settled = (len(self._pose_hist) >= 60
-                       and float(np.ptp(np.stack(self._pose_hist)[:, :5], axis=0).max()) < 2.5)
+            settled = self._at_camera_still()
             arrived = (self._elapsed() > 4.0 and self._held_for("settled", settled, 0.5)) or self._elapsed() > LCFG.bring_timeout
             if arrived and LCFG.bring_mode == "vla_pose":  # straight from the VLA's endpoint to the one saved pose
                 cur = np.asarray(self.measured if self.measured is not None else self.cmd, float)
@@ -743,7 +817,7 @@ def make_loop_controller_class(base):
                                      plates=[vars(p) for p in plates],
                                      target=None if target is None else target.to_dict())
                     if not arm_busy:  # the arm itself can hide bricks: only count while it is home
-                        self._count_hist.append((now, len(table)))
+                        self._count_hist.append((now, table))
                     step = self.L["step"]
                 self.perc["workspace"] = list(LCFG.workspace)
             if self.phase != "inspecting" and detect_inspect:
@@ -863,6 +937,9 @@ def make_loop_controller_class(base):
                                                                     "age_s": round(time.monotonic() - sl["t"], 2)}
                 d["loop"]["config"] = {"hold": [LCFG.hold_min, LCFG.hold_max], "lost_below": LCFG.lost_below,
                                        "open_above": LCFG.open_above}
+                d["routing"] = routing_table()
+                # binary inspector (held_v5: plain / marked): circle and cross are never decided, only marked
+                d["routing_binary"] = getattr(getattr(self.auto_inspector, "insp", None), "binary", None)
             d["studio"] = STUDIO
             return d
 
@@ -1023,6 +1100,18 @@ def wrap_handler(make_handler):
                             return self._send(400, b"", "text/plain")
                         return self._send(200, b"{}", "application/json")
                     return self._send(404, b"", "text/plain")
+                if self.path.startswith("/routing/"):
+                    parts = self.path.removeprefix("/routing/").split("/")
+                    try:
+                        if parts == ["reset"]:
+                            ctl.routing_command("reset")
+                        elif len(parts) == 2:
+                            ctl.routing_command(parts[0], parts[1])
+                        else:
+                            return self._send(404, b"", "text/plain")
+                    except ValueError:
+                        return self._send(400, b"", "text/plain")
+                    return self._send(200, json.dumps(routing_table()).encode(), "application/json")
                 if self.path.startswith("/loop/"):
                     name = self.path.removeprefix("/loop/")
                     if name in ("start", "pause", "resume", "stop", "home"):
@@ -1034,6 +1123,25 @@ def wrap_handler(make_handler):
         return LoopHandler
 
     return handler
+
+
+def _raise_gripper_p(p: int) -> None:
+    """LeRobot's configure() writes P=16 to every joint and caps the gripper at 50% torque. With P=16 the empty gripper
+    stalls 1-4 units short of closed (servo friction at small error, 14 Nov traces). Raise only the gripper's P right
+    after connect; Max_Torque_Limit, Protection_Current and Overload_Torque stay as LeRobot set them."""
+    from dlsj.deploy import pi05_control as pcm
+
+    orig = pcm.FollowerArm.connect
+
+    def connect(self, *a, **kw):
+        out = orig(self, *a, **kw)
+        bus = self.robot.bus
+        with bus.torque_disabled(["gripper"]):
+            bus.write("P_Coefficient", "gripper", int(p))
+        log.warning("gripper P_Coefficient set to %d (LeRobot default 16)", p)
+        return out
+
+    pcm.FollowerArm.connect = connect
 
 
 def main() -> None:
@@ -1054,6 +1162,10 @@ def main() -> None:
                     help="gripper position below this = jaws closed on nothing (a brick stalls them at 4-9)")
     ap.add_argument("--stuck-closed-s", type=float, default=LCFG.stuck_closed_s,
                     help="jaws shut on nothing this long in a pick -> go home and try again (0 = off)")
+    ap.add_argument("--routing", default="", help='startup plate routing, e.g. "plain=yellow,circle=orange,cross=purple,'
+                    'marked=purple,uncertain=purple" (outcomes you leave out keep their default; the console can change it live)')
+    ap.add_argument("--gripper-p", type=int, default=0,
+                    help="gripper P_Coefficient set after connect (LeRobot sets 16 on every joint; 0 = leave it)")
     ap.add_argument("--workspace", default="0,60,560,480", help="x0,y0,x1,y1 of the top image the loop looks at")
     ap.add_argument("--empty-seconds", type=float, default=LCFG.empty_seconds)
     ap.add_argument("--held-min-px", type=int, default=LCFG.held_min_px,
@@ -1081,6 +1193,12 @@ def main() -> None:
                     help="vla (default): the VLA brings the brick to the camera, spin when it settles; vla_pose: then straight to the saved inspection pose; vla_offset: VLA "
                          "bring + saved offset; fixed: scripted move via the ready pose")
     ours, rest = ap.parse_known_args()
+    if ours.routing:
+        try:
+            for o, c in parse_routing(ours.routing).items():
+                set_routing(o, c)
+        except ValueError as e:
+            ap.error(str(e))
     LCFG.bring_mode = ours.bring_mode
     LCFG.spin_grasp_check = ours.spin_grasp_check
     LCFG.spin_continuous, LCFG.spin_speed = not ours.spin_stepped, ours.spin_speed
@@ -1108,6 +1226,8 @@ def main() -> None:
     if STUDIO:
         print(f"policy: Physical AI Studio model '{STUDIO['name']}' ({STUDIO['policy']}, id {STUDIO['model_id']}, "
               f"trained on '{STUDIO.get('dataset_name')}')", flush=True)  # logging is configured later, in S.main
+    if ours.gripper_p:
+        _raise_gripper_p(ours.gripper_p)
     sys.argv = [sys.argv[0], *rest]
     S.main()
 

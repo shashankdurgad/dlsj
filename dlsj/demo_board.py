@@ -339,8 +339,9 @@ def inspection_frame(port: int = 8001) -> bytes | None:
 LOOP = os.environ.get("DLSJ_LOOP_URL", "http://127.0.0.1:8020")
 _LOOP_CMDS = {"start", "pause", "resume", "home", "stop"}
 _LOOP_STREAMS = {"top", "inspect", "wrist", "perc_inspect"}
-# Pose and collect commands of the 8020 console, e.g. pose/off_nudge/shoulder_pan/-5, collect/set/plain.
-_LOOP_TOOL = re.compile(r"(pose|collect)/[a-z_]+(/[a-z_]+(/-?\d+)?)?")
+# Pose, collect and plate-routing commands of the 8020 console, e.g. pose/off_nudge/shoulder_pan/-5, collect/set/plain,
+# routing/cross/orange, routing/reset.
+_LOOP_TOOL = re.compile(r"(pose|collect|routing)/[a-z_]+(/[a-z_]+(/-?\d+)?)?")
 
 
 def _open_loop(path: str, method: str = "GET"):
