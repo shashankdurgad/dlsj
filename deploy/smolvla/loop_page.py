@@ -61,13 +61,13 @@ th{color:var(--mute);font-weight:500;text-align:left;padding:4px 6px;border-bott
 <div class="msg" id="msg">Connecting...</div>
 <main class="grid">
  <div class="col">
-  <section class="card"><h2>Perceive &middot; top camera <em id="ptop"></em></h2><div class="camwrap"><img class="cam" src="/stream/top" alt="Top camera with detected bricks and plates"><canvas id="ovtop" width="640" height="480"></canvas></div></section>
+  <section class="card"><h2>Perceive &middot; top camera <em id="ptop"></em></h2><div class="camwrap"><img class="cam" src="/live/top?w=640" alt="Top camera with detected bricks and plates"><canvas id="ovtop" width="640" height="480"></canvas></div></section>
   <section class="card"><h2>Table &amp; plates <em id="remain"></em></h2>
    <div class="plates" id="plates"></div><div class="bricks" id="bricks"></div></section>
  </div>
  <div class="col">
-  <section class="card"><h2>Detect &middot; inspection camera <em id="pinsp"></em></h2><div class="camwrap"><img class="cam" id="inspimg" src="/stream/inspect" alt="Inspection camera with YOLO result"><canvas id="ovinsp" width="640" height="480"></canvas><span class="tag" id="insptag">live</span></div></section>
-  <section class="card"><h2>Wrist camera <em class="mute">policy input</em></h2><img class="cam" src="/stream/wrist" alt="Wrist camera"></section>
+  <section class="card"><h2>Detect &middot; inspection camera <em id="pinsp"></em></h2><div class="camwrap"><img class="cam" id="inspimg" src="/live/inspect?w=640" alt="Inspection camera with YOLO result"><canvas id="ovinsp" width="640" height="480"></canvas><span class="tag" id="insptag">live</span></div></section>
+  <section class="card"><h2>Wrist camera <em class="mute">policy input</em></h2><img class="cam" src="/live/wrist?w=480" alt="Wrist camera"></section>
  </div>
  <div class="col">
   <section class="card"><h2>Act &middot; VLA <em id="vlaph"></em></h2><div class="prompt" id="prompt">&ndash;</div>
@@ -164,9 +164,11 @@ function drawTop(pc,step){const c=$('ovtop').getContext('2d');c.clearRect(0,0,64
  if(!['survey','verify','idle','done','paused'].includes(step)){c.font='13px system-ui';c.fillStyle='rgba(255,255,255,.8)';c.fillText('last survey result (detector paused while the arm moves)',8,ws[1]+18)}}
 let inspMode='live';
 function drawInsp(r){const pc=r.perception||{},c=$('ovinsp').getContext('2d');c.clearRect(0,0,640,480);
- const spin=r.phase==='inspecting';const want=spin?'spin':'live';
- if(want!==inspMode){inspMode=want;$('inspimg').src=spin?'/stream/perc_inspect':'/stream/inspect'}
- $('insptag').textContent=spin?'spin: YOLO on every frame (NPU)':'live';if(spin)return;
+ const spin=r.phase==='inspecting'||r.phase==='collecting';
+ $('insptag').textContent=spin?'live · spinning, YOLO on the NPU':'live';
+ const sl=pc.spin_last;if(spin&&sl&&sl.age_s<1.0){const col=sl.confident==='cross'?'#c58cff':sl.confident==='circle'?'#f0a040':sl.confident==='plain'?'#3eff8e':'#bbbbbb';
+  box(c,sl.box,col,4,`${sl.label} ${sl.conf.toFixed(2)} · roll ${sl.angle>0?'+':''}${sl.angle}°`);return}
+ if(spin)return;
  const ins=pc.inspect;if(!ins||ins.age_s>1.5)return;
  c.strokeStyle='rgba(255,255,255,.25)';c.lineWidth=1;[ins.band[0]*640,ins.band[1]*640].forEach(x=>{c.beginPath();c.moveTo(x,0);c.lineTo(x,480);c.stroke()});
  (ins.others||[]).forEach(b=>box(c,b,'rgba(170,170,170,.8)',1));

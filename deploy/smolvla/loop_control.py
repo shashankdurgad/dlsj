@@ -783,6 +783,11 @@ def make_loop_controller_class(base):
             _banner(img, f"SPIN  frame {ev['i'] + 1}  roll {ev['angle']:+.0f} deg   YOLO: {_label(label)} "
                          f"{ev.get('conf', 0):.2f}   {ev.get('device', '')} {ev.get('model_ms', 0):.1f} ms")
             self.perc_streams["perc_inspect"].publish(img)
+            with self.lock:  # the live inspection video gets this drawn on top (no lagging processed stream)
+                self.perc["spin_last"] = {"t": time.monotonic(), "box": [int(v) for v in (ev.get("box") or (0, 0, 0, 0))],
+                                          "label": _label(label), "conf": round(float(ev.get("conf", 0) or 0), 2),
+                                          "angle": round(float(ev["angle"])), "i": ev["i"],
+                                          "confident": ev.get("confident")}
             rec = {"i": ev["i"], "angle": round(ev["angle"]), "top": ev.get("top"), "conf": round(float(ev.get("conf", 0)), 2),
                    "confident": ev.get("confident"), "ms": round(float(ev.get("model_ms", 0) or 0), 1)}
             with self.lock:
@@ -832,6 +837,9 @@ def make_loop_controller_class(base):
                     d["perception"]["inspect"] = {**{k: v for k, v in ins.items() if k != "t"},
                                                   "age_s": round(time.monotonic() - ins["t"], 1)}
                 d["perception"].pop("inspect_seen", None)
+                sl = self.perc.get("spin_last")
+                d["perception"]["spin_last"] = None if not sl else {**{k: v for k, v in sl.items() if k != "t"},
+                                                                    "age_s": round(time.monotonic() - sl["t"], 2)}
                 d["loop"]["config"] = {"hold": [LCFG.hold_min, LCFG.hold_max], "lost_below": LCFG.lost_below,
                                        "open_above": LCFG.open_above}
             d["studio"] = STUDIO
@@ -893,6 +901,8 @@ def wrap_handler(make_handler):
                 if self.path == "/classic":
                     self.path = "/"
                     return super().do_GET()
+                if self.path.startswith("/live/"):
+                    return self._live_stream()
                 if self.path == "/collect":
                     return self._send(200, C.PAGE.encode(), "text/html; charset=utf-8")
                 if self.path == "/collect/state":
@@ -912,6 +922,48 @@ def wrap_handler(make_handler):
                     body = ctl.strip_jpeg()
                     return self._send(200, body, "image/jpeg") if body else self._send(204, b"", "text/plain")
                 return super().do_GET()
+
+            def _live_stream(self):
+                """MJPEG that never lags: always the NEWEST frame, downscaled, through a small send buffer, so a slow
+                viewer or network drops frames instead of queueing seconds of them (the base /stream/ sends every one)."""
+                import socket
+                from urllib.parse import parse_qs, urlsplit
+
+                import cv2
+
+                u = urlsplit(self.path)
+                cam = ctl.real_cameras.get(u.path.removeprefix("/live/"))
+                if cam is None or not hasattr(cam, "cond"):
+                    return self._send(404, b"", "text/plain")
+                q = parse_qs(u.query)
+                width, quality = int(q.get("w", ["640"])[0]), int(q.get("q", ["70"])[0])
+                try:
+                    self.connection.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 64 * 1024)
+                except OSError:
+                    pass
+                self.send_response(200)
+                self.send_header("Content-Type", "multipart/x-mixed-replace; boundary=frame")
+                self.send_header("Cache-Control", "no-store")
+                self.end_headers()
+                last = -1
+                try:
+                    while True:
+                        with cam.cond:
+                            cam.cond.wait_for(lambda: cam.seq != last, timeout=2.0)
+                            frame, last = cam.frame, cam.seq
+                        if frame is None:
+                            continue
+                        if width and frame.shape[1] > width:
+                            frame = cv2.resize(frame, (width, round(frame.shape[0] * width / frame.shape[1])),
+                                               interpolation=cv2.INTER_AREA)
+                        ok, buf = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, quality])
+                        if not ok:
+                            continue
+                        jpg = buf.tobytes()
+                        self.wfile.write(b"--frame\r\nContent-Type: image/jpeg\r\nContent-Length: "
+                                         + str(len(jpg)).encode() + b"\r\n\r\n" + jpg + b"\r\n")
+                except (BrokenPipeError, ConnectionResetError, OSError):
+                    return
 
             def do_POST(self):
                 if self.path.startswith("/collect/"):
