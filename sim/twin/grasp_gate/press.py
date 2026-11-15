@@ -1,8 +1,13 @@
-import json, sys, numpy as np, torch
+import sys
+
+import numpy as np
+import torch
+
 sys.path.insert(0, "/repo")
-from sim.twin.grasp_gate import common as C
 from sim.twin.calib.profile import twin_profile
+from sim.twin.grasp_gate import common as C
 from sim.twin.rl.kin import Kin
+
 FIN = (-0.00821, 0.00097, -0.10522)
 kin = Kin(twin_profile().joint_offsets, "cpu", tip_local=FIN)
 demos = C.load_demos()
