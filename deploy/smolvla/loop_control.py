@@ -42,7 +42,7 @@ import perception as P  # noqa: E402
 import smolvla_control as S  # noqa: E402
 
 log = logging.getLogger("loop_control")
-LCFG = SimpleNamespace(bring_mode="vla_pose", use_inspect_pose=False, pose_speed=30.0, nudge_speed=15.0, hold_min=4.0, hold_max=9.0, lost_below=3.0, open_above=12.0, pick_timeout=45.0,
+LCFG = SimpleNamespace(bring_mode="vla", use_inspect_pose=False, pose_speed=30.0, nudge_speed=15.0, hold_min=4.0, hold_max=9.0, lost_below=3.0, open_above=12.0, pick_timeout=45.0,
                        bring_timeout=25.0, place_timeout=40.0, max_cycles=12, max_attempts=3,
                        workspace=(0, 60, 560, 480), empty_seconds=2.0, perception_hz=4.0, held_min_px=150,
                        held_band=(0.25, 0.75), fg_frac=0.35,
@@ -846,9 +846,9 @@ def main() -> None:
     ap.add_argument("--inspect-frames", type=int, default=12)
     ap.add_argument("--inspect-range", type=float, default=180.0)
     ap.add_argument("--inspect-speed", type=float, default=60.0)
-    ap.add_argument("--bring-mode", choices=("vla_pose", "vla_offset", "vla", "fixed"), default="vla_pose",
-                    help="vla_pose (default): VLA bring, then straight to the saved inspection pose; vla_offset: VLA "
-                         "bring + saved offset; vla: VLA bring only; fixed: scripted move via the ready pose")
+    ap.add_argument("--bring-mode", choices=("vla", "vla_pose", "vla_offset", "fixed"), default="vla",
+                    help="vla (default): the VLA brings the brick to the camera, spin when it settles; vla_pose: then straight to the saved inspection pose; vla_offset: VLA "
+                         "bring + saved offset; fixed: scripted move via the ready pose")
     ours, rest = ap.parse_known_args()
     LCFG.bring_mode = ours.bring_mode
     if ours.loop_help:
