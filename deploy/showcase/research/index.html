@@ -60,18 +60,18 @@
         <svg class="loop" viewBox="0 0 1000 250" role="img" aria-labelledby="loopT">
           <title id="loopT">The sorting loop: perceive on the NPU, pick on the GPU, spin and detect on the NPU, reason on the CPU, place on the GPU, then repeat until the table is clear.</title>
           <defs>
-            <marker id="ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" fill="#98aebe"/></marker>
+            <marker id="ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" fill="#6b6455"/></marker>
           </defs>
-          <g class="edges" stroke="#98aebe" stroke-width="2" fill="none" marker-end="url(#ah)">
+          <g class="edges" stroke="#6b6455" stroke-width="2" fill="none" marker-end="url(#ah)">
             <path d="M176 92H212"/><path d="M376 92H412"/><path d="M576 92H612"/><path d="M776 92H812"/>
             <path d="M894 132V196H106V140" stroke-dasharray="5 6"/>
           </g>
           <text class="repeat" x="500" y="222" text-anchor="middle">repeat until the top camera sees an empty table</text>
-          <g class="node" style="--c:#34d3b4" transform="translate(16 52)"><rect width="160" height="80" rx="8"/><text x="80" y="34" class="n-t">Perceive</text><text x="80" y="58" class="n-d">NPU, top camera</text></g>
-          <g class="node" style="--c:#7aa2ff" transform="translate(216 52)"><rect width="160" height="80" rx="8"/><text x="80" y="34" class="n-t">Act: pick</text><text x="80" y="58" class="n-d">GPU, VLA</text></g>
-          <g class="node" style="--c:#34d3b4" transform="translate(416 52)"><rect width="160" height="80" rx="8"/><text x="80" y="34" class="n-t">Detect</text><text x="80" y="58" class="n-d">NPU, spin + YOLO</text></g>
-          <g class="node" style="--c:#f2a65a" transform="translate(616 52)"><rect width="160" height="80" rx="8"/><text x="80" y="34" class="n-t">Reason</text><text x="80" y="58" class="n-d">CPU, evidence rule</text></g>
-          <g class="node" style="--c:#7aa2ff" transform="translate(816 52)"><rect width="160" height="80" rx="8"/><text x="80" y="34" class="n-t">Act: place</text><text x="80" y="58" class="n-d">GPU, VLA</text></g>
+          <g class="node" style="--c:var(--npu)" transform="translate(16 52)"><rect width="160" height="80" rx="8"/><text x="80" y="34" class="n-t">Perceive</text><text x="80" y="58" class="n-d">NPU, top camera</text></g>
+          <g class="node" style="--c:var(--gpu)" transform="translate(216 52)"><rect width="160" height="80" rx="8"/><text x="80" y="34" class="n-t">Act: pick</text><text x="80" y="58" class="n-d">GPU, VLA</text></g>
+          <g class="node" style="--c:var(--npu)" transform="translate(416 52)"><rect width="160" height="80" rx="8"/><text x="80" y="34" class="n-t">Detect</text><text x="80" y="58" class="n-d">NPU, spin + YOLO</text></g>
+          <g class="node" style="--c:var(--cpu)" transform="translate(616 52)"><rect width="160" height="80" rx="8"/><text x="80" y="34" class="n-t">Reason</text><text x="80" y="58" class="n-d">CPU, evidence rule</text></g>
+          <g class="node" style="--c:var(--gpu)" transform="translate(816 52)"><rect width="160" height="80" rx="8"/><text x="80" y="34" class="n-t">Act: place</text><text x="80" y="58" class="n-d">GPU, VLA</text></g>
         </svg>
       </div>
       <figcaption>The loop. Colours mark the engine each step runs on: <b class="c-gpu">Arc GPU</b>, <b class="c-npu">NPU</b>, <b class="c-cpu">CPU</b>.</figcaption>

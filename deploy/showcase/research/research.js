@@ -62,11 +62,11 @@ function pairChart([label, base, now, unit]) {
 
 function inspectChart(rows) {
   const W = 700, rowH = 64, barH = 22;
-  const C = { right: 'var(--npu)', uncertain: '#5d7891', wrong: 'var(--robot)' };
+  const C = { right: 'var(--npu)', uncertain: '#a79c86', wrong: 'var(--robot)' };
   const body = rows.map(([l, r, u, w], i) => {
     const tot = r + u + w || 1, sc = W / tot;
     let x = 0;
-    const seg = (v, c, k) => { if (!v) return ''; const s = `<rect x="${x.toFixed(1)}" y="26" width="${(v * sc - 2).toFixed(1)}" height="${barH}" fill="${c}"${k === 'right' && i === rows.length - 1 ? '' : ''}/>${v * sc > 28 ? `<text class="v" x="${(x + 8).toFixed(1)}" y="42" style="fill:#0b1723">${v}</text>` : ''}`; x += v * sc; return s; };
+    const seg = (v, c, k) => { if (!v) return ''; const s = `<rect x="${x.toFixed(1)}" y="26" width="${(v * sc - 2).toFixed(1)}" height="${barH}" fill="${c}"${k === 'right' && i === rows.length - 1 ? '' : ''}/>${v * sc > 28 ? `<text class="v" x="${(x + 8).toFixed(1)}" y="42" style="fill:#fff">${v}</text>` : ''}`; x += v * sc; return s; };
     return `<g transform="translate(0 ${i * rowH})"><text x="0" y="17"${i === rows.length - 1 ? ' style="fill:var(--text);font-weight:800"' : ''}>${esc(l)}</text>
       ${seg(r, C.right, 'right')}${seg(u, C.uncertain)}${seg(w, C.wrong)}</g>`;
   }).join('');

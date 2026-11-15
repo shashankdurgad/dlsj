@@ -23,8 +23,11 @@ const COLORS = {
 };
 
 const reduced = matchMedia('(prefers-reduced-motion: reduce)');
+// pages can ask for a light stage with `--twin-mode: light` (+ `--stage` for the fog colour) on :root
+const cssVar = (k) => getComputedStyle(document.documentElement).getPropertyValue(k).trim();
 
 export function createTwin(canvas, { onReady, onError } = {}) {
+  const LIGHT = cssVar('--twin-mode') === 'light';
   let renderer;
   try {
     renderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: true, powerPreference: 'low-power' });
@@ -52,8 +55,8 @@ export function createTwin(canvas, { onReady, onError } = {}) {
   controls.update();
 
   // inspection-bay lighting: one overhead spot pooling light on the cell, a cool rim from behind, a dim fill
-  scene.fog = new THREE.Fog(0x0b1723, 1.1, 2.6);
-  scene.add(new THREE.HemisphereLight(0xbcd3e6, 0x0a1520, 0.55));
+  scene.fog = new THREE.Fog(LIGHT ? new THREE.Color(cssVar('--stage') || '#ece3cf') : 0x0b1723, 1.1, 2.6);
+  scene.add(new THREE.HemisphereLight(LIGHT ? 0xfff6e6 : 0xbcd3e6, LIGHT ? 0x8a7a5c : 0x0a1520, LIGHT ? 1.1 : 0.55));
   const key = new THREE.SpotLight(0xfff4e6, 5.5, 0, 0.62, 0.75, 0);
   key.position.set(0.12, 1.25, 0.12);
   key.target.position.set(0.15, 0, 0.08);
@@ -75,14 +78,15 @@ export function createTwin(canvas, { onReady, onError } = {}) {
     const N = 1024, c = document.createElement('canvas'); c.width = c.height = N;
     const g = c.getContext('2d');
     const rad = g.createRadialGradient(N / 2, N / 2, 0, N / 2, N / 2, N / 2);
-    rad.addColorStop(0, 'rgba(38,70,98,1)'); rad.addColorStop(0.55, 'rgba(24,46,66,0.9)'); rad.addColorStop(1, 'rgba(15,30,44,0)');
+    if (LIGHT) { rad.addColorStop(0, 'rgba(226,212,184,1)'); rad.addColorStop(0.55, 'rgba(232,221,198,0.9)'); rad.addColorStop(1, 'rgba(236,227,207,0)'); }
+    else { rad.addColorStop(0, 'rgba(38,70,98,1)'); rad.addColorStop(0.55, 'rgba(24,46,66,0.9)'); rad.addColorStop(1, 'rgba(15,30,44,0)'); }
     g.fillStyle = rad; g.fillRect(0, 0, N, N);
     const span = 1.6, step = 0.05, px = N / span; // texture covers 1.6 m
     g.lineWidth = 1.2;
     for (let v = -span / 2; v <= span / 2 + 1e-6; v += step) {
       const p = N / 2 + v * px;
       const major = Math.abs(Math.round(v / step)) % 4 === 0;
-      g.strokeStyle = major ? 'rgba(120,170,210,0.13)' : 'rgba(120,170,210,0.055)';
+      g.strokeStyle = LIGHT ? (major ? 'rgba(90,70,30,0.22)' : 'rgba(90,70,30,0.09)') : (major ? 'rgba(120,170,210,0.13)' : 'rgba(120,170,210,0.055)');
       g.beginPath(); g.moveTo(p, 0); g.lineTo(p, N); g.stroke();
       g.beginPath(); g.moveTo(0, p); g.lineTo(N, p); g.stroke();
     }
@@ -108,7 +112,7 @@ export function createTwin(canvas, { onReady, onError } = {}) {
   // a thin reach ring at the arm's working radius
   const ring = new THREE.Mesh(
     new THREE.RingGeometry(0.4, 0.403, 128),
-    new THREE.MeshBasicMaterial({ color: 0x5f8fb8, transparent: true, opacity: 0.35 }),
+    new THREE.MeshBasicMaterial({ color: LIGHT ? 0x8a7a5c : 0x5f8fb8, transparent: true, opacity: 0.35 }),
   );
   ring.rotation.x = -Math.PI / 2; ring.position.y = 0.0008;
   scene.add(ring);
