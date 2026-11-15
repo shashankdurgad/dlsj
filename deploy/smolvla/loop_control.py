@@ -10,8 +10,9 @@ PERCEIVE -> DETECT -> REASON -> ACT, repeated until the table is empty:
          zoomed tiles of the top view, a brick must persist across 8 frames) --> clear: stay home, done; bricks
          left: survey again.
 
-Recovery: empty grasp / pick timeout -> home and retry (max --max-attempts in a row, then pause); brick dropped
-while bringing or spinning -> home, it is picked again from the table; uncertain inspection -> re-spin -> purple;
+Recovery: a fumbling pick (--max-misses missed grasps, or the jaws shut on nothing for --stuck-closed-s; see
+`pick_watch.py`) or a pick timeout -> home and try the prompt again (max --max-attempts in a row, then pause);
+brick dropped while bringing or spinning -> home, it is picked again from the table; uncertain inspection -> re-spin -> purple;
 Stop (Q) or any fault -> hold and pause the loop; Resume restarts from home.
 
 Built on `auto_control.py` (spin-and-inspect) on top of `smolvla_control.py` (VLA, RTC, speed limits, Home):
@@ -40,11 +41,13 @@ import auto_control as A  # noqa: E402  (also puts the ultralytics overlay on sy
 import collect as C  # noqa: E402
 import inspect_pose as IP  # noqa: E402
 import perception as P  # noqa: E402
+import pick_watch as PW  # noqa: E402
 import smolvla_control as S  # noqa: E402
 
 log = logging.getLogger("loop_control")
 LCFG = SimpleNamespace(bring_mode="vla", spin_grasp_check=False, spin_continuous=True, spin_speed=90.0, use_inspect_pose=False, pose_speed=30.0, nudge_speed=15.0, hold_min=4.0, hold_max=9.0, lost_below=3.0, open_above=12.0, pick_timeout=45.0,
-                       bring_timeout=25.0, place_timeout=40.0, max_cycles=12, max_attempts=3,
+                       bring_timeout=25.0, place_timeout=40.0, max_cycles=12, max_attempts=5,
+                       max_misses=5, miss_below=3.8, stuck_closed_s=5.0,
                        workspace=(0, 60, 560, 480), empty_seconds=2.0, perception_hz=4.0, held_min_px=150,
                        held_band=(0.25, 0.75), fg_frac=0.35,
                        top_detector="~/inference/models/brick-detector-v1", top_device="NPU", top_conf=0.3,
@@ -151,6 +154,7 @@ def make_loop_controller_class(base):
             self._pose_hist: collections.deque = collections.deque(maxlen=60)  # 2 s at 30 Hz
             self._grip_hist: collections.deque = collections.deque(maxlen=15)
             self._insp_frames: list[dict] = []
+            self._pick_watch: PW.PickWatch | None = None  # set when a pick starts
             self._insp_crops: list = []
             self._marks: dict[str, float] = {}
             self._last_top = None
@@ -517,6 +521,7 @@ def make_loop_controller_class(base):
                 self.phase, self.message = "running", ""
             self.L["survey_from"] = "home"
             self.L["cycles"].append({"n": self.L["cycle"], "brick": colour, "t0": time.time(), "result": "running"})
+            self._pick_watch = PW.PickWatch(LCFG.max_misses, LCFG.miss_below, LCFG.open_above, LCFG.stuck_closed_s)
             self._goto("pick", f"Cycle {self.L['cycle']}: pick up the {colour} brick")
 
         def _cycle(self, **kw) -> None:
@@ -542,6 +547,20 @@ def make_loop_controller_class(base):
                     return self._goto("bring", f"Grasp confirmed: moving to the inspection pose ({self.ip_src})")
                 self._goto("bring", "Grasp confirmed: bringing the brick to the inspection camera")
                 return
+            w = self._pick_watch  # the VLA keeps fumbling after a miss: go home and try the prompt again
+            if w is not None and self.measured is not None:
+                g, before = float(self.measured[5]), w.misses
+                why = w.update(time.monotonic(), g)
+                if w.misses > before:
+                    self._event("pick_miss", n=w.misses, pos=round(g, 1), t=round(self._elapsed(), 1))
+                    self.L["message"] = f"Missed grasp {w.misses}/{LCFG.max_misses}"
+                if why:
+                    self.L["attempts"] += 1
+                    self._cycle(result=f"pick stopped: {why}", misses=w.misses)
+                    self._event("pick_stop", reason=why, misses=w.misses, t=round(self._elapsed(), 1))
+                    what = (f"{w.misses} missed grasps" if why == "misses"
+                            else f"Gripper shut on nothing for {LCFG.stuck_closed_s:.0f} s")
+                    return self._go_home(f"{what}: going home to try again")
             if self._elapsed() > LCFG.pick_timeout:
                 self.L["attempts"] += 1
                 self._cycle(result="pick timeout")
@@ -1020,6 +1039,12 @@ def main() -> None:
     ap.add_argument("--place-timeout", type=float, default=LCFG.place_timeout)
     ap.add_argument("--max-cycles", type=int, default=LCFG.max_cycles)
     ap.add_argument("--max-attempts", type=int, default=LCFG.max_attempts)
+    ap.add_argument("--max-misses", type=int, default=LCFG.max_misses,
+                    help="missed grasps in one pick before going home to try again (0 = off)")
+    ap.add_argument("--miss-below", type=float, default=LCFG.miss_below,
+                    help="gripper position below this = jaws closed on nothing (a brick stalls them at 4-9)")
+    ap.add_argument("--stuck-closed-s", type=float, default=LCFG.stuck_closed_s,
+                    help="jaws shut on nothing this long in a pick -> go home and try again (0 = off)")
     ap.add_argument("--workspace", default="0,60,560,480", help="x0,y0,x1,y1 of the top image the loop looks at")
     ap.add_argument("--empty-seconds", type=float, default=LCFG.empty_seconds)
     ap.add_argument("--held-min-px", type=int, default=LCFG.held_min_px,
@@ -1054,8 +1079,8 @@ def main() -> None:
         ap.print_help()
         return
     for k in ("hold_min", "hold_max", "lost_below", "open_above", "pick_timeout", "bring_timeout", "place_timeout",
-              "max_cycles", "max_attempts", "empty_seconds", "held_min_px", "top_detector", "top_device", "top_conf",
-              "verify_conf", "verify_frames"):
+              "max_cycles", "max_attempts", "max_misses", "miss_below", "stuck_closed_s", "empty_seconds", "held_min_px",
+              "top_detector", "top_device", "top_conf", "verify_conf", "verify_frames"):
         setattr(LCFG, k, getattr(ours, k))
     LCFG.workspace = tuple(int(v) for v in ours.workspace.split(","))
     A.CFG.__dict__.update(inspector=ours.inspector, inspect_device=ours.inspect_device, inspect_frames=ours.inspect_frames,

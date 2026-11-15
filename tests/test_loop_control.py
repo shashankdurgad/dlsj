@@ -258,6 +258,44 @@ def test_pick_timeout_goes_home_and_retries(build):
     assert c.L["step"] in ("home", "survey")
 
 
+def test_five_missed_grasps_go_home_and_try_again(build):
+    c, clock, _ = build()
+    c.loop_command("start")
+    run(c, clock, 1.2)
+    see_bricks(c, clock, 1)
+    clock.now += 3.0
+    run(c, clock, 0.1)
+    assert c.L["step"] == "pick"
+    for _ in range(4):  # open, close on nothing: four misses, still picking
+        run(c, clock, 1.0, grip=37.0, cmd_grip=37.0)
+        run(c, clock, 1.0, grip=3.0, cmd_grip=0.0)
+    assert c.L["step"] == "pick" and c._pick_watch.misses == 4
+    run(c, clock, 1.0, grip=37.0, cmd_grip=37.0)
+    run(c, clock, 0.2, grip=3.0, cmd_grip=0.0)  # fifth miss
+    assert c.L["attempts"] == 1 and c.L["cycles"][-1]["result"] == "pick stopped: misses"
+    assert c.L["step"] in ("home", "survey")
+    run(c, clock, 1.2)
+    see_bricks(c, clock, 1)
+    clock.now += 3.0
+    run(c, clock, 0.1, grip=37.0, cmd_grip=37.0)
+    assert c.L["step"] == "pick" and c._pick_watch.misses == 0  # fresh count for the new try
+
+
+def test_missed_grasps_off_keeps_the_timeout(build, monkeypatch):
+    c, clock, _ = build()
+    monkeypatch.setattr(LC.LCFG, "max_misses", 0)
+    monkeypatch.setattr(LC.LCFG, "stuck_closed_s", 0.0)
+    c.loop_command("start")
+    run(c, clock, 1.2)
+    see_bricks(c, clock, 1)
+    clock.now += 3.0
+    run(c, clock, 0.1)
+    for _ in range(5):
+        run(c, clock, 1.0, grip=37.0, cmd_grip=37.0)
+        run(c, clock, 1.0, grip=3.0, cmd_grip=0.0)
+    assert c.L["step"] == "pick" and c.L["attempts"] == 0
+
+
 def test_drop_while_bringing_goes_home(build):
     c, clock, _ = build()
     c.loop_command("start")
