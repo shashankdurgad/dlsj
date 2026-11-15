@@ -4,6 +4,8 @@
 # registered in the "dlsj brick sorting" project): dlsj.deploy.studio_registry checks it against Studio and gives
 # the export dir. EXPORT=<dir> overrides with a plain export folder. Extra args go to loop_control.py /
 # smolvla_control.py.
+# Grasp residual (pick only): append --residual shadow|on --residual-weights <deploy/residual_actor.npz>
+# (deploy/smolvla/residual.py; off by default). POST /ctl/residual_off fades it out live.
 cd ~/inference/dlsj-smolvla
 export PYTHONPATH=$PWD
 PY=~/desmond/venvs/pi05rt/bin/python
