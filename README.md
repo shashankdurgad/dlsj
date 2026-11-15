@@ -43,6 +43,8 @@ No ACT: one π0.5 model handles pick and place by instruction (Intel's reference
 
 ## Key tools
 
+- [Local Studio source and setup](docs/PHYSICAL_AI_STUDIO.md): tracked under
+  `third_party/physical-ai-studio`; launch with `./scripts/run_studio.sh`.
 - [Physical AI Studio](https://github.com/open-edge-platform/physical-ai-studio): train and export policies (ACT, π0.5, SmolVLA, …)
 - [physicalai runtime](https://github.com/openvinotoolkit/physicalai): deploy on the robot with OpenVINO
 - [Anomalib](https://github.com/open-edge-platform/anomalib): anomaly detection
