@@ -280,6 +280,10 @@ def make_loop_controller_class(base):
                         return
                     self.L.update(mode="running", cycle=0, attempts=0, cycles=[], tallies={}, started=time.time(),
                                   verify_fails=0)
+                    # plates are remembered within a run (the arm hides them); a plate moved or taken away between
+                    # runs left its old circle, and bricks there counted as sorted (14 Nov: table 'clear' with a
+                    # brick on it). Find them again from home.
+                    self._plates.clear()
                     self._go_home("Loop started: going home")
                 elif name == "resume":
                     if self.L["mode"] in ("paused", "done"):
@@ -294,6 +298,18 @@ def make_loop_controller_class(base):
                     super()._handle("q")
                     self.L["mode"] = "off"
                     self._goto("idle", "Stopped: holding position")
+                elif name == "reset":  # stop where it is (as Q) and clear the run, for a fresh demo
+                    if self.phase == "inspecting":
+                        self.auto_inspector.stop()
+                    super()._handle("q")
+                    self.L.update(mode="off", cycle=0, attempts=0, cycles=[], tallies={}, started=None, verify_fails=0,
+                                  target=None)
+                    self.L["events"].clear()
+                    self._plates.clear()
+                    self.perc["verify"] = None
+                    self.inspection = None
+                    self._insp_frames, self._insp_crops = [], []
+                    self._goto("idle", "Reset: run cleared, arm holding where it is")
                 elif name == "home":
                     self.L["mode"] = "off"
                     self._handle("home")
@@ -1114,7 +1130,7 @@ def wrap_handler(make_handler):
                     return self._send(200, json.dumps(routing_table()).encode(), "application/json")
                 if self.path.startswith("/loop/"):
                     name = self.path.removeprefix("/loop/")
-                    if name in ("start", "pause", "resume", "stop", "home"):
+                    if name in ("start", "pause", "resume", "stop", "home", "reset"):
                         ctl.loop_command(name)
                         return self._send(200, b"{}", "application/json")
                     return self._send(404, b"", "text/plain")

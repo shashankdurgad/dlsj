@@ -775,3 +775,19 @@ def test_routing_endpoint_validates_and_updates(build):
         assert c.snapshot()["routing"] == LC.ROUTE_DEFAULT
     finally:
         srv.shutdown()
+
+
+def test_reset_stops_and_clears_the_run(build):
+    c, clock, _ = build()
+    c.loop_command("start")
+    run(c, clock, 1.2)
+    see_bricks(c, clock, 1)
+    clock.now += 3.0
+    run(c, clock, 0.1)
+    assert c.L["step"] == "pick" and c.L["cycle"] == 1
+    c.L["tallies"]["yellow"] = 2
+    c.loop_command("reset")
+    assert c.L["mode"] == "off" and c.L["step"] == "idle"
+    assert c.L["cycle"] == 0 and c.L["cycles"] == [] and c.L["tallies"] == {}
+    assert [e.get("message") for e in c.L["events"]] == ["Reset: run cleared, arm holding where it is"]
+    assert c._plates == {}

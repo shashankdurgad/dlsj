@@ -236,8 +236,8 @@ a{color:var(--fg2);text-decoration:none;border-bottom:1px solid var(--line2)}a:h
  <nav class="flow" id="flow" aria-label="Loop stages"></nav>
  <div class="ctl">
   <span class="clk" id="clk"></span>
-  <a href="/brief" target="_blank" class="slide">Slide ↗</a>
   <button class="ghost" onclick="tools(true)">Tools<kbd>T</kbd></button>
+  <button onclick="if(confirm('Reset the run? The arm stops where it is and all counters, cycles and events are cleared.'))L('reset')" title="Stop and clear the run">Reset</button>
   <button onclick="L('home')">Home<kbd>H</kbd></button>
   <button class="primary" id="go" data-c="start" onclick="L(this.dataset.c)">Start<kbd>S</kbd></button>
   <button class="stop" onclick="L('stop')">STOP<kbd>Q</kbd></button>

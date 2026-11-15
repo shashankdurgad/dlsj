@@ -4,7 +4,6 @@ Copied next to loop_control.py with sys_stats.py (dlsj/sys_stats.py) and brief_p
 loop_control imports this inside a try, so a problem here never stops the loop.
 
   GET /sys/stats                     SysStats snapshot of this process and the laptop (CPU, GPU, NPU, memory)
-  GET /brief                         the fixed demo slide
   GET /demo_arm.js, /api/arm, /vendor/*, /so101/*   assets for the slide's 3D arm (from the dlsj board checkout)
 """
 
@@ -54,13 +53,6 @@ def handle(h) -> bool:
         path = h.path.split("?", 1)[0]
         if path == "/sys/stats":
             h._send(200, json.dumps(STATS.snapshot()).encode(), "application/json")
-            return True
-        if path == "/brief":
-            body = _brief()
-            if body is None:
-                h._send(404, b"brief_page.py missing", "text/plain")
-            else:
-                h._send(200, body, "text/html; charset=utf-8")
             return True
         asset = _asset(path)
         if asset is not None:
