@@ -26,4 +26,4 @@ exec $PY "$HERE/loop_control.py" \
   --place-prompt "place the brick in the {colour} bowl" --bowls yellow,purple,orange --crop top=0,0,560,480 \
   --ready=26.3,-51.8,30.1,73.1,15.9,37.7 --rtc-horizon ${H:-15} --rtc-guidance ${G:-3} --max-step ${MAX_STEP:-4} \
   --cameras wrist=/dev/v4l/by-id/usb-Sonix_Technology_Co.__Ltd._USB2.0_CAM1_USB2.0_CAM1-video-index0 \
-  --realsense top=346422061366,inspect=243722062690 --port ${PORT:-8020} "$@"
+  --realsense top=346422061366,inspect=243722062690 --port ${PORT:-8020} --workspace 0,60,525,480 "$@"
