@@ -3,6 +3,8 @@
 # export back here and, with STAGE=1, into the XPS test checkout's weights/<name>/. Rerun for every new round.
 #   deploy/smolvla/fetch_residual.sh round03            # an alias of the artifact: roundNN, latest, vN
 #   STAGE=1 deploy/smolvla/fetch_residual.sh latest
+#   SRC_DIR=<rounds dir on $HOST> STAGE=1 deploy/smolvla/fetch_residual.sh round05   # a copy already on the GB10
+#                                                  (e.g. a Modal fan-out's out/rl/<run>/rounds/): no W&B download
 # Env: RUN (artifact prefix, default abl_c_4g_r0), WB_PROJECT (entity/project), HOST (GB10 in ~/.brev/ssh_config,
 # default watson), OUT (local exports dir), XPS (ssh target), XPS_DIR (the test checkout on the XPS).
 # The W&B key is the `wandb=<key>` line of the repo's .env (git-ignored); it is passed by environment only.
@@ -19,10 +21,14 @@ TWIN_DIR=Documents/dlsj  # the twin checkout on $HOST (sim/twin/run.sh mounts it
 REMOTE_RUN=sim/twin/out/rl/$RUN/rounds
 ssh_h() { perl -e 'alarm shift; exec @ARGV' "$1" ssh -F ~/.brev/ssh_config "$HOST" "${@:2}"; }
 
-KEY=$(grep -m1 '^wandb=' "$REPO/.env" 2>/dev/null | cut -d= -f2- || true)
-[ -n "$KEY" ] || { echo "no wandb=<key> line in $REPO/.env" >&2; exit 1; }
 DL=$(mktemp -d)  # the download, kept apart from any code
 trap 'rm -rf "$DL"' EXIT
+if [ -n "${SRC_DIR:-}" ]; then
+  echo "1/4 $HOST:$SRC_DIR/residual_$ALIAS.pt" >&2
+  perl -e 'alarm 600; exec @ARGV' scp -q -F ~/.brev/ssh_config "$HOST:$SRC_DIR/residual_$ALIAS.pt" "$DL/"
+else
+KEY=$(grep -m1 '^wandb=' "$REPO/.env" 2>/dev/null | cut -d= -f2- || true)
+[ -n "$KEY" ] || { echo "no wandb=<key> line in $REPO/.env" >&2; exit 1; }
 echo "1/4 W&B $WB_PROJECT/$RUN-residual:$ALIAS" >&2
 WANDB_API_KEY=$KEY WANDB_SILENT=true uv run -q --no-project --with wandb python -I -c '
 import json, sys, wandb
@@ -34,6 +40,7 @@ print(json.dumps({"version": a.version, "aliases": a.aliases, "round": m.get("ro
                   "prior/first_attempt_success": m.get("prior/first_attempt_success"),
                   "eval_dr/first_attempt_success": m.get("eval_dr/first_attempt_success")}), file=sys.stderr)
 ' "$WB_PROJECT" "$RUN" "$ALIAS" "$DL"
+fi
 CKPT=$(cd "$DL" && ls *.pt | head -1)
 [ -n "$CKPT" ] || { echo "no .pt in the artifact" >&2; exit 1; }
 STEM=${CKPT%.pt}
@@ -58,6 +65,7 @@ if [ "${STAGE:-0}" = 1 ]; then
   DEST=${NAME#deploy_residual_}
   DEST=${DEST#deploy_}
   [ "$DEST" = deploy ] && DEST=final  # the run's last residual.pt
+  DEST=${DEST_NAME:-$DEST}  # e.g. DEST_NAME=final for the last eval round
   echo "4/4 stage on $XPS:$XPS_DIR/weights/$DEST" >&2
   perl -e 'alarm 60; exec @ARGV' ssh "$XPS" "mkdir -p $XPS_DIR/weights/$DEST"
   perl -e 'alarm 300; exec @ARGV' scp -q "$OUT/$RUN/$NAME"/residual_actor.* "$OUT/$RUN/$NAME/export.json" \
