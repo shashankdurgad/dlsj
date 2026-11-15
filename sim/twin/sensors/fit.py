@@ -81,9 +81,12 @@ DR_HALF = {  # DR half-ranges at scale 1 (small shifts): log exposure, log WB pe
 
 
 def lens_model(cam: str) -> dict:
-    """Sim focal (the twin profile's) + the real intrinsics (factory RealSense / measured wrist) + wrist distortion."""
+    """Sim focal (the twin profile's) + the real intrinsics (factory RealSense principal points; wrist: measured focal,
+    centred principal point) + wrist distortion."""
     if cam == "wrist":
-        k = json.loads(pl.MEASURED_JSON.read_text())["wrist"]
+        # the twin's wrist camera rotation (robot/wrist_mount.py local_to_cv_sim) already reproduces the measured
+        # principal point (339, 236) with a centred pinhole, so only the distortion is applied, about the centre
+        k = dict(json.loads(pl.MEASURED_JSON.read_text())["wrist"], cx=319.5, cy=239.5)
         dist = [round(v, 5) for v in k["dist"]]
     else:
         k = json.loads((REPO / "sim/twin/calib/realsense_intrinsics.json").read_text())[cam]
@@ -243,10 +246,9 @@ def region_pairs(real, sim, masks, mdl_path: Path, cam: str):
     return np.array(A), np.array(B), np.array(Wt), np.array(sat)
 
 
-def root_feats(A):
-    """Root-polynomial colour features r, g, b, sqrt(rg), sqrt(gb), sqrt(rb) (exposure-invariant)."""
-    A = np.clip(A, 0, None)
-    return np.c_[A, np.sqrt(A[:, 0] * A[:, 1]), np.sqrt(A[:, 1] * A[:, 2]), np.sqrt(A[:, 0] * A[:, 2])]
+def root_feats(A, n: int = 6):
+    """Root-polynomial colour features (pipeline.root_features_np)."""
+    return pl.root_features_np(A, n)
 
 
 def solve_color(A, B, Wt, root: bool):
@@ -263,8 +265,8 @@ def solve_color(A, B, Wt, root: bool):
 
 
 def apply_color(A, M, off):
-    """Region means through a fitted colour model (3x3 or 3x6)."""
-    return (root_feats(A) if M.shape[1] == 6 else A) @ M.T + off
+    """Region means through a fitted colour model (3x3, 3x6 or 3x13)."""
+    return (root_feats(A, M.shape[1]) if M.shape[1] > 3 else A) @ M.T + off
 
 
 def fit_color(real, sim, masks, mdl_path: Path, cam: str, real_h, sim_h, masks_h) -> dict:

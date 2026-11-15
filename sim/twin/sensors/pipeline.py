@@ -7,9 +7,9 @@
 Stages, in the physical order (parameters per camera in camera_model.json, fitted by fit.py on held-out cal2
 episodes; the colour matrix in visuals/camera_color.json):
 1. lens: one remap from the sim's centred pinhole (focal f) to the real camera's intrinsics: the principal point
-   (top 304.2 / 239.0, inspect 309.6 / 252.0 factory; wrist 339.3 / 236.0 measured) and the measured wrist lens
-   distortion (cameras_measured.json, k1 0.054, k2 -0.066); for the distortion-free RealSenses this is the exact
-   image translation c_real - c_sim;
+   (top 304.2 / 239.0, inspect 309.6 / 252.0 factory; wrist centred, because its sim rotation already reproduces
+   the measured 339.3 / 236.0) and the measured wrist lens distortion (cameras_measured.json, k1 0.054,
+   k2 -0.066); for the distortion-free RealSenses this is the exact image translation c_real - c_sim;
 2. colour: per-camera colour response from camera_color.json: root-polynomial `M_root` (3 x 6) or linear 3x3
    `M_linear`, + `offset_linear`, fitted on neutral AND saturated regions (table, robot, plates, bricks), so one
    albedo maps to each camera's recorded colour (lavender plate: sky-blue in top, lavender in wrist / inspect);
@@ -85,11 +85,20 @@ def write_json_atomic(path: Path, obj) -> None:
     os.replace(tmp, path)
 
 
+def root_project(M, n: int) -> list:
+    """Least-squares stand-in with n root-polynomial terms (3: linear) for a response M (3 x 6 / 13) over the RGB
+    cube; written next to the full response so older readers (3x3 `M_linear`, 3x6 `M_root`) keep working."""
+    g = np.stack(np.meshgrid(*[np.linspace(0.02, 0.9, 9)] * 3, indexing="ij"), -1).reshape(-1, 3)
+    y = root_features_np(g, np.asarray(M).shape[1]) @ np.asarray(M, float).T
+    X = g if n == 3 else root_features_np(g, n)
+    return np.linalg.lstsq(X, y, rcond=None)[0].T.round(5).tolist()
+
+
 def root_to_linear(M_root) -> list:
-    """Least-squares 3x3 stand-in for a 3x6 root-polynomial response over the RGB cube (written next to M_root so
+    """Least-squares 3x3 stand-in for a root-polynomial response over the RGB cube (written next to M_root so
     readers that only know `M_linear` keep working)."""
     g = np.stack(np.meshgrid(*[np.linspace(0.02, 0.9, 9)] * 3, indexing="ij"), -1).reshape(-1, 3)
-    f = np.c_[g, np.sqrt(g[:, 0] * g[:, 1]), np.sqrt(g[:, 1] * g[:, 2]), np.sqrt(g[:, 0] * g[:, 2])]
+    f = root_features_np(g, np.asarray(M_root).shape[1])
     return np.linalg.lstsq(g, f @ np.asarray(M_root, float).T, rcond=None)[0].T.round(5).tolist()
 
 
@@ -99,7 +108,7 @@ def model(cam: str, model_path: Path | None = None, color_path: Path | None = No
     col = _json(color_path or COLOR_JSON).get(cam) or {}
     m["M_linear"] = col.get("M_linear")
     m["offset_linear"] = col.get("offset_linear")
-    m["M_root"] = col.get("M_root")
+    m["M_root"] = col.get("M_root3") or col.get("M_root")  # M_root3 (3 x 13) when present; M_root stays 3 x 6
     if "blur_sigma" not in m and "blur_sigma" in col:  # legacy camera_color.json softness when no sensor fit
         m["blur_sigma"] = col["blur_sigma"]
     return m
@@ -193,15 +202,34 @@ def _lin_to_srgb(x):
     return torch.where(x <= 0.0031308, x * 12.92, 1.055 * x ** (1 / 2.4) - 0.055)
 
 
+def root_features(r, g, b, n: int, sqrt, cbrt, cat):
+    """Root-polynomial colour features (exposure-invariant): n = 6 (degree 2: r, g, b, sqrt(rg), sqrt(gb), sqrt(rb))
+    or 13 (degree 3: + cbrt(r^2 g), cbrt(r^2 b), cbrt(g^2 r), cbrt(g^2 b), cbrt(b^2 r), cbrt(b^2 g), cbrt(rgb)).
+    Array-library agnostic (numpy columns or torch N 1 H W planes)."""
+    f = [r, g, b, sqrt(r * g), sqrt(g * b), sqrt(r * b)]
+    if n == 13:
+        f += [cbrt(r * r * g), cbrt(r * r * b), cbrt(g * g * r), cbrt(g * g * b), cbrt(b * b * r), cbrt(b * b * g),
+              cbrt(r * g * b)]
+    return cat(f)
+
+
+def root_features_np(A, n: int = 6):
+    """root_features of (N, 3) linear RGB rows -> (N, n)."""
+    A = np.clip(np.asarray(A, float), 0, None)
+    return root_features(A[:, 0], A[:, 1], A[:, 2], n, np.sqrt, np.cbrt, lambda f: np.stack(f, -1))
+
+
 def _color(x, m: dict, dev):
-    """Camera colour response on N 3 H W linear RGB: root-polynomial `M_root` (3 x 6 on r, g, b, sqrt(rg), sqrt(gb),
-    sqrt(rb); exposure-invariant, bends saturated colours a 3x3 cannot, e.g. the lavender plate that the top D415
-    records sky-blue) or linear `M_linear` (3 x 3), each + `offset_linear`."""
+    """Camera colour response on N 3 H W linear RGB: root-polynomial `M_root` (3 x 6 or 3 x 13, root_features;
+    exposure-invariant, bends saturated colours a 3x3 cannot, e.g. the lavender plate that the top D415 records
+    sky-blue) or linear `M_linear` (3 x 3), each + `offset_linear`."""
     torch, _ = _torch()
     if m.get("M_root") is not None:
+        M = torch.tensor(m["M_root"], device=dev, dtype=torch.float32)
         r, g, b = x[:, 0:1].clamp(min=0), x[:, 1:2].clamp(min=0), x[:, 2:3].clamp(min=0)
-        feats = torch.cat([r, g, b, torch.sqrt(r * g), torch.sqrt(g * b), torch.sqrt(r * b)], 1)
-        x = torch.einsum("ij,njhw->nihw", torch.tensor(m["M_root"], device=dev, dtype=torch.float32), feats)
+        feats = root_features(r, g, b, M.shape[1], torch.sqrt, lambda v: v.clamp(min=0) ** (1.0 / 3.0),
+                              lambda f: torch.cat(f, 1))
+        x = torch.einsum("ij,njhw->nihw", M, feats)
     elif m.get("M_linear") is not None:
         x = torch.einsum("ij,njhw->nihw", torch.tensor(m["M_linear"], device=dev, dtype=torch.float32), x)
     else:
