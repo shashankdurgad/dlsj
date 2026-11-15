@@ -54,6 +54,7 @@ def make_auto_controller_class(base):
             self.inspection = None
             self.auto_inspector = make_auto_inspector(
                 StreamCameras(self.cameras), device=CFG.inspect_device, roi=CFG.roi, frames=CFG.inspect_frames,
+                kind=getattr(CFG, "inspector", "held_cube"),
                 range_deg=CFG.inspect_range, speed_deg_s=CFG.inspect_speed, fps=self.fps)
 
         def _at_camera(self) -> bool:
@@ -121,6 +122,8 @@ def make_auto_controller_class(base):
 def main() -> None:
     ap = argparse.ArgumentParser(add_help=False)
     ap.add_argument("--inspect-device", default="NPU", help="YOLO + detector device (default NPU)")
+    ap.add_argument("--inspector", choices=("held_cube", "yolo_v2"), default="held_cube",
+                    help="held_cube: Joe's held-cube YOLO26n v2 detector (default); yolo_v2: the older classifier")
     ap.add_argument("--inspect-roi", default="", help="x0,y0,x1,y1 crop of the inspect image (default: centred)")
     ap.add_argument("--inspect-frames", type=int, default=12)
     ap.add_argument("--inspect-range", type=float, default=180.0)

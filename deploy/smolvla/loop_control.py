@@ -980,6 +980,8 @@ def main() -> None:
                     help="final empty-table check: lower threshold, the brick must persist in >= half the frames")
     ap.add_argument("--verify-frames", type=int, default=LCFG.verify_frames)
     ap.add_argument("--inspect-device", default="NPU")
+    ap.add_argument("--inspector", choices=("held_cube", "yolo_v2"), default="held_cube",
+                    help="spin classifier: held_cube (Joe's held-cube YOLO26n v2 detector, default) or yolo_v2")
     ap.add_argument("--inspect-roi", default="")
     ap.add_argument("--inspect-frames", type=int, default=12)
     ap.add_argument("--inspect-range", type=float, default=180.0)
@@ -1004,7 +1006,7 @@ def main() -> None:
               "verify_conf", "verify_frames"):
         setattr(LCFG, k, getattr(ours, k))
     LCFG.workspace = tuple(int(v) for v in ours.workspace.split(","))
-    A.CFG.__dict__.update(inspect_device=ours.inspect_device, inspect_frames=ours.inspect_frames,
+    A.CFG.__dict__.update(inspector=ours.inspector, inspect_device=ours.inspect_device, inspect_frames=ours.inspect_frames,
                           inspect_range=ours.inspect_range, inspect_speed=ours.inspect_speed,
                           roi=tuple(int(v) for v in ours.inspect_roi.split(",")) if ours.inspect_roi else None)
     S._manual_make_controller_class = S.make_controller_class
