@@ -33,7 +33,7 @@ class Dataset:
     def task(self, ep: int) -> list:
         return list(self.eps.loc[ep, "tasks"])
 
-    @lru_cache(maxsize=8)
+    @lru_cache(maxsize=8)  # noqa: B019 (one dataset object per process)
     def _data(self, chunk: int, file: int):
         import pyarrow.parquet as pq
 

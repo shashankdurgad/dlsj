@@ -20,3 +20,5 @@ sim/twin/data/
 
 # local secrets
 .env
+# built from real inspect-camera frames (people at the venue); regenerate with sim/twin/visuals/backdrop_texture.py
+sim/twin/visuals/textures/backdrop_inspect.jpg

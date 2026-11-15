@@ -518,7 +518,7 @@ class TwinRandomizer:
                 rgb = jitter_srgb(palette.get(k, (200, 200, 200)), rng, c["brick_hue_deg"], c["brick_sat"],
                                   c["brick_val"])
                 path = f"{DR_LOOKS}/env_{e}/Brick_{n}"
-                self._material(stage, path, rgb, rng.uniform(*c["brick_roughness"]), clearcoat=0.1)
+                self._material(stage, path, rgb, rng.uniform(*c["brick_roughness"]), clearcoat=0.4)
                 self._bind(stage, mp, path)
                 eb[n] = k
             out["bricks"].append(eb)
@@ -531,7 +531,7 @@ class TwinRandomizer:
                 rgb0 = lin_to_srgb(np.asarray(col if col is not None else (0.5, 0.5, 0.5), float)) * 255.0
                 rgb = jitter_srgb(rgb0, rng, c["plate_hue_deg"], c["plate_sat"], c["plate_val"])
                 path = f"{DR_LOOKS}/env_{e}/Plate_{name}"
-                self._material(stage, path, rgb, rng.uniform(*c["plate_roughness"]), clearcoat=0.35)
+                self._material(stage, path, rgb, rng.uniform(*c["plate_roughness"]), clearcoat=0.7)
                 self._bind(stage, mp, path)
                 ep[name] = _r(rgb, 1)
             out["plates"].append(ep)

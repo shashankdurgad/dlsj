@@ -46,6 +46,8 @@ PLATE_FLOOR_H = 0.003  # m, floor top above the table (assumed: 2 mm shell + ~1 
 PLATE_FLOOR_FRAC = 0.75  # flat floor out to this fraction of the radius (photo: rings over ~3/4; fit 0.748)
 PLATE_WALL_POW = 3.0  # wall rise t ** p from the floor edge to the lip (inspect-silhouette fit, scene/plate_fit.py)
 PLATE_FOOT_W = 0.004  # m, width of the foot ring the plate stands on
+PLATE_VIS_RING_AMP = 0.0001  # m, ripple amplitude of the VISUAL plate's floor (plate_mesh; the collider profile
+# keeps plate_profile's default 0.25 mm): rings barely visible from the top camera, as in the real frames (fit/log.md)
 
 
 # ----------------------------------------------------------------------------------------------- mesh builders
@@ -326,6 +328,9 @@ def lathe_mesh(profile_rz: np.ndarray, seg: int = 96) -> tuple:
 
 
 def plate_mesh(radius: float, **kw) -> tuple:
+    """Render mesh of a plate: plate_profile revolved, with the visual ring amplitude PLATE_VIS_RING_AMP unless
+    `ring_amp` is given."""
+    kw.setdefault("ring_amp", PLATE_VIS_RING_AMP)
     p = plate_profile(radius, **kw)
     # normals: top surface faces up when traversed centre -> rim; (t_z, -t_r) is the right-hand normal -> flip sign
     pts, nrm, c, i = lathe_mesh(p)

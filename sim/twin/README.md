@@ -53,6 +53,29 @@ sim/twin/run.sh sim/twin/visuals/render_compare.py [--calibrate] [--episodes ...
   way. Call `sync(); sim.render(); scene.update(0)` for every rendered frame.
 * `lighting.json` (`render_compare.py --calibrate`): dome + key light scale so the textured table renders like the real top-camera median
   (linear tonemap); `backdrop_gain` for the inspect backdrop.
+* **Look fit (`visuals/fit/`; numbers and decisions in `visuals/fit/log.md`).** Materials live in `materials.json` (flat
+  `TwinLook` field names, loaded by `TwinLook()`): table = the rebuilt wood texture (`wood_texture.py`; the top camera's
+  sheen is baked in; `wood_tone.py` = optional contrast / mean / saturation curve, not applied) x a warm tint, low
+  base specular (the top view) and a glossy clear coat (the grazing wrist / inspect highlights); plates / bricks
+  glossy clear coat; plate albedos from `fit/plate_albedo.py` (top camera, exposure normalised by the table); the visual
+  plates' floor ripple `assets.PLATE_VIS_RING_AMP` (0.1 mm; the collider keeps its own profile). Workflow:
+  `sim/twin/run.sh sim/twin/visuals/fit/sweep_looks.py --looks looks.json --tag T [--split held]` (A/B of candidate
+  looks in one Isaac process: region colour / highlight / contrast metrics, sheets, plate close-ups) -> write
+  `materials.json` -> `sim/twin/run.sh sim/twin/visuals/fit/render_eval.py --tag T` (whole evaluation set, held-out
+  metrics) -> `python sim/twin/visuals/fit/closeups.py --before A --after T`. `env/randomize.py` centres its material
+  DR on these values and draws the rebuilt wood only.
 
 ## Twin calibration profile
 `calib/profile.py`: `twin_profile()` = joe_cal2 joints / gripper / wrist mount + the measured cameras (top: confirmed joe_cal2 pose; inspect: ChArUco pose; wrist: measured focal 342 px), and `randomize(_, rng)` for camera domain randomisation (top 1 cm / 1 deg, inspect 5 cm / 5 deg because its swivel tripod moves, wrist 5 mm / 3 deg; focal 1-3 %).
+
+## Camera sensor pipeline (`sensors/`)
+Turns a clean render into what the recorded dataset contains for each camera; `twin_scene.color_correct` (the TwinEnv image hook) runs it.
+```
+python sim/twin/sensors/measure.py           # real camera characterisation (noise vs brightness, sharpness, GOP, blockiness, vignetting) -> out/sensors/real_stats.json
+python sim/twin/sensors/fit.py [--sim ...]   # fit camera_model.json (+ wrist / inspect colour in visuals/camera_color.json) on the visual-fit eval set
+sim/twin/run.sh sim/twin/sensors/check_isaac.py   # hook check in Isaac: per-step cost, no PyAV in Isaac, codec worker alive
+```
+* `pipeline.apply(img, cam, rng, scale)`: lens (principal point + wrist distortion), colour matrix, exposure / AE (wrist only: the RealSenses show no
+  measurable AE response within an episode), vignetting (wrist), blur + wrist motion blur (~30 ms exposure), sensor noise, ISP sharpening and the
+  dataset's own H.264 round-trip (libx264 crf 30, g 2, yuv420p, I/P phase per stream) in a PyAV worker subprocess (`codec.py`; never PyAV in Isaac).
+* DR: `randomize.py` draws `pipeline.draw_dr(cam, rng, image.scale)` per episode (exposure, WB, noise, blur, sharpening, crf; small).

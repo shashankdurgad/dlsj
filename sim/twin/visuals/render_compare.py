@@ -44,21 +44,27 @@ from isaaclab.app import AppLauncher  # noqa: E402
 simapp = AppLauncher(headless=True, enable_cameras=True, kit_args=KIT_ARGS).app
 
 import cv2  # noqa: E402
-import numpy as np  # noqa: E402
-import torch  # noqa: E402
-
 import isaaclab.sim as sim_utils  # noqa: E402
+import numpy as np  # noqa: E402
+import scene as rscene  # noqa: E402
+import torch  # noqa: E402
+from calib import load_profile  # noqa: E402
 from isaaclab.scene import InteractiveScene  # noqa: E402
 from isaaclab.sim.converters import UrdfConverter, UrdfConverterCfg  # noqa: E402
 
-import scene as rscene  # noqa: E402
-from calib import load_profile  # noqa: E402
 from sim.twin.visuals.measure_real import detect_layout, persistent_mask  # noqa: E402
 from sim.twin.visuals.realdata import Dataset  # noqa: E402
-from sim.twin.visuals.usd_sync import VisualSync  # noqa: E402
 from sim.twin.visuals.table_texture import TABLE_TOP_Z, backproject, camera_from_profile  # noqa: E402
-from sim.twin.visuals.twin_scene import LIGHTING_JSON, TwinLook, apply_twin_visuals, set_brick_color, \
-    color_correct, twin_scene_cfg, wrist_cam_rel  # noqa: E402
+from sim.twin.visuals.twin_scene import (
+    LIGHTING_JSON,
+    TwinLook,
+    apply_twin_visuals,
+    color_correct,  # noqa: E402
+    set_brick_color,
+    twin_scene_cfg,
+    wrist_cam_rel,
+)
+from sim.twin.visuals.usd_sync import VisualSync  # noqa: E402
 
 drive = UrdfConverterCfg.JointDriveCfg(gains=UrdfConverterCfg.JointDriveCfg.PDGainsCfg(stiffness=60.0, damping=2.0))
 usd = UrdfConverter(UrdfConverterCfg(
@@ -232,7 +238,8 @@ if args.calibrate and not args.plain:
             gain /= gr
             from pxr import Gf
             bd.GetAttribute("inputs:scale").Set(Gf.Vec4f(gain, gain, gain, 1.0))
-    LIGHTING_JSON.write_text(json.dumps({"exposure_scale": scale, "backdrop_gain": gain, "dome_intensity": look.dome_intensity,
+    LIGHTING_JSON.write_text(json.dumps({"exposure_scale": scale, "backdrop_gain": gain,
+                                         "dome_intensity": look.dome_intensity,
                                          "key_intensity": look.key_intensity, "table_ratio_last": ratio,
                                          "note": "linear tonemap; scale so the textured table renders like the real "
                                                  "top-camera median (render_compare.py --calibrate)"}, indent=1))

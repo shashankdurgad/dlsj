@@ -1,0 +1,18 @@
+{
+ "table_tint": [1.0, 0.96, 0.89],
+ "table_roughness": 0.8,
+ "table_specular": 0.15,
+ "table_clearcoat": 0.6,
+ "table_clearcoat_roughness": 0.12,
+ "plate_roughness": 0.22,
+ "plate_clearcoat": 0.7,
+ "plate_clearcoat_roughness": 0.04,
+ "plate_rgb": {"orange": [177, 101, 56], "yellow": [154, 180, 107], "purple": [67, 163, 233]},
+ "brick_roughness": 0.4,
+ "brick_clearcoat": 0.4,
+ "brick_clearcoat_roughness": 0.05,
+ "robot_body_roughness": 0.6,
+ "backdrop_gain": 0.6,
+ "hall_gain": 0.6,
+ "note": "flat TwinLook field names; sRGB 0-255 colours as the top camera records them. From fit/sweep_looks.py A/B sweeps under the fitted light rig and the camera model (fit/log.md): the wood texture already bakes the top camera's sheen, so the table's base specular is low (0.15) and the view-dependent part is a clear coat (0.6, roughness 0.12) that leaves the top view unchanged and restores the grazing highlights of the inspect view; plates / bricks glossy clear coat for the same reason; plate albedos = fit/plate_albedo.py (top camera, exposure normalised by the table); backdrop / hall gain 0.6 so the inspect background (laptop, carton) is as dark as recorded."
+}

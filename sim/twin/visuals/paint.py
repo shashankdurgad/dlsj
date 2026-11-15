@@ -89,7 +89,7 @@ def paint_robot(num_envs: int = 1, look: RobotLook | None = None, robot: str = "
             counts[kind] += 1
         if finray is not None:  # the real fingers: black printed bases + red TPU fins instead of the stock jaws
             counts["finray_meshes"] = counts.get("finray_meshes", 0) + finray.replace_visuals(
-                stage, root, mats["body"], mats["jaw"], bind, extend=_finray_extend())
+                stage, root, mats["body"], mats["jaw"], bind, extend=_finray_extend(), **_finray_bend())
     return counts
 
 
@@ -98,6 +98,18 @@ def _finray_extend() -> float:
     from sim.twin.physics import apply as phys
 
     return float(phys.summary()["gripper"]["finray"].get("extend", 0.0))
+
+
+def _finray_bend() -> dict:
+    """The physics layer's bending-fin segmentation (params.json gripper.finray.bend; hinges 0 = rigid fins), as
+    keyword arguments of model.replace_visuals."""
+    from sim.twin.physics import apply as phys
+
+    b = phys.fin_bend()
+    if not b:
+        return {"hinges": 0}
+    return {"hinges": int(b["hinges"]), "slices": bool(b.get("slices", False)),
+            "root_len": float(b.get("root_len", 0.012))}
 
 
 def _finray_model():

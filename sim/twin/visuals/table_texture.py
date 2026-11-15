@@ -1,4 +1,12 @@
-"""Table-top texture from the real top camera (plain Python, no Isaac).
+"""Top / inspect camera medians and the LEGACY projected table texture (plain Python, no Isaac).
+
+The scene's table texture is now built by wood_texture.py (photo-resolution lacquered wood at metric scale) and the
+inspect backdrop by backdrop_texture.py; this script still makes the per-pixel medians they and measure_real.py use
+(sim/twin/out/visuals/top_median.png, inspect_median.png) and keeps the old projected texture as a debug image
+(out/visuals/table_texture.png). It no longer writes into visuals/textures/. The geometry helpers (camera_from_profile,
+project, backproject, to_plane) are used elsewhere.
+
+Legacy texture:
 
 1. per-pixel median of top-camera frames from many episodes (plates move every few dozen episodes, bricks and the
    arm every episode), with strongly saturated pixels (plates, bricks, blue clips) and the black arm masked out where
@@ -11,9 +19,8 @@
     docker run ... python sim/twin/visuals/table_texture.py [--every 3] [--profile joe_cal2]
       [--fx 604.7 --fy 603.8 --cx 304.2 --cy 239.0]   # override intrinsics (default: profile f, centred pp)
 
-Writes sim/twin/out/visuals/{top_median.png, table_texture.png, table_texture.json} and the scene's copy
-sim/twin/visuals/textures/table_top.{jpg,json}. The json records the plane
-extent (env frame) and the camera used; re-run whenever the top camera is re-calibrated.
+Writes sim/twin/out/visuals/{top_median.png, top_median_plain.png, table_texture.png, table_texture.json,
+inspect_median.png}. The json records the plane extent (env frame) and the camera used.
 """
 from __future__ import annotations
 
@@ -38,7 +45,6 @@ TABLE_TOP_Z = -0.002
 # table edge it carries the projected background, which is right for the top camera only)
 VIS_X = (-0.9, 1.2)
 VIS_Y = (-1.0, 1.0)
-TEX_DIR = REPO / "sim/twin/visuals/textures"
 
 
 def camera_from_profile(name: str = "joe_cal2", cam: str = "top"):
@@ -95,7 +101,8 @@ def median_top(ds, every: int, frames=(0, -1)) -> tuple[np.ndarray, np.ndarray]:
     # keep the plain median for persistent non-wood things (robot base, clips, beyond-the-table background) and
     # where too few clean samples exist
     phsv = cv2.cvtColor(plain, cv2.COLOR_RGB2HSV)
-    persistent = (phsv[..., 1] > 120) | (phsv[..., 2] < 70) | (((phsv[..., 0] < 5) | (phsv[..., 0] > 30)) & (phsv[..., 1] > 60))
+    off_hue = ((phsv[..., 0] < 5) | (phsv[..., 0] > 30)) & (phsv[..., 1] > 60)
+    persistent = (phsv[..., 1] > 120) | (phsv[..., 2] < 70) | off_hue
     persistent = cv2.dilate(persistent.astype(np.uint8), np.ones((9, 9), np.uint8)) > 0
     use_plain = persistent | (good_n < max(5, len(stack) // 6)) | np.isnan(med).any(-1)
     med[use_plain] = plain[use_plain]
@@ -156,34 +163,6 @@ def median_cam(ds, cam: str, every: int, frame: int = 0) -> np.ndarray:
     return np.median(stack, axis=0).astype(np.uint8)
 
 
-def backdrop(img: np.ndarray, r_cv, pos, K, edge_row: float, width: float = 4.0, height: float = 0.45,
-             mm_per_px: float = 2.0):
-    """Vertical billboard standing on the table where the image row `edge_row` (centre column) meets the table plane,
-    facing the camera (normal = horizontal backward camera axis), textured by projecting `img` from the camera (exact
-    for that camera; edge-clamped outside its view). Returns (texture, plane dict: origin = bottom-left corner,
-    u axis (width), v axis (up))."""
-    p_edge = backproject(np.array([[K[0, 2], edge_row]]), r_cv, pos, K, TABLE_TOP_Z)[0]
-    fwd = np.asarray(r_cv)[2].copy()
-    fwd[2] = 0
-    fwd /= np.linalg.norm(fwd)
-    up = np.array([0.0, 0.0, 1.0])
-    u_ax = np.cross(fwd, up)  # camera right (horizontal)
-    origin = p_edge - u_ax * width / 2
-    nx, ny = int(width * 1000 / mm_per_px), int(height * 1000 / mm_per_px)
-    s = (np.arange(nx) + 0.5) / nx * width
-    t = height - (np.arange(ny) + 0.5) / ny * height  # row 0 = top
-    gs, gt = np.meshgrid(s, t)
-    pts = origin + gs.reshape(-1, 1) * u_ax + gt.reshape(-1, 1) * up
-    uv, z = project(pts, r_cv, pos, K)
-    mx = uv[:, 0].reshape(ny, nx).astype(np.float32)
-    my = uv[:, 1].reshape(ny, nx).astype(np.float32)
-    h, w = img.shape[:2]
-    tex = cv2.remap(img, mx.clip(0, w - 1), my.clip(0, h - 1), cv2.INTER_LINEAR)
-    plane = dict(origin=origin.tolist(), u_axis=u_ax.tolist(), v_axis=up.tolist(), width=width, height=height,
-                 edge_row=edge_row, note="texture row 0 = top (v = height), col 0 = origin side")
-    return tex, plane
-
-
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--every", type=int, default=3, help="use every n-th episode")
@@ -194,9 +173,6 @@ def main():
     ap.add_argument("--cy", type=float)
     ap.add_argument("--mm-per-px", type=float, default=1.0)
     ap.add_argument("--reuse-median", action="store_true")
-    ap.add_argument("--inspect-edge-row", type=float, default=250.0,
-                    help="row of the real inspect image where the table meets the background objects (laptop base); "
-                         "250 puts the 0.45 m backdrop ~0.75 m from the inspect camera, outside the top camera view")
     a = ap.parse_args()
     from sim.twin.visuals.realdata import Dataset
 
@@ -222,22 +198,10 @@ def main():
     ext.update(camera=dict(profile=a.profile, R_world_to_cv=r_cv.tolist(), position=pos.tolist(), K=K.tolist()),
                mean_rgb_visible=[float(v) for v in tex[valid].mean(0)])
     (OUT / "table_texture.json").write_text(json.dumps(ext, indent=1))
-    TEX_DIR.mkdir(parents=True, exist_ok=True)  # the copy the scene uses (small JPEG, committed)
-    cv2.imwrite(str(TEX_DIR / "table_top.jpg"), tex[..., ::-1], [cv2.IMWRITE_JPEG_QUALITY, 88])
-    (TEX_DIR / "table_top.json").write_text(json.dumps(ext, indent=1))
-    # inspect-camera backdrop (background objects / people behind the table, projection-mapped)
+    # inspect-camera median (measure_real.py; the scene's backdrop comes from backdrop_texture.py)
     ip = OUT / "inspect_median.png"
-    if a.reuse_median and ip.exists():
-        imed = cv2.imread(str(ip))[..., ::-1]
-    else:
-        imed = median_cam(Dataset(), "inspect", max(1, a.every))
-        cv2.imwrite(str(ip), imed[..., ::-1])
-    ir, ipos, iK = camera_from_profile(a.profile, "inspect")
-    btex, plane = backdrop(imed, ir, ipos, iK, a.inspect_edge_row)
-    plane.update(camera=dict(profile=a.profile, cam="inspect"))
-    cv2.imwrite(str(TEX_DIR / "backdrop_inspect.jpg"), btex[..., ::-1], [cv2.IMWRITE_JPEG_QUALITY, 85])
-    (TEX_DIR / "backdrop_inspect.json").write_text(json.dumps(plane, indent=1))
-    print("backdrop", btex.shape, plane["origin"])
+    if not (a.reuse_median and ip.exists()):
+        cv2.imwrite(str(ip), median_cam(Dataset(), "inspect", max(1, a.every))[..., ::-1])
     print("texture", tex.shape, "visible", round(float(valid.mean()), 3), "->", OUT / "table_texture.png")
 
 

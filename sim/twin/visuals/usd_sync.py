@@ -21,8 +21,6 @@ from __future__ import annotations
 
 import re
 
-import numpy as np
-
 
 def env_path(prim_path: str, e: int) -> str:
     """'{ENV_REGEX_NS}/Robot' or '/World/envs/env_[^/]+/Robot' (or env_.*) -> '/World/envs/env_<e>/Robot'."""

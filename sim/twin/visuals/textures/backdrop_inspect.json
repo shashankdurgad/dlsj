@@ -1,12 +1,12 @@
 {
  "origin": [
-  2.0628654937384088,
-  -1.1500922310908592,
+  0.6003741605822683,
+  -0.6543943533441261,
   -0.0020000000000000018
  ],
  "u_axis": [
-  -0.9580368769572379,
-  0.2866449762162633,
+  -0.9771599043318117,
+  0.21250534432396,
   0.0
  ],
  "v_axis": [
@@ -14,12 +14,14 @@
   0.0,
   1.0
  ],
- "width": 4.0,
- "height": 0.45,
+ "width": 0.8130289286125824,
+ "height": 0.30327770731665205,
  "edge_row": 250.0,
- "note": "texture row 0 = top (v = height), col 0 = origin side",
+ "distance_m": 0.7686509238431225,
+ "mm_per_px": 0.5,
+ "note": "texture row 0 = top (v = height), col 0 = origin side; emissive (unlit) in twin_scene",
  "camera": {
-  "profile": "joe_cal2",
+  "profile": "cameras_measured.json",
   "cam": "inspect"
  }
 }

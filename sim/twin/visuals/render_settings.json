@@ -1,0 +1,4 @@
+{
+ "carb": {"/rtx/post/aa/op": 4},
+ "note": "RTX settings applied by twin_scene.set_render_settings. aa/op 4 = DLAA (native-resolution antialiasing); Isaac Lab's default 3 = DLSS quality renders at 2/3 resolution and upscales (variance of the Laplacian of the top image 52 vs 71 with DLAA, real 122; fit/exp_render.py)."
+}
