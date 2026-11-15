@@ -1,0 +1,37 @@
+{
+  "episode": 101,
+  "mode": "recorded action commands, dynamic physics, no attachments",
+  "frames": 180,
+  "physics_steps": 360,
+  "extra_capture_steps": 0,
+  "initial_target_m": [
+    0.26313409209251404,
+    -0.15833821892738342,
+    0.007599999196827412
+  ],
+  "final_target_m": [
+    0.3517853915691376,
+    0.05532730743288994,
+    0.09670481830835342
+  ],
+  "max_lift_m": 0.15567675232887268,
+  "hold_min_last_1s_m": 0.08788155764341354,
+  "release_drop_m": 0.07851915061473846,
+  "pickup_lift_over2cm": true,
+  "hold_over5cm": true,
+  "closest_fk_to_initial_target_m": 0.0022034769391742802,
+  "actual_fk_at_f65_m": [
+    0.26523982495952797,
+    -0.15775643782382912,
+    0.007312370161788748
+  ],
+  "mean_arm_tracking_deg": [
+    1.0046474933624268,
+    2.0296871662139893,
+    0.9807193875312805,
+    1.0388057231903076,
+    0.573694109916687
+  ],
+  "final_gripper_rad": 0.2418900579214096,
+  "calibration_note": "Estimated camera/joint/gripper fit. Target independently placed from initial recorded image, not moved to FK grasp."
+}

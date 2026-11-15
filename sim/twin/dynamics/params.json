@@ -1,0 +1,215 @@
+{
+ "_doc": "SO-101 follower play model (play.py). Per joint [pan, lift, elbow, wrist_flex, wrist_roll, gripper], LeRobot deg (gripper units). servo target = goal + c0 + (c - c_drive) tau + link_sag tau, held inside the band +-(d0 + m |tau|) (+ s when starting from rest). tau = static gravity torque in N m (gravity.py: URDF masses + 20 g wrist camera, sign along the joint axis). c, m pooled over lift / elbow / wrist_flex (one servo P gain + one gear-friction law); c0, d0 per joint; s matched to the real lost motion at reversals (fit.py). Source: 450 kept cal2 teleop episodes (holds) + deployed-controller traces (check). Units: c, m, link_sag deg per N m; c0, d0, s deg.",
+ "c0": [
+  -0.1265,
+  0.1129,
+  0.2486,
+  -0.0285,
+  -0.0962,
+  -0.0855
+ ],
+ "c": [
+  0.0,
+  2.8348,
+  2.8348,
+  2.8348,
+  0.0,
+  0.0
+ ],
+ "d0": [
+  0.3496,
+  0.3491,
+  0.1579,
+  0.2911,
+  0.1815,
+  0.1593
+ ],
+ "m": [
+  0.0,
+  1.6745,
+  1.6745,
+  1.6745,
+  0.0,
+  0.0
+ ],
+ "s": [
+  0.0,
+  0.0,
+  0.0,
+  0.75,
+  0.75,
+  0.0
+ ],
+ "link_sag": [
+  0.0,
+  0.0,
+  0.0,
+  0.0,
+  0.0,
+  0.0
+ ],
+ "_link_sag_doc": "compliance the encoders do not see (printed horns / links): NOT identified from the encoders; 0 by default. Camera-side hint only (joint fit: grasp views prefer lift ~+2 deg at tau ~0.65 N m -> <= ~3.5 deg/N m). Use dr.link_sag_deg_per_Nm to randomise it.",
+ "encoder": {
+  "count": [
+   0.087890625,
+   0.087890625,
+   0.087890625,
+   0.087890625,
+   0.087890625,
+   0.06648936
+  ],
+  "flicker_p": 0.005,
+  "_doc": "STS3215 4096 counts/rev (gripper: LeRobot 0-100 range over its calibrated span, measured step 0.0665 units); at rest the real readings change on 0.2-0.7 % of ticks, by 1 count"
+ },
+ "delay_joints": [
+  "shoulder_pan",
+  "wrist_flex",
+  "wrist_roll"
+ ],
+ "_delay_doc": "PlayCfg.controller_delay: the deployed controllers' traces fit one extra tick on these joints (one-step K fit: pan 0.32 -> 0.25, wrist_flex 0.35 -> 0.29, wrist_roll 0.40 -> 0.31 deg rmse for delay 0 -> 1); teleop fits delay 0 on all joints",
+ "isaac_drive_physical": {
+  "stiffness_nm_per_rad": 20.2,
+  "damping_nms_per_rad": 0.67,
+  "_doc": "PlayCfg.drive='physical': arm PD at the real servo stiffness (180/pi / c), damping scaled with it (same 33 ms drive time constant as the twin's 60 / 2); then gravity AND contact loads deflect the arm in PhysX and play adds no sag of its own"
+ },
+ "dr": {
+  "c_scale": [
+   0.85,
+   1.35
+  ],
+  "m_scale": [
+   0.7,
+   1.4
+  ],
+  "d0_scale": [
+   0.7,
+   1.4
+  ],
+  "s_scale": [
+   0.5,
+   1.5
+  ],
+  "c0_add_deg": 0.2,
+  "link_sag_deg_per_Nm": [
+   0.0,
+   0.0
+  ],
+  "_doc": "per-env uniform draws (Play.sample): multiplicative on c / m / d0 / s, additive on c0 and link_sag (lift, elbow, wrist_flex). c range covers the teleop (2.48-3.17) and trace (3.15-4.14) CIs. Set link_sag_deg_per_Nm e.g. [0, 3.5] to randomise the unidentified camera-only sag."
+ },
+ "_fit": {
+  "pooled_teleop": {
+   "c": 2.8348,
+   "m": 1.6745,
+   "ci95": {
+    "c": [
+     2.4705,
+     3.1739
+    ],
+    "m": [
+     1.3715,
+     1.9524
+    ]
+   },
+   "resid_sd": 0.486,
+   "shoulder_lift": {
+    "c0": 0.1129,
+    "d0": 0.3491,
+    "ci95": {
+     "c0": [
+      -0.0111,
+      0.2947
+     ],
+     "d0": [
+      0.2153,
+      0.4745
+     ]
+    }
+   },
+   "elbow_flex": {
+    "c0": 0.2486,
+    "d0": 0.1579,
+    "ci95": {
+     "c0": [
+      0.1192,
+      0.411
+     ],
+     "d0": [
+      0.0267,
+      0.2995
+     ]
+    }
+   },
+   "wrist_flex": {
+    "c0": -0.0285,
+    "d0": 0.2911,
+    "ci95": {
+     "c0": [
+      -0.0574,
+      -0.0045
+     ],
+     "d0": [
+      0.2595,
+      0.3171
+     ]
+    }
+   }
+  },
+  "pooled_trace": {
+   "c": 3.8495,
+   "m": 2.3983,
+   "ci95": {
+    "c": [
+     3.1749,
+     4.1359
+    ],
+    "m": [
+     1.9747,
+     2.9253
+    ]
+   },
+   "resid_sd": 0.363,
+   "shoulder_lift": {
+    "c0": 0.0432,
+    "d0": 0.4127,
+    "ci95": {
+     "c0": [
+      -0.111,
+      0.4349
+     ],
+     "d0": [
+      0.2533,
+      0.7953
+     ]
+    }
+   },
+   "elbow_flex": {
+    "c0": -0.7982,
+    "d0": -0.0373,
+    "ci95": {
+     "c0": [
+      -0.9219,
+      -0.3132
+     ],
+     "d0": [
+      -0.189,
+      0.2299
+     ]
+    }
+   },
+   "wrist_flex": {
+    "c0": -0.0622,
+    "d0": 0.267,
+    "ci95": {
+     "c0": [
+      -0.169,
+      -0.0208
+     ],
+     "d0": [
+      0.2321,
+      0.3708
+     ]
+    }
+   }
+  }
+ }
+}

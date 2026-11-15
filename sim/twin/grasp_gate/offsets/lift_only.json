@@ -1,0 +1,11 @@
+{
+ "_source": "sim/twin/align/joint_fit/result.json (lift_only), copied for the grasp gate",
+ "joint_offsets_rad": [
+  -0.04884654108335395,
+  0.03296438227342905,
+  -0.08574125111700416,
+  -0.013677172786770206,
+  -1.8602357762457706,
+  0.0
+ ]
+}

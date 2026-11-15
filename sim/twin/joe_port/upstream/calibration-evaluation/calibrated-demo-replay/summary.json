@@ -1,0 +1,392 @@
+{
+  "runs": [
+    {
+      "run_name": "ep0-pick-hold-142f",
+      "episode_index": 0,
+      "description": "Original recorded Episode 0 ACTION commands (pickup + inspection hold at frame 112, 142 frames) under multi-pose calibrated mapping [8.34, -9.62, -8.76, 5.95, -16.36, 0.0] deg at unmodified target [0.1719, -0.1064, 0.0076]",
+      "frames": 142,
+      "pickup_achieved": true,
+      "hold_at_end_achieved": true,
+      "checks": {
+        "lift_over_2cm": true,
+        "lift_and_hold_5cm": true,
+        "gripper_contact_stall": true,
+        "release_drop_3cm": true,
+        "arm_tracking": true,
+        "table_penetration": true,
+        "distractor_stationary": true,
+        "physics_steps": true,
+        "zero_capture_physics_steps": true
+      },
+      "brick_initial_m": [
+        0.17189736664295197,
+        -0.10636522620916367,
+        0.007599986623972654
+      ],
+      "brick_final_m": [
+        0.3159540593624115,
+        0.14716315269470215,
+        0.12358218431472778
+      ],
+      "brick_peak_height_m": 0.17425067722797394,
+      "maximum_target_lift_m": 0.1666506975889206,
+      "final_target_lift_m": 0.11598219722509384,
+      "minimum_hold_lift_last_1s_m": 0.11596719920635223,
+      "maximum_target_displacement_m": 0.31484052538871765,
+      "release_drop_m": 0.11098216660320759,
+      "gripper_final_rad": 0.2629930078983307,
+      "gripper_min_rad": 0.20197637379169464,
+      "gripper_max_rad": 0.4732847213745117,
+      "lowest_fk_grasp_frame": 62,
+      "lowest_fk_grasp_xyz_m": [
+        0.17717999365913534,
+        -0.10453703428093998,
+        0.00538595024186958
+      ],
+      "frame60_fk_grasp_xyz_m": [
+        0.17414914125864067,
+        -0.10741371674445395,
+        0.0060530156284293035
+      ],
+      "final_fk_grasp_xyz_m": [
+        0.32254327837933594,
+        0.14171699291773085,
+        0.12637923886125926
+      ],
+      "max_arm_tracking_error_rad": 0.11860597133636475,
+      "mean_state_tracking_mae_deg": [
+        1.1349035518270143,
+        2.0416117142623578,
+        1.9871156585048622,
+        3.289555724238006,
+        0.3971194012064329,
+        5.495700621269118
+      ],
+      "max_distractor_displacement_m": {
+        "blue_brick": 0.0,
+        "yellow_brick": 2.2627521047979826e-06,
+        "cream_brick": 0.0
+      },
+      "physics_steps": 284,
+      "extra_capture_steps": 0,
+      "mapping_config": {
+        "joint_offsets_rad": [
+          0.16861799359321594,
+          -0.08230999857187271,
+          -0.1488959938287735,
+          0.11517900228500366,
+          -0.2734540104866028,
+          0.0
+        ],
+        "joint_signs": [
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0
+        ],
+        "gripper_mode": "linear_upper_limit",
+        "gripper_scale": 1.0,
+        "gripper_bias_rad": 0.0,
+        "target_position": [
+          0.1718973875542686,
+          -0.10636524158167146,
+          0.0076
+        ],
+        "target_yaw_deg": 58.0
+      }
+    },
+    {
+      "run_name": "ep0-full-159f",
+      "episode_index": 0,
+      "description": "Original recorded Episode 0 ACTION commands (full 159 frames including orange-plate placement) under multi-pose calibrated mapping at unmodified target [0.1719, -0.1064, 0.0076]",
+      "frames": 159,
+      "pickup_achieved": true,
+      "hold_at_end_achieved": false,
+      "checks": {
+        "lift_over_2cm": true,
+        "lift_and_hold_5cm": false,
+        "gripper_contact_stall": false,
+        "release_drop_3cm": false,
+        "arm_tracking": true,
+        "table_penetration": true,
+        "distractor_stationary": true,
+        "physics_steps": true,
+        "zero_capture_physics_steps": true
+      },
+      "brick_initial_m": [
+        0.17189723253250122,
+        -0.10636526346206665,
+        0.007600014563649893
+      ],
+      "brick_final_m": [
+        0.34412914514541626,
+        0.13870082795619965,
+        0.012599965557456017
+      ],
+      "brick_peak_height_m": 0.1741115301847458,
+      "maximum_target_lift_m": 0.16651152074337006,
+      "final_target_lift_m": 0.004999950993806124,
+      "minimum_hold_lift_last_1s_m": 0.004999947268515825,
+      "maximum_target_displacement_m": 0.31624534726142883,
+      "release_drop_m": 0.0,
+      "gripper_final_rad": 0.5746380090713501,
+      "gripper_min_rad": 0.19079487025737762,
+      "gripper_max_rad": 0.5745104551315308,
+      "lowest_fk_grasp_frame": 64,
+      "lowest_fk_grasp_xyz_m": [
+        0.17657213227198995,
+        -0.10335939784841797,
+        0.005068111604032602
+      ],
+      "frame60_fk_grasp_xyz_m": [
+        0.17094571684702195,
+        -0.10789721018778956,
+        0.0056710986239202205
+      ],
+      "final_fk_grasp_xyz_m": [
+        0.3225567873114373,
+        0.05298141509888721,
+        0.08706787236782632
+      ],
+      "max_arm_tracking_error_rad": 0.16080784797668457,
+      "mean_state_tracking_mae_deg": [
+        0.9400873664040236,
+        1.92082911992223,
+        2.171415481177516,
+        2.5334192192029654,
+        0.4033482149711945,
+        4.599702973035896
+      ],
+      "max_distractor_displacement_m": {
+        "blue_brick": 0.0,
+        "yellow_brick": 1.873443034128286e-05,
+        "cream_brick": 0.0
+      },
+      "physics_steps": 318,
+      "extra_capture_steps": 0,
+      "mapping_config": {
+        "joint_offsets_rad": [
+          0.16861799359321594,
+          -0.08230999857187271,
+          -0.1488959938287735,
+          0.11517900228500366,
+          -0.2734540104866028,
+          0.0
+        ],
+        "joint_signs": [
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0
+        ],
+        "gripper_mode": "linear_upper_limit",
+        "gripper_scale": 1.0,
+        "gripper_bias_rad": 0.0,
+        "target_position": [
+          0.1718973875542686,
+          -0.10636524158167146,
+          0.0076
+        ],
+        "target_yaw_deg": 58.0
+      }
+    },
+    {
+      "run_name": "ep8-heldout-unproj-cam-91f",
+      "episode_index": 8,
+      "description": "Held-out Episode 8 original recorded ACTION commands (pickup + hold at frame 62, 91 frames) with target at unprojected top-camera pixel [311.56, 226.26] -> [0.2219, -0.0011, 0.0076] (24mm residual from FK)",
+      "frames": 91,
+      "pickup_achieved": true,
+      "hold_at_end_achieved": true,
+      "checks": {
+        "lift_over_2cm": true,
+        "lift_and_hold_5cm": true,
+        "gripper_contact_stall": true,
+        "release_drop_3cm": true,
+        "arm_tracking": true,
+        "table_penetration": true,
+        "distractor_stationary": false,
+        "physics_steps": true,
+        "zero_capture_physics_steps": true
+      },
+      "brick_initial_m": [
+        0.22192198038101196,
+        -0.0011050539324060082,
+        0.0075999666005373
+      ],
+      "brick_final_m": [
+        0.324607253074646,
+        0.12734049558639526,
+        0.10631652176380157
+      ],
+      "brick_peak_height_m": 0.16936975717544556,
+      "maximum_target_lift_m": 0.1617697924375534,
+      "final_target_lift_m": 0.09871655702590942,
+      "minimum_hold_lift_last_1s_m": 0.09871655702590942,
+      "maximum_target_displacement_m": 0.22239047288894653,
+      "release_drop_m": 0.0873164888471365,
+      "gripper_final_rad": 0.23970158398151398,
+      "gripper_min_rad": 0.23790954053401947,
+      "gripper_max_rad": 0.6259059309959412,
+      "lowest_fk_grasp_frame": 13,
+      "lowest_fk_grasp_xyz_m": [
+        0.22732854752571413,
+        -0.024584939298503566,
+        0.004651761382110778
+      ],
+      "frame60_fk_grasp_xyz_m": [
+        0.3346041428834847,
+        0.11409781815104547,
+        0.11369288211185438
+      ],
+      "final_fk_grasp_xyz_m": [
+        0.3337261169156473,
+        0.11103044104081541,
+        0.10862404861099587
+      ],
+      "max_arm_tracking_error_rad": 0.13190239667892456,
+      "mean_state_tracking_mae_deg": [
+        0.7662777150725271,
+        2.6000985018499603,
+        1.0643372588105253,
+        4.343657525031121,
+        2.190616324707702,
+        7.303817864302751
+      ],
+      "max_distractor_displacement_m": {
+        "blue_brick": 0.01592947728931904,
+        "yellow_brick": 9.313225746154785e-10,
+        "cream_brick": 0.0
+      },
+      "physics_steps": 182,
+      "extra_capture_steps": 0,
+      "mapping_config": {
+        "joint_offsets_rad": [
+          0.16861799359321594,
+          -0.08230999857187271,
+          -0.1488959938287735,
+          0.11517900228500366,
+          -0.2734540104866028,
+          0.0
+        ],
+        "joint_signs": [
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0
+        ],
+        "gripper_mode": "linear_upper_limit",
+        "gripper_scale": 1.0,
+        "gripper_bias_rad": 0.0,
+        "target_position": [
+          0.221922,
+          -0.001105,
+          0.0076
+        ],
+        "target_yaw_deg": 75.0
+      }
+    },
+    {
+      "run_name": "ep8-heldout-fk-site-91f",
+      "episode_index": 8,
+      "description": "Held-out Episode 8 original recorded ACTION commands (pickup + hold at frame 62, 91 frames) with target at Episode 8 FK grasp site [0.2327, -0.0236, 0.0076] (testing physical grasp dynamics under Episode 8 action sequence)",
+      "frames": 91,
+      "pickup_achieved": false,
+      "hold_at_end_achieved": false,
+      "checks": {
+        "lift_over_2cm": false,
+        "lift_and_hold_5cm": false,
+        "gripper_contact_stall": false,
+        "release_drop_3cm": false,
+        "arm_tracking": true,
+        "table_penetration": true,
+        "distractor_stationary": false,
+        "physics_steps": true,
+        "zero_capture_physics_steps": true
+      },
+      "brick_initial_m": [
+        0.23278000950813293,
+        -0.020193064585328102,
+        0.00759999081492424
+      ],
+      "brick_final_m": [
+        0.250966340303421,
+        -0.04321736469864845,
+        0.007599935866892338
+      ],
+      "brick_peak_height_m": 0.012851356528699398,
+      "maximum_target_lift_m": 0.005251365713775158,
+      "final_target_lift_m": -5.494803190231323e-08,
+      "minimum_hold_lift_last_1s_m": -5.494803190231323e-08,
+      "maximum_target_displacement_m": 0.03181047737598419,
+      "release_drop_m": 0.0,
+      "gripper_final_rad": 0.05812709033489227,
+      "gripper_min_rad": 0.05812442675232887,
+      "gripper_max_rad": 0.6259066462516785,
+      "lowest_fk_grasp_frame": 16,
+      "lowest_fk_grasp_xyz_m": [
+        0.22550909389857549,
+        -0.02411731559232637,
+        0.004420254601005438
+      ],
+      "frame60_fk_grasp_xyz_m": [
+        0.32913445919140416,
+        0.11144936046486438,
+        0.10621469193213301
+      ],
+      "final_fk_grasp_xyz_m": [
+        0.32804494581566274,
+        0.1081788834861799,
+        0.10109903510134824
+      ],
+      "max_arm_tracking_error_rad": 0.1267363429069519,
+      "mean_state_tracking_mae_deg": [
+        0.7490591914444179,
+        2.718351204316695,
+        1.7395410852117852,
+        1.1204859345823854,
+        2.0581798553466797,
+        2.7171166362343255
+      ],
+      "max_distractor_displacement_m": {
+        "blue_brick": 0.025294043123722076,
+        "yellow_brick": 8.944576279645844e-08,
+        "cream_brick": 0.0
+      },
+      "physics_steps": 182,
+      "extra_capture_steps": 0,
+      "mapping_config": {
+        "joint_offsets_rad": [
+          0.16861799359321594,
+          -0.08230999857187271,
+          -0.1488959938287735,
+          0.11517900228500366,
+          -0.2734540104866028,
+          0.0
+        ],
+        "joint_signs": [
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0
+        ],
+        "gripper_mode": "linear_upper_limit",
+        "gripper_scale": 1.0,
+        "gripper_bias_rad": 0.0,
+        "target_position": [
+          0.2327,
+          -0.0236,
+          0.0076
+        ],
+        "target_yaw_deg": 75.0
+      }
+    }
+  ]
+}

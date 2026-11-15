@@ -1,0 +1,4 @@
+r3_r0joe --rung 3 --n 60 --place rung0 --rung0_cam joe
+r3_r0fit --rung 3 --n 60 --place rung0 --rung0_cam fit
+r3_r0joe_k3 --rung 3 --n 60 --place rung0 --rung0_cam joe --kind auto3
+r3_r0joe_2x2 --rung 3 --n 60 --place rung0 --rung0_cam joe --kind 2x2

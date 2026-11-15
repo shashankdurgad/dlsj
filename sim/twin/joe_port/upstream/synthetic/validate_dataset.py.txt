@@ -1,0 +1,47 @@
+"""Verify native loading, video alignment, and accepted-episode provenance."""
+import argparse,json
+from pathlib import Path
+import numpy as np
+import av
+import pyarrow.parquet as pq
+from lerobot.datasets.lerobot_dataset import LeRobotDataset
+p=argparse.ArgumentParser();p.add_argument('root',type=Path);args=p.parse_args();root=args.root
+manifest=json.loads((root/'manifest.json').read_text());checks={}
+for split,count in manifest['counts'].items():
+ if not count:continue
+ path=root/split;info=json.loads((path/'meta/info.json').read_text());expected=[e for e in manifest['episodes'] if e['split']==split]
+ assert info['total_episodes']==count and info['total_frames']==sum(e['frames'] for e in expected)
+ ds=LeRobotDataset(repo_id=f'w3joe/so101-synthetic-pick-inspect-{split}',root=path,video_backend='pyav',download_videos=False)
+ indices=sorted(set([0,len(ds)//2,len(ds)-1]));samples=[]
+ for i in indices:
+  frame=ds[i]
+  assert tuple(frame['action'].shape)==(6,) and tuple(frame['observation.state'].shape)==(6,)
+  source_episode=next(e for e in expected if e['episode_index']==int(frame['episode_index']))
+  source_dir=(root.parent/source_episode['result']).parent
+  frame_number=int(frame['frame_index']);image_errors={}
+  for c in ['wrist','top','inspect']:
+   t=frame[f'observation.images.{c}'];assert tuple(t.shape)==(3,480,640);assert float(t.std())>.01
+   with av.open(str(source_dir/f'{c}.mp4')) as container:
+    reference=next(f.to_ndarray(format='rgb24') for j,f in enumerate(container.decode(video=0)) if j==frame_number)
+   mae=float(np.abs(t.numpy().transpose(1,2,0)-reference/255.).mean());assert mae<.08,(split,i,c,mae)
+   image_errors[c]=mae
+  samples.append({'index':i,'episode_index':int(frame['episode_index']),'timestamp':float(frame['timestamp']),'source_image_mae':image_errors})
+ tables=[pq.read_table(p).to_pandas() for p in sorted((path/'data').rglob('*.parquet'))]
+ import pandas as pd
+ data=pd.concat(tables,ignore_index=True)
+ for e in expected:
+  rows=data[data['episode_index']==e['episode_index']];assert len(rows)==e['frames']
+  assert np.allclose(rows['timestamp'],np.arange(e['frames'])/30,atol=1e-5)
+  source=root.parent/e['result'];result=json.loads(source.read_text());assert result['success'] and all(result['checks'].values())
+  a=np.load(source.parent/'trajectory.npz',allow_pickle=False)
+  assert np.allclose(np.stack(rows['action']),a['action']) and np.allclose(np.stack(rows['observation.state']),a['state'])
+  assert np.allclose(np.stack(rows['inspect.prob']).reshape(-1),(a['phase']=='inspect_hold').astype(np.float32))
+ checks[split]={'episodes':count,'frames':len(ds),'native_loader_samples':samples,'parquet_matches_source':True}
+train_seeds={e['seed'] for e in manifest['episodes'] if e['split']=='train'};val_seeds={e['seed'] for e in manifest['episodes'] if e['split']=='validation'}
+assert not train_seeds&val_seeds
+train_xy=np.array([json.loads((root.parent/e['result']).read_text())['target_position'][:2] for e in manifest['episodes'] if e['split']=='train'])
+val_xy=np.array([json.loads((root.parent/e['result']).read_text())['target_position'][:2] for e in manifest['episodes'] if e['split']=='validation'])
+spatial_disjoint=bool((train_xy[:,0].max()<val_xy[:,0].min()) or (val_xy[:,0].max()<train_xy[:,0].min()) or (train_xy[:,1].max()<val_xy[:,1].min()) or (val_xy[:,1].max()<train_xy[:,1].min()))
+assert spatial_disjoint,'Train and validation spatial target bands overlap'
+result={'passed':True,'checks':checks,'train_validation_seeds_disjoint':True,'train_validation_spatial_disjoint':spatial_disjoint}
+(root/'validation.json').write_text(json.dumps(result,indent=2));print('VALIDATED',json.dumps(result),flush=True)

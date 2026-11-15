@@ -11,3 +11,12 @@ models/downloads/
 
 # regenerable frame dumps from the sim realism fits
 sim/realism/jofit/
+
+# Isaac digital twin: build checkout, generated robot assets, run outputs
+sim/twin/.build/
+sim/twin/assets/so101/
+sim/twin/out/
+sim/twin/data/
+
+# local secrets
+.env

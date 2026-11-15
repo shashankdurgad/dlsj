@@ -1,0 +1,24 @@
+import json
+from pathlib import Path
+import numpy as np
+from kinematics import Kinematics
+ROOT=Path(__file__).parent
+k=Kinematics(ROOT/'robot-assets/so101_new_calib.urdf')
+target=np.array([.1718973875542686,-.10636524158167146,.0076])
+yaw=np.deg2rad(58)
+# A scripted privileged expert supplies demonstrations; no VLA inference is used.
+waypoints=[('settle',.08,.55,15),('descend',.011,.55,75),('close',.011,0.,45),('lift',.081,0.,75),('hold',.081,0.,30),('inspect',.081,0.,75),('inspect_hold',.081,0.,45)]
+q=k.ik([*target[:2],.08],yaw);previous=np.r_[q,.55];actions=[];phases=[]
+for name,z,grip,n in waypoints:
+ # Cartesian IK at intermediate samples keeps descent and lift approximately straight.
+ p0=k.grasp(previous)[0]
+ for j in range(n):
+  t=(j+1)/n;alpha=t*t*(3-2*t)
+  goal=np.array([.20,.05,z]) if name in ['inspect','inspect_hold'] else np.r_[target[:2],z]
+  p=p0*(1-alpha)+goal*alpha
+  q=k.ik(p,yaw,previous[:5]);v=np.r_[q,previous[-1]*(1-alpha)+grip*alpha]
+  actions.append(v);phases.append(name)
+ previous=actions[-1]
+plan={'target_position':target.tolist(),'target_yaw_deg':58,'initial_q':actions[0].tolist(),'actions':np.asarray(actions).tolist(),'phases':phases,'point_local':[.014,0,-.098],'control_hz':30}
+(ROOT/'trial-plan.json').write_text(json.dumps(plan))
+print('PLAN',len(actions),'initial_q_deg',np.rad2deg(actions[0]))

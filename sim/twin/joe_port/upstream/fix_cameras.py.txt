@@ -1,0 +1,7 @@
+for path in ['/World/ReferenceProps/InspectionBody','/World/ReferenceProps/InspectionLens',gripper_paths[0]+'/ReferenceCameraHousing']:
+    UsdGeom.Imageable(stage.GetPrimAtPath(path)).MakeInvisible()
+UsdShade.Shader(stage.GetPrimAtPath('/World/ReferenceMaterials/Wood/Transform')).GetInput('scale').Set(Gf.Vec2f(1,1))
+await app_utils.update_app_async(steps=40)
+for name in ['wrist','inspect','top']:
+    Image.fromarray(np.asarray(annotators[name].get_data())[:,:,:3]).save(OUT/f'fix-{name}.png')
+print('CAMERA_FIX_CHECK')

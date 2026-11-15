@@ -1,0 +1,7 @@
+wr=reference['wrist_camera']
+r=np.array(wr['local_to_cv'])
+wr['position_local']=(np.array(reference['housing_landmark_local'])-r.T@np.array([0,0,.045])).tolist()
+set_camera(camera_paths['wrist'],wr,True)
+await app_utils.update_app_async(steps=40)
+Image.fromarray(np.asarray(annotators['wrist'].get_data())[:,:,:3]).save(OUT/'fix-wrist2.png')
+print('WRIST_MOVED',wr)

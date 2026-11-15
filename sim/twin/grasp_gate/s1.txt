@@ -1,0 +1,10 @@
+r2_dz-5 --rung 2 --n 60 --tip_dz -0.005
+r2_dz-10 --rung 2 --n 60 --tip_dz -0.010
+r2_zt2 --rung 2 --n 60 --tip_z_target 0.002
+r2_zt6 --rung 2 --n 60 --tip_z_target 0.006
+r3_fk --rung 3 --n 60 --place fk
+r3_fk_zt2 --rung 3 --n 60 --place fk --tip_z_target 0.002
+r3_fk_dz-10 --rung 3 --n 60 --place fk --tip_dz -0.010
+r3_fk_dz-20 --rung 3 --n 60 --place fk --tip_dz -0.020
+r2_pads --rung 2 --n 60 --set gripper.collider="pads_cad"
+r2_pads_zt2 --rung 2 --n 60 --set gripper.collider="pads_cad" --tip_z_target 0.002

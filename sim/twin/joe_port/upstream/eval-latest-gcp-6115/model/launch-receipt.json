@@ -1,0 +1,38 @@
+{
+  "project": "onflow-30k",
+  "vm": "pi05-four-20261114",
+  "zone": "europe-west4-b",
+  "gpus": 4,
+  "accelerator": "NVIDIA RTX PRO 6000 Blackwell Server Edition",
+  "provisioning": "SPOT",
+  "max_vm_uptime_seconds": 14400,
+  "vm_started_at": "2026-11-14T05:06:53Z",
+  "main_launched_at": "2026-11-14T05:11:05Z",
+  "smoke": "one training and validation batch passed on four GPUs",
+  "epochs": 3,
+  "planned_updates": 9060,
+  "checkpoint_interval_training_seconds": 1800,
+  "train_episodes": 465,
+  "validation_episodes": 51,
+  "selected_episodes": 516,
+  "source_episodes": 517,
+  "excluded_episode_ids": [
+    464
+  ],
+  "base_revision": "22c30e5b34f9e7ab738b1b34fc2fc5ecfe2d28f0",
+  "studio_revision": "8f1324161ece2b24f2d38765b6e943ed1961258c",
+  "spark_snapshot": "joe-spark-2@100.103.80.60:/home/joe-spark-2/desmond/datasets/duplo517-20261114",
+  "artifact_uri": "gs://onflow-30k-pi05-artifacts/runs/pi05-517-3epoch-20261114",
+  "status": "Training verified active on four GPUs",
+  "verified_progress": {
+    "global_step": 50,
+    "planned_steps": 9060,
+    "seconds_per_update": 0.8156597117551024,
+    "training_loss": 0.20246735215187073,
+    "peak_gpu_allocated_gib_rank0": 16.11770534515381
+  },
+  "checkpoint_io_check": "Real small Lightning run verified atomic timed/final saving, reload and GCS upload; test artifacts isolated under _checks/checkpoint-io.",
+  "dataset_uri": "gs://onflow-30k-pi05-artifacts/datasets/pi05-517-curated-20261114/",
+  "estimated_training_hours": "2.5-3, early estimate including validation and checkpoint overhead",
+  "robot_rollout": "Not performed; previous controller and prompt unknown. Current controller requires manual M switch after inspection."
+}

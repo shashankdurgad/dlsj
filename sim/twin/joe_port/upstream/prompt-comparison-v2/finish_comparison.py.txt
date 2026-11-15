@@ -1,0 +1,19 @@
+from pathlib import Path
+import json,subprocess
+import numpy as np
+root=Path(__file__).resolve().parent
+names=['training-prompt','short-prompt','short-prompt-single-brick']
+rows=[]
+for name in names:
+ p=root/'outputs/trials'/name
+ d=json.loads((p/'rollout-result.json').read_text());a=np.load(p/'rollout-arrays.npz')
+ assert len(a['observed'])==300 and d['checks']['physics_steps'] and d['extra_capture_steps']==0
+ rows.append({k:d[k] for k in ['trial_name','instruction','action_steps','simulated_seconds','pickup_achieved','task_success','maximum_target_lift_m','maximum_target_displacement_m','gripper_final_rad','checks']})
+(root/'RESULTS.json').write_text(json.dumps(rows,indent=2))
+ff=str(Path.home()/'.local/bin/ffmpeg');cmd=[ff,'-hide_banner','-loglevel','error','-y']
+for name in names:cmd+=['-i',str(root/'outputs/trials'/name/'top.mp4')]
+cmd+=['-filter_complex','[0:v][1:v][2:v]hstack=inputs=3[v]','-map','[v]','-an','-c:v','libx264','-crf','20','-pix_fmt','yuv420p',str(root/'prompt-and-distractor-comparison.mp4')]
+subprocess.run(cmd,check=True)
+for name in names:
+ subprocess.run([ff,'-v','error','-i',str(root/'outputs/trials'/name/'three-cameras.mp4'),'-f','null','-'],check=True)
+print(json.dumps(rows,indent=2))

@@ -1,0 +1,61 @@
+"""Consume accepted raw episodes into native LeRobot v3 datasets, without uploading."""
+import argparse,json,time,traceback
+from pathlib import Path
+from contextlib import ExitStack
+import numpy as np
+import av
+from lerobot.datasets.lerobot_dataset import LeRobotDataset
+from lerobot.configs import RGBEncoderConfig
+
+p=argparse.ArgumentParser();p.add_argument('--root',type=Path,default=Path('/work/synthetic'));p.add_argument('--output',type=Path);p.add_argument('--train',type=int,default=40);p.add_argument('--validation',type=int,default=10);p.add_argument('--wait',action='store_true');p.add_argument('--timeout-s',type=float,default=43200);args=p.parse_args()
+root=args.root;output=args.output or root/'dataset';output.mkdir(parents=True,exist_ok=False)
+names=['shoulder_pan.pos','shoulder_lift.pos','elbow_flex.pos','wrist_flex.pos','wrist_roll.pos','gripper.pos'];cams=['wrist','top','inspect']
+features={'observation.state':{'dtype':'float32','shape':(6,),'names':names},'action':{'dtype':'float32','shape':(6,),'names':names},'inspect.prob':{'dtype':'float32','shape':(1,),'names':['p_in_view']}}
+features.update({f'observation.images.{c}':{'dtype':'video','shape':(480,640,3),'names':['height','width','channels']} for c in cams})
+targets={'train':args.train,'validation':args.validation};writers={};mapping=[];seen=set();counts={s:0 for s in targets};start=time.monotonic()
+for split,n in targets.items():
+ if n: writers[split]=LeRobotDataset.create(repo_id=f'w3joe/so101-synthetic-pick-inspect-{split}',root=output/split,fps=30,features=features,robot_type='so_follower',video_backend='pyav',streaming_encoding=True,encoder_threads=1,metadata_buffer_size=1,rgb_encoder=RGBEncoderConfig(vcodec='h264',g=2,crf=30,preset='veryfast',extra_options={'threads':'1'}))
+try:
+ while any(counts[s]<targets[s] for s in targets):
+  changed=False
+  for path in sorted((root/'raw').glob('candidate-*/result.json'),key=lambda p:int(p.parent.name.split('-')[1])):
+   if str(path) in seen:continue
+   try:result=json.loads(path.read_text())
+   except json.JSONDecodeError:continue
+   seen.add(str(path));split=result['split']
+   if not result['success'] or counts[split]>=targets[split]:continue
+   directory=path.parent;a=np.load(directory/'trajectory.npz',allow_pickle=False);n=len(a['state']);assert n==result['frames']
+   assert a['state'].shape==a['action'].shape==(n,6)
+   assert np.isfinite(a['state']).all() and np.isfinite(a['action']).all()
+   assert np.allclose(a['timestamp'],np.arange(n)/30,atol=1e-8)
+   ds=writers[split]
+   with ExitStack() as stack:
+    containers={c:stack.enter_context(av.open(str(directory/f'{c}.mp4'))) for c in cams}
+    for container in containers.values():
+     stream=container.streams.video[0];stream.thread_type='SLICE';stream.codec_context.thread_count=1
+     assert stream.width==640 and stream.height==480 and float(stream.average_rate)==30
+    decoders={c:iter(v.decode(video=0)) for c,v in containers.items()}
+    for i in range(n):
+     frame={'observation.state':a['state'][i].astype(np.float32),'action':a['action'][i].astype(np.float32),'task':result['instruction'],'inspect.prob':np.array([float(a['phase'][i]=='inspect_hold')],np.float32)}
+     for c,d in decoders.items():
+      f=next(d);assert abs(float(f.pts*f.time_base)-i/30)<.002
+      frame[f'observation.images.{c}']=f.to_ndarray(format='rgb24')
+     ds.add_frame(frame)
+    for d in decoders.values():assert next(d,None) is None,'Video contains extra frames'
+   ds.save_episode()
+   mapping.append({'split':split,'episode_index':counts[split],'candidate':result['candidate'],'seed':result['seed'],'frames':n,'result':str(path.relative_to(root))});counts[split]+=1;changed=True
+   (output/'export-progress.json').write_text(json.dumps({'counts':counts,'targets':targets,'elapsed_s':time.monotonic()-start},indent=2))
+   print('EXPORTED',split,counts[split],'candidate',result['candidate'],flush=True)
+  if all(counts[s]>=targets[s] for s in targets):break
+  if not args.wait:raise RuntimeError(f'Not enough accepted episodes: {counts}, wanted {targets}')
+  progress_path=root/'generation-progress.json'
+  if progress_path.exists():
+   try:status=json.loads(progress_path.read_text())['status']
+   except json.JSONDecodeError:status='recording'
+   if status in ['error','insufficient_successes']:raise RuntimeError(f'Generation ended: {status}')
+  if time.monotonic()-start>args.timeout_s:raise TimeoutError('Generation deadline exceeded')
+  if not changed:time.sleep(2)
+finally:
+ for ds in writers.values():ds.finalize()
+manifest={'format':'LeRobot v3','counts':counts,'fps':30,'episodes':mapping,'source':'Isaac Sim PhysX; privileged scripted SO-101 controller','observation_action_alignment':'observation and synchronized images at t; action is the joint target applied over [t,t+1/30]','units':'five arm angles in degrees after subtracting estimated joint offsets; gripper 0-100 mapped from 0-upper-limit radians','inspect_prob_semantics':'Binary scripted inspection-hold phase marker, not an estimated visual probability.','limitations':['Estimated real-to-sim joint offsets and gripper mapping; hardware transfer not demonstrated.','Fixed approximate cameras and static photographic hall backdrop.','One target brick geometry; small position/yaw/lighting changes only.'],'elapsed_s':time.monotonic()-start}
+(output/'manifest.json').write_text(json.dumps(manifest,indent=2));print('EXPORT_COMPLETE',counts,flush=True)

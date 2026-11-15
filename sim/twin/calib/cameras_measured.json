@@ -1,0 +1,59 @@
+{
+ "wrist": {
+  "fx": 343.0686589401076,
+  "fy": 340.63022488177603,
+  "cx": 339.26142395487193,
+  "cy": 236.01045040972252,
+  "dist": [
+   0.05430527410096403,
+   -0.06627378330976615,
+   -0.0003352643224875529,
+   -0.00022849638552169453,
+   0.0019670978061707674
+  ],
+  "rms_px": 0.16968578712899027,
+  "views": 62,
+  "hfov_deg": 86.0148805400766,
+  "status": "intrinsics measured; pose on the gripper still joe_cal2 (visual estimate)"
+ },
+ "inspect": {
+  "world_to_cv": [
+   [
+    -0.9764486849251643,
+    0.21494267361956004,
+    -0.018644376235032664
+   ],
+   [
+    0.04698645952390047,
+    0.12751517860366277,
+    -0.990723044976287
+   ],
+   [
+    -0.21057121913815058,
+    -0.9682662476214651,
+    -0.13461142368952841
+   ]
+  ],
+  "position": [
+   0.37941661143805644,
+   0.18027516214597983,
+   0.09980825521765732
+  ],
+  "position_spread_mm": [
+   0.9066127437590497,
+   1.2076871143070045,
+   1.0442644107496208
+  ],
+  "n_pairs": 134,
+  "fx": 605.0665283203125,
+  "fy": 604.3594970703125,
+  "cx": 309.6224670410156,
+  "cy": 252.01724243164062,
+  "status": "measured (pose spread ~1 mm over 134 board views); top check: board at -7 mm vs table"
+ },
+ "top_check": {
+  "board_z_mm_median": -7.438532663588071,
+  "board_normal_z_median": 0.9993382598545572
+ },
+ "_source": "ChArUco laptop board (23.83 mm squares, measured 6 squares = 143 mm) captured on the XPS 2026-11-14; inspect pose chained through the joe_cal2 top camera (134 pairs); wrist intrinsics from 62 views"
+}

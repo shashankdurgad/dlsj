@@ -1,0 +1,3 @@
+w_tbl_min015 --rung 3 --n 60 --place fk --set gripper.finray.material.friction_combine="min" --set table.static_friction=0.15 --set table.dynamic_friction=0.12
+w_tbl_mul02 --rung 3 --n 60 --place fk --set gripper.finray.material.friction_combine="multiply" --set table.static_friction=0.2 --set table.dynamic_friction=0.17
+w_tbl_min015_lab --rung 3 --n 60 --place fk --labels sim/twin/grasp_gate/brick_labels.json --set gripper.finray.material.friction_combine="min" --set table.static_friction=0.15 --set table.dynamic_friction=0.12

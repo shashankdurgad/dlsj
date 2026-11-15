@@ -1,0 +1,10 @@
+"""Read and save the active physical configuration without changing the scene."""
+import hashlib,json,subprocess
+from pathlib import Path
+from pxr import PhysxSchema
+SYN=ROOT/'synthetic'
+def sha(path):return hashlib.sha256(Path(path).read_bytes()).hexdigest()
+rigid=UsdPhysics.RigidBodyAPI(stage.GetPrimAtPath('/World/Brick'))
+scene=UsdPhysics.Scene(stage.GetPrimAtPath('/PhysicsScene'))
+result={'physics_engine':SimulationManager.get_active_physics_engine(),'physics_dt_s':SimulationManager.get_physics_dt(),'control_hz':30,'physics_steps_per_frame':2,'data_source':'privileged scripted expert, not Pi05 model rollouts','robot_source_commit':subprocess.check_output(['git','-C',str(ROOT/'robot-source'),'rev-parse','HEAD'],text=True).strip(),'robot_urdf_sha256':sha(ROOT/'robot-source/Simulation/SO101/so101_new_calib.urdf'),'plans_sha256':sha(SYN/'plans.json'),'record_batch_sha256':sha(SYN/'record_batch.py'),'reference_calibration_sha256':sha(ROOT/'assets/camera-fit.json'),'joint_offsets_rad':joint_offsets.tolist(),'gripper_radian_upper_limit':float(limits[indices[-1],1]),'gravity_magnitude_usd':str(scene.GetGravityMagnitudeAttr().Get()),'gravity_magnitude_is_authored':scene.GetGravityMagnitudeAttr().HasAuthoredValueOpinion(),'target_rigid_body_enabled':rigid.GetRigidBodyEnabledAttr().Get(),'target_kinematic':rigid.GetKinematicEnabledAttr().Get(),'max_joint_efforts':robot.get_dof_max_efforts().numpy().tolist(),'finger_collision_approximations':{p.GetName():p.GetAttribute('physics:approximation').Get() for p in stage.Traverse() if p.IsA(UsdGeom.Mesh) and p.GetName().startswith(('wrist_roll_follower','moving_jaw'))},'physics_material':{'static_friction':1.,'dynamic_friction':.8,'restitution':0.,'contact_offset_m':.001,'rest_offset_m':0.,'position_solver_iterations':32,'velocity_solver_iterations':8}}
+(SYN/'provenance.json').write_text(json.dumps(result,indent=2,allow_nan=False));print('PROVENANCE',json.dumps(result),flush=True)

@@ -1,0 +1,44 @@
+{
+  "usd": "/home/joe-spark-2/pi05-isaac-so101/assets/converted/so101_new_calib_11/so101_new_calib.usda",
+  "camera_paths": {
+    "top": "/World/TopCamera",
+    "inspect": "/World/InspectCamera",
+    "overview": "/World/OverviewCamera",
+    "wrist": "/World/SO101/Geometry/base_link/shoulder_link/upper_arm_link/lower_arm_link/wrist_link/gripper_link/WristCamera"
+  },
+  "joint_indices": [
+    0,
+    1,
+    2,
+    3,
+    4,
+    5
+  ],
+  "limits": [
+    [
+      -1.9198600053787231,
+      1.9198600053787231
+    ],
+    [
+      -1.7453300952911377,
+      1.7453300952911377
+    ],
+    [
+      -1.6899999380111694,
+      1.6899999380111694
+    ],
+    [
+      -1.6580599546432495,
+      1.6580599546432495
+    ],
+    [
+      -2.743849992752075,
+      2.841209888458252
+    ],
+    [
+      -0.17453299462795258,
+      1.7453300952911377
+    ]
+  ],
+  "calibration": "URDF new midpoint convention; real-unit alignment unverified"
+}

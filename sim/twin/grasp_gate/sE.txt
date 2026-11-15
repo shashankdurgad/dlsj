@@ -1,0 +1,8 @@
+w_r2 --rung 2 --n 60 --place fk
+w_r2_sagL --rung 2 --n 60 --place fk --sag 0.0871,0,0
+w_r2_kc1e3 --rung 2 --n 60 --place fk --set gripper.finray.material.compliant_contact_stiffness=1000
+w_kc1e3_sagL --rung 3 --n 60 --place fk --set gripper.finray.material.compliant_contact_stiffness=1000 --sag 0.0871,0,0
+w_kc1e3_lab_sy --rung 3 --n 60 --place fk --labels sim/twin/grasp_gate/brick_labels.json --label_map side_x=side_y --set gripper.finray.material.compliant_contact_stiffness=1000
+w_kc5e2 --rung 3 --n 60 --place fk --set gripper.finray.material.compliant_contact_stiffness=500
+w_kc1e3_tbl --rung 3 --n 60 --place fk --set gripper.finray.material.compliant_contact_stiffness=1000 --set gripper.finray.material.friction_combine="min" --set table.static_friction=0.15 --set table.dynamic_friction=0.12
+w_kc1e3_sagL_lab_sy_tbl --rung 3 --n 60 --place fk --labels sim/twin/grasp_gate/brick_labels.json --label_map side_x=side_y --set gripper.finray.material.compliant_contact_stiffness=1000 --set gripper.finray.material.friction_combine="min" --set table.static_friction=0.15 --set table.dynamic_friction=0.12 --sag 0.0871,0,0

@@ -1,0 +1,6 @@
+w_bend2 --rung 3 --n 60 --place fk --set gripper.finray.bias_rad=-0.242 --set gripper.finray.bend.hinges=2
+w_bend1 --rung 3 --n 60 --place fk --set gripper.finray.bias_rad=-0.242 --set gripper.finray.bend.hinges=1
+w_bend2_k0.75 --rung 3 --n 60 --place fk --set gripper.finray.bias_rad=-0.242 --set gripper.finray.bend.hinges=2 --set gripper.finray.bend.stiffness_nm_per_rad=0.75
+w_bend2_k3 --rung 3 --n 60 --place fk --set gripper.finray.bias_rad=-0.242 --set gripper.finray.bend.hinges=2 --set gripper.finray.bend.stiffness_nm_per_rad=3.0
+w_bend2_lab_sy --rung 3 --n 60 --place fk --labels sim/twin/grasp_gate/brick_labels.json --label_map side_x=side_y --set gripper.finray.bias_rad=-0.242 --set gripper.finray.bend.hinges=2
+w_bend2_tbl --rung 3 --n 60 --place fk --set gripper.finray.bias_rad=-0.242 --set gripper.finray.bend.hinges=2 --set gripper.finray.material.friction_combine="min" --set table.static_friction=0.15 --set table.dynamic_friction=0.12

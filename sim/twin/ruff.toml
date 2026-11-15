@@ -1,0 +1,12 @@
+# Lint standard for the Isaac digital twin (sim/twin). Run: sim/twin/lint.sh [--fix]
+line-length = 120
+target-version = "py312"
+extend-exclude = ["data", "out", ".build", "assets"]
+
+[lint]
+select = ["E", "F", "W", "I", "B"]
+# E402: Isaac scripts must start the Kit app (AppLauncher) before importing isaaclab / omni / pxr modules.
+ignore = ["E402"]
+
+[lint.isort]
+known-first-party = ["sim"]

@@ -1,0 +1,168 @@
+{
+  "passed": true,
+  "successes": 20,
+  "attempts": 20,
+  "elapsed_s": 15.892013843000313,
+  "episodes": [
+    {
+      "episode": 0,
+      "success": true,
+      "minimum_hold_lift_m": 0.07083744555711746,
+      "inspection_xy_error_m": 0.006213824858316184,
+      "physics_steps": 320,
+      "max_arm_tracking_error_rad": 0.051378797931131315
+    },
+    {
+      "episode": 1,
+      "success": true,
+      "minimum_hold_lift_m": 0.0708339735865593,
+      "inspection_xy_error_m": 0.0061163322956278516,
+      "physics_steps": 320,
+      "max_arm_tracking_error_rad": 0.05085153524344821
+    },
+    {
+      "episode": 2,
+      "success": true,
+      "minimum_hold_lift_m": 0.07030224800109863,
+      "inspection_xy_error_m": 0.005667327696845889,
+      "physics_steps": 320,
+      "max_arm_tracking_error_rad": 0.04830748979514499
+    },
+    {
+      "episode": 3,
+      "success": true,
+      "minimum_hold_lift_m": 0.07047689706087112,
+      "inspection_xy_error_m": 0.005805461972347048,
+      "physics_steps": 320,
+      "max_arm_tracking_error_rad": 0.04780263845389743
+    },
+    {
+      "episode": 4,
+      "success": true,
+      "minimum_hold_lift_m": 0.07035411149263382,
+      "inspection_xy_error_m": 0.005701264272509803,
+      "physics_steps": 320,
+      "max_arm_tracking_error_rad": 0.04829533044761081
+    },
+    {
+      "episode": 5,
+      "success": true,
+      "minimum_hold_lift_m": 0.07059188932180405,
+      "inspection_xy_error_m": 0.007069045746026458,
+      "physics_steps": 320,
+      "max_arm_tracking_error_rad": 0.050712060374673795
+    },
+    {
+      "episode": 6,
+      "success": true,
+      "minimum_hold_lift_m": 0.07055312395095825,
+      "inspection_xy_error_m": 0.006059149082158031,
+      "physics_steps": 320,
+      "max_arm_tracking_error_rad": 0.05027134363120456
+    },
+    {
+      "episode": 7,
+      "success": true,
+      "minimum_hold_lift_m": 0.07073576003313065,
+      "inspection_xy_error_m": 0.005875639164594688,
+      "physics_steps": 320,
+      "max_arm_tracking_error_rad": 0.04998774473136325
+    },
+    {
+      "episode": 8,
+      "success": true,
+      "minimum_hold_lift_m": 0.07019359618425369,
+      "inspection_xy_error_m": 0.005471377598328397,
+      "physics_steps": 320,
+      "max_arm_tracking_error_rad": 0.04763240758841891
+    },
+    {
+      "episode": 9,
+      "success": true,
+      "minimum_hold_lift_m": 0.07026460766792297,
+      "inspection_xy_error_m": 0.0056553830035221495,
+      "physics_steps": 320,
+      "max_arm_tracking_error_rad": 0.048176001948770475
+    },
+    {
+      "episode": 10,
+      "success": true,
+      "minimum_hold_lift_m": 0.07056152075529099,
+      "inspection_xy_error_m": 0.005667218984978909,
+      "physics_steps": 320,
+      "max_arm_tracking_error_rad": 0.04985792581504245
+    },
+    {
+      "episode": 11,
+      "success": true,
+      "minimum_hold_lift_m": 0.0704590231180191,
+      "inspection_xy_error_m": 0.0058319854670451894,
+      "physics_steps": 320,
+      "max_arm_tracking_error_rad": 0.04957325403159518
+    },
+    {
+      "episode": 12,
+      "success": true,
+      "minimum_hold_lift_m": 0.07076354324817657,
+      "inspection_xy_error_m": 0.005609957958571532,
+      "physics_steps": 320,
+      "max_arm_tracking_error_rad": 0.04867429677909274
+    },
+    {
+      "episode": 13,
+      "success": true,
+      "minimum_hold_lift_m": 0.07067065685987473,
+      "inspection_xy_error_m": 0.005656178827793033,
+      "physics_steps": 320,
+      "max_arm_tracking_error_rad": 0.04966158811515231
+    },
+    {
+      "episode": 14,
+      "success": true,
+      "minimum_hold_lift_m": 0.07044142484664917,
+      "inspection_xy_error_m": 0.005141630101482854,
+      "physics_steps": 320,
+      "max_arm_tracking_error_rad": 0.048949431819375944
+    },
+    {
+      "episode": 15,
+      "success": true,
+      "minimum_hold_lift_m": 0.07041894644498825,
+      "inspection_xy_error_m": 0.006815267284061963,
+      "physics_steps": 320,
+      "max_arm_tracking_error_rad": 0.04768569414084811
+    },
+    {
+      "episode": 16,
+      "success": true,
+      "minimum_hold_lift_m": 0.07039514929056168,
+      "inspection_xy_error_m": 0.005537382992635043,
+      "physics_steps": 320,
+      "max_arm_tracking_error_rad": 0.04983825628226657
+    },
+    {
+      "episode": 17,
+      "success": true,
+      "minimum_hold_lift_m": 0.0704314112663269,
+      "inspection_xy_error_m": 0.005728180709537201,
+      "physics_steps": 320,
+      "max_arm_tracking_error_rad": 0.05059177820151706
+    },
+    {
+      "episode": 18,
+      "success": true,
+      "minimum_hold_lift_m": 0.07053758203983307,
+      "inspection_xy_error_m": 0.0057527354239611875,
+      "physics_steps": 320,
+      "max_arm_tracking_error_rad": 0.04856426660483737
+    },
+    {
+      "episode": 19,
+      "success": true,
+      "minimum_hold_lift_m": 0.07067886739969254,
+      "inspection_xy_error_m": 0.005673671810297874,
+      "physics_steps": 320,
+      "max_arm_tracking_error_rad": 0.04974360410636325
+    }
+  ]
+}

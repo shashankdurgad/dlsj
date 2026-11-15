@@ -1,0 +1,6 @@
+g=np.array(UsdGeom.Xformable(stage.GetPrimAtPath(gripper_paths[0])).ComputeLocalToWorldTransform(Usd.TimeCode.Default()))
+eye=np.array(reference['wrist_camera']['position_local']);R=np.array(reference['wrist_camera']['local_to_cv'])
+for p in [[-.0079,-.000218,-.098127], [0,0,-.08],reference['housing_landmark_local']]:
+ v=R@(np.array(p)-eye);print(p,'pixel',v[:2]/v[2]*350+[320,240])
+print('eye world',eye@g[:3,:3]+g[3,:3])
+print('target world',reference['objects']['target']['position'])

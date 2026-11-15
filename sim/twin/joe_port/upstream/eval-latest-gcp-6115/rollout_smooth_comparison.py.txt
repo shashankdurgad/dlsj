@@ -1,0 +1,462 @@
+"""Controlled 3-variant smooth-control comparison with pinned step6115 checkpoint in Isaac Sim.
+
+Compares under identical initial state, target pose, seed, and replay-verified calibration:
+1. variant_1_baseline_h50: Execute all 50 predicted actions at 30 Hz (6 chunks x 50 = 300 steps = 10.0s).
+2. variant_2_replan_h10: Execute first 10 predicted actions at 30 Hz, then observe and replan (30 chunks x 10 = 300 steps = 10.0s).
+3. variant_3_replan_h10_smooth_limited: Execute first 10 predicted actions at 30 Hz + causal chunk de-jittering ([1,4,6,4,1]/16), boundary offset decay (tau=3 steps), and explicit 5-DOF arm velocity/acceleration limits ([90,120,110,90,90] deg/s, [540,720,630,540,540] deg/s^2) with separate un-suppressed gripper channel (30 chunks x 10 = 300 steps = 10.0s).
+"""
+import json
+import os
+import subprocess
+import sys
+import time
+import traceback
+from pathlib import Path
+import numpy as np
+from PIL import Image
+from isaacsim.core.experimental.prims import RigidPrim
+
+if str(ROOT / 'synthetic') not in sys.path:
+    sys.path.insert(0, str(ROOT / 'synthetic'))
+from kinematics import Kinematics
+
+EVAL_ROOT = ROOT / 'eval-latest-gcp-6115'
+OUT = ROOT / 'smooth-control-comparison'
+IPC = EVAL_ROOT / 'ipc'
+OUT.mkdir(parents=True, exist_ok=True)
+assert (EVAL_ROOT / 'outputs/policy-ready.json').exists(), 'Policy worker not ready'
+
+kin = Kinematics(ROOT / 'synthetic/robot-assets/so101_new_calib.urdf')
+instruction = 'pick up the brick and hold it in front of the inspection camera'
+ffmpeg_bin = str(Path.home() / '.local/bin/ffmpeg')
+
+# Replay-gate-verified multi-pose calibrated offsets (passed Ep 0 16.67cm lift & Held-Out Ep 8 16.18cm lift)
+CALIBRATED_OFFSETS_RAD = np.array([0.168618, -0.082310, -0.148896, 0.115179, -0.273454, 0.0], dtype=np.float32)
+
+# Grounded arm velocity/acceleration bounds from real duplo_teleop_rgb reference trajectories
+V_MAX_ARM_DEG_S = np.array([90.0, 120.0, 110.0, 90.0, 90.0], dtype=np.float64)
+A_MAX_ARM_DEG_S2 = np.array([540.0, 720.0, 630.0, 540.0, 540.0], dtype=np.float64)
+
+distractors = {}
+for name, pos, yaw in [
+    ('blue_brick', [0.2430888, -0.067536, 0.0096], 120.0),
+    ('yellow_brick', [0.2409864, -0.0007426, 0.0096], 77.0),
+    ('cream_brick', [0.1966440, 0.0046272, 0.0096], 50.0),
+]:
+    distractors[name] = (
+        RigidPrim('/World/ReferenceProps/' + name),
+        np.asarray(pos, np.float32),
+        np.deg2rad(yaw),
+    )
+
+def smooth_chunk_arm(chunk_arm: np.ndarray) -> np.ndarray:
+    kernel = np.array([1.0, 4.0, 6.0, 4.0, 1.0], dtype=np.float64) / 16.0
+    pad = np.pad(chunk_arm, ((2, 2), (0, 0)), mode='edge')
+    out = np.zeros_like(chunk_arm, dtype=np.float64)
+    for k_i, w in enumerate(kernel):
+        out += w * pad[k_i : k_i + len(chunk_arm)]
+    return out
+
+class SmoothController:
+    def __init__(self, mode='passthrough', exec_horizon=50, dt=1.0 / 30.0, blend_tau_steps=3.0):
+        self.mode = mode
+        self.exec_horizon = int(exec_horizon)
+        self.dt = float(dt)
+        self.du_max = V_MAX_ARM_DEG_S * self.dt
+        self.ddu_max = A_MAX_ARM_DEG_S2 * (self.dt ** 2)
+        self.blend_tau = float(blend_tau_steps)
+        self.u_prev = None
+        self.du_prev = np.zeros(5, dtype=np.float64)
+        self.raw_chunk = None
+        self.chunk_ref_arm = None
+
+    def reset(self, initial_state_canonical: np.ndarray):
+        self.u_prev = np.asarray(initial_state_canonical[:5], dtype=np.float64).copy()
+        self.du_prev = np.zeros(5, dtype=np.float64)
+        self.raw_chunk = None
+        self.chunk_ref_arm = None
+
+    def start_chunk(self, raw_chunk_actions: np.ndarray, current_state_canonical: np.ndarray):
+        raw = np.asarray(raw_chunk_actions, dtype=np.float64)
+        self.raw_chunk = raw.copy()
+        if self.u_prev is None:
+            self.reset(current_state_canonical)
+        if self.mode == 'passthrough':
+            self.chunk_ref_arm = raw[:, :5].copy()
+        else:
+            arm_base = smooth_chunk_arm(raw[:, :5])
+            offset = self.u_prev - arm_base[0]
+            steps = np.arange(1, len(arm_base) + 1, dtype=np.float64)[:, None]
+            decay = np.exp(-steps / self.blend_tau)
+            self.chunk_ref_arm = arm_base + offset[None, :] * decay
+
+    def step(self, step_in_chunk: int):
+        raw_act = self.raw_chunk[step_in_chunk].astype(np.float32).copy()
+        if self.mode == 'passthrough':
+            self.u_prev = self.raw_chunk[step_in_chunk, :5].copy()
+            return raw_act, raw_act.copy()
+        ref_arm = self.chunk_ref_arm[step_in_chunk]
+        du_des = ref_arm - self.u_prev
+        du_acc = np.clip(du_des, self.du_prev - self.ddu_max, self.du_prev + self.ddu_max)
+        du = np.clip(du_acc, -self.du_max, self.du_max)
+        u_next = self.u_prev + du
+        self.du_prev = du
+        self.u_prev = u_next
+        grip_cmd = float(self.raw_chunk[step_in_chunk, 5])
+        applied_act = np.r_[u_next, grip_cmd].astype(np.float32)
+        return raw_act, applied_act
+
+def canonical_state(offsets_rad):
+    values = robot.get_dof_positions().numpy()[0, indices].copy()
+    state = np.rad2deg(values - offsets_rad)
+    state[-1] = values[-1] / limits[indices[-1], 1] * 100.0
+    return state.astype(np.float32), values
+
+def action_to_sim_radians(action, offsets_rad):
+    target = np.deg2rad(action).astype(np.float32) + offsets_rad
+    target[-1] = np.clip(action[-1] / 100.0, 0.0, 1.0) * limits[indices[-1], 1]
+    return np.clip(target, limits[indices, 0], limits[indices, 1]).astype(np.float32)
+
+def pose_reset(view, position, yaw):
+    view.set_world_poses(
+        positions=[np.asarray(position, np.float32)],
+        orientations=[[np.cos(yaw / 2.0), 0.0, 0.0, np.sin(yaw / 2.0)]],
+    )
+    view.set_velocities(linear_velocities=[[0.0, 0.0, 0.0]], angular_velocities=[[0.0, 0.0, 0.0]])
+
+def open_video_encoder(path, width=640, height=480, crf=18):
+    return subprocess.Popen(
+        [
+            ffmpeg_bin, '-hide_banner', '-loglevel', 'error', '-y',
+            '-f', 'rawvideo', '-pixel_format', 'rgb24',
+            '-video_size', f'{width}x{height}', '-framerate', '30',
+            '-i', '-', '-an', '-c:v', 'libx264', '-threads', '1',
+            '-g', '2', '-pix_fmt', 'yuv420p', '-crf', str(crf), str(path),
+        ],
+        stdin=subprocess.PIPE,
+    )
+
+variants = [
+    {
+        'name': 'variant_1_baseline_h50',
+        'label': 'Variant 1: Baseline (Execute 50 @ 30Hz)',
+        'description': 'Existing controller: predict 50 actions, execute all 50 at 30 Hz without rate limiting (6 chunks x 50 = 300 steps = 10.0s)',
+        'exec_horizon': 50,
+        'num_chunks': 6,
+        'mode': 'passthrough',
+    },
+    {
+        'name': 'variant_2_replan_h10',
+        'label': 'Variant 2: Shorter Horizon (Execute 10 / Replan @ 30Hz)',
+        'description': 'Shorter execution horizon: predict 50 actions, execute first 10 actions (0.333s) at 30 Hz, then observe and replan (30 chunks x 10 = 300 steps = 10.0s)',
+        'exec_horizon': 10,
+        'num_chunks': 30,
+        'mode': 'passthrough',
+    },
+    {
+        'name': 'variant_3_replan_h10_smooth_limited',
+        'label': 'Variant 3: Execute 10 + Causal Smooth & Arm Rate Limits',
+        'description': 'Shorter execution (10 steps) + causal chunk de-jittering ([1,4,6,4,1]/16), boundary offset decay (tau=3 steps), and explicit 5-DOF arm velocity/acceleration limits ([90,120,110,90,90] deg/s, [540,720,630,540,540] deg/s^2); separate un-suppressed gripper channel (30 chunks x 10 = 300 steps = 10.0s)',
+        'exec_horizon': 10,
+        'num_chunks': 30,
+        'mode': 'smooth_limited',
+    },
+]
+
+home_deg = np.asarray(reference['initial_joint_state'], np.float32)
+target_pos = [0.1718973875542686, -0.10636524158167146, 0.0076]
+target_yaw_deg = 58.0
+
+rep.orchestrator.set_capture_on_play(False)
+if render_products['overview'].hydra_texture is not None:
+    render_products['overview'].hydra_texture.set_updates_enabled(True)
+req_idx = 0
+variant_results = []
+
+try:
+    for v_spec in variants:
+        v_name = v_spec['name']
+        v_dir = OUT / v_name
+        v_dir.mkdir(parents=True, exist_ok=True)
+        offsets_rad = CALIBRATED_OFFSETS_RAD.copy()
+
+        home_q = action_to_sim_radians(home_deg, offsets_rad)
+        ctrl = SmoothController(
+            mode=v_spec['mode'],
+            exec_horizon=v_spec['exec_horizon'],
+            dt=1.0 / 30.0,
+            blend_tau_steps=3.0,
+        )
+
+        timeline.play()
+        robot.set_dof_positions(home_q[None], dof_indices=indices)
+        robot.set_dof_velocities(np.zeros((1, 6)), dof_indices=indices)
+        robot.set_dof_position_targets(home_q[None], dof_indices=indices)
+        pose_reset(brick_view, target_pos, np.deg2rad(target_yaw_deg))
+        for view, pos, yaw in distractors.values():
+            pose_reset(view, pos, yaw)
+        light.GetIntensityAttr().Set(700.0)
+        UsdLux.DistantLight(stage.GetPrimAtPath('/World/Sun')).GetIntensityAttr().Set(600.0)
+        SimulationManager.step(steps=30)
+        await rep.orchestrator.step_async(rt_subframes=1, pause_timeline=False, delta_time=0.0, wait_for_render=True)
+
+        init_state_deg, _ = canonical_state(offsets_rad)
+        ctrl.reset(init_state_deg)
+
+        initial_brick = brick_view.get_world_poses()[0].numpy()[0].copy()
+        dist_initial = {k: v[0].get_world_poses()[0].numpy()[0].copy() for k, v in distractors.items()}
+        max_dist_disp = {k: 0.0 for k in distractors}
+
+        cams = ['wrist', 'top', 'inspect', 'overview']
+        for c in cams:
+            px = np.asarray(annotators[c].get_data())[:, :, :3].copy()
+            Image.fromarray(px).save(v_dir / f'initial-{c}.png')
+
+        encoders = {c: open_video_encoder(v_dir / f'{c}.mp4', 640, 480, 18) for c in cams}
+        comp_enc = open_video_encoder(v_dir / 'three-cameras.mp4', 1920, 480, 18)
+
+        chunks_meta = []
+        observed = []
+        raw_requested = []
+        requested = []
+        applied = []
+        raw_q = []
+        fk_grasp_positions = []
+        brick_positions = []
+        arm_tracking_errors_rad = []
+        contact_frames = []
+        frame_index = 0
+        first_step = SimulationManager.get_num_physics_steps()
+        extra_capture_steps = 0
+        wall_start = time.monotonic()
+
+        try:
+            for chunk in range(v_spec['num_chunks']):
+                before_s = SimulationManager.get_num_physics_steps()
+                await rep.orchestrator.step_async(rt_subframes=1, pause_timeline=False, delta_time=0.0, wait_for_render=True)
+                extra_capture_steps += SimulationManager.get_num_physics_steps() - before_s
+
+                state_vec, _ = canonical_state(offsets_rad)
+                obs_payload = {
+                    'state': state_vec,
+                    'instruction': np.asarray(instruction),
+                    'crop_top': np.asarray(True),
+                    'seed': np.asarray(42 + chunk, dtype=np.int64),
+                }
+                for c in ['wrist', 'top', 'inspect']:
+                    px = np.asarray(annotators[c].get_data())[:, :, :3].copy()
+                    obs_payload[c] = px
+                tmp_obs = IPC / f'obs-{req_idx:03d}.tmp.npz'
+                np.savez(tmp_obs, **obs_payload)
+                os.replace(tmp_obs, IPC / f'obs-{req_idx:03d}.npz')
+
+                act_file = IPC / f'actions-{req_idx:03d}.npz'
+                timeline.pause()
+                deadline = time.monotonic() + 600.0
+                while not act_file.exists():
+                    assert time.monotonic() < deadline, f'Policy worker timed out on req {req_idx}'
+                    await asyncio.sleep(0.02)
+                timeline.play()
+                res_npz = np.load(act_file, allow_pickle=False)
+                raw_chunk_actions = res_npz['actions']
+                latency_s = float(res_npz['latency_s'])
+                req_idx += 1
+
+                ctrl.start_chunk(raw_chunk_actions, state_vec)
+                chunks_meta.append({
+                    'chunk': chunk,
+                    'seed': 42 + chunk,
+                    'inference_s': latency_s,
+                    'state': state_vec.tolist(),
+                })
+
+                for step_in_chunk in range(v_spec['exec_horizon']):
+                    if step_in_chunk > 0:
+                        before_s2 = SimulationManager.get_num_physics_steps()
+                        await rep.orchestrator.step_async(rt_subframes=1, pause_timeline=False, delta_time=0.0, wait_for_render=True)
+                        extra_capture_steps += SimulationManager.get_num_physics_steps() - before_s2
+
+                    cur_state, cur_q = canonical_state(offsets_rad)
+                    fk_p, _ = kin.grasp(cur_q)
+                    fk_grasp_positions.append(fk_p.copy())
+
+                    frame_imgs = {}
+                    for c in cams:
+                        px = np.asarray(annotators[c].get_data())[:, :, :3].copy()
+                        frame_imgs[c] = px
+                        encoders[c].stdin.write(px.tobytes())
+                    comp = np.concatenate([frame_imgs['top'], frame_imgs['wrist'], frame_imgs['inspect']], axis=1)
+                    comp_enc.stdin.write(comp.tobytes())
+                    if frame_index in [0, 50, 100, 150, 200, 250, 299]:
+                        contact_frames.append(comp)
+
+                    raw_act, app_act = ctrl.step(step_in_chunk)
+                    target_rad = action_to_sim_radians(app_act, offsets_rad)
+                    robot.set_dof_position_targets(target_rad[None], dof_indices=indices)
+                    SimulationManager.step(steps=2)
+
+                    b_pos = brick_view.get_world_poses()[0].numpy()[0].copy()
+                    post_q = robot.get_dof_positions().numpy()[0, indices].copy()
+                    arm_tracking_errors_rad.append(float(np.max(np.abs(post_q[:5] - target_rad[:5]))))
+                    brick_positions.append(b_pos)
+                    observed.append(cur_state)
+                    raw_requested.append(raw_act)
+                    requested.append(app_act)
+                    applied.append(target_rad)
+                    raw_q.append(cur_q)
+                    for k, v in distractors.items():
+                        cur_d = v[0].get_world_poses()[0].numpy()[0]
+                        max_dist_disp[k] = max(max_dist_disp[k], float(np.linalg.norm(cur_d - dist_initial[k])))
+                    frame_index += 1
+        finally:
+            for enc in encoders.values():
+                enc.stdin.close()
+                assert enc.wait() == 0
+            comp_enc.stdin.close()
+            assert comp_enc.wait() == 0
+
+        wall_elapsed_s = time.monotonic() - wall_start
+        await rep.orchestrator.step_async(rt_subframes=1, pause_timeline=False, delta_time=0.0, wait_for_render=True)
+        for c in cams:
+            px = np.asarray(annotators[c].get_data())[:, :, :3].copy()
+            Image.fromarray(px).save(v_dir / f'final-{c}.png')
+        if contact_frames:
+            Image.fromarray(np.concatenate(contact_frames, axis=0)).save(v_dir / 'rollout-contact.jpg', quality=90)
+
+        brick_arr = np.asarray(brick_positions)
+        fk_arr = np.asarray(fk_grasp_positions)
+        obs_arr = np.asarray(observed)
+        raw_req_arr = np.asarray(raw_requested)
+        req_arr = np.asarray(requested)
+        app_arr = np.asarray(applied)
+        raw_q_arr = np.asarray(raw_q)
+        physics_steps = SimulationManager.get_num_physics_steps() - first_step
+
+        # Post-rollout release drop check
+        final_q = robot.get_dof_positions().numpy()[0, indices].copy()
+        grip_final = float(final_q[-1])
+        held_z = float(brick_arr[-1, 2])
+        rel_q = final_q.copy()
+        rel_q[-1] = 1.0
+        robot.set_dof_position_targets(rel_q[None], dof_indices=indices)
+        SimulationManager.step(steps=60)
+        released_z = float(brick_view.get_world_poses()[0].numpy()[0, 2])
+        release_drop = float(held_z - released_z)
+
+        lifts = brick_arr[:, 2] - initial_brick[2]
+        max_lift = float(lifts.max())
+        final_lift = float(lifts[-1])
+        hold_min_last_1s = float(lifts[-30:].min())
+        max_disp = float(np.linalg.norm(brick_arr - initial_brick[None, :], axis=1).max())
+        xy_err_all = np.linalg.norm(brick_arr[:, :2] - np.array([0.20, 0.05]), axis=1)
+        min_xy_err = float(xy_err_all.min())
+        hold_xy_err_last_1s = float(xy_err_all[-30:].max())
+        min_z_idx = int(np.argmin(fk_arr[:, 2]))
+
+        checks = {
+            'lift_over_2cm': bool(max_lift > 0.02),
+            'lift_and_hold_5cm': bool(hold_min_last_1s > 0.05),
+            'inspection_region_4cm': bool(hold_xy_err_last_1s < 0.04),
+            'gripper_contact_stall': bool(0.08 < grip_final < 0.45),
+            'release_drop_3cm': bool(release_drop > 0.03),
+            'table_penetration': bool(float(brick_arr[:, 2].min()) > 0.0046),
+            'distractor_stationary': bool(max(max_dist_disp.values()) < 0.002),
+            'physics_steps': bool(physics_steps == 2 * frame_index),
+            'zero_capture_physics_steps': bool(extra_capture_steps == 0),
+        }
+
+        np.savez_compressed(
+            v_dir / 'rollout-arrays.npz',
+            observed=obs_arr,
+            raw_requested=raw_req_arr,
+            requested=req_arr,
+            applied_radians=app_arr,
+            joint_radians=raw_q_arr,
+            fk_grasp_positions=fk_arr,
+            brick_positions=brick_arr,
+            timestamp=np.arange(frame_index, dtype=np.float64) / 30.0,
+        )
+
+        total_infer_s = float(sum(c['inference_s'] for c in chunks_meta))
+        warm_lat = [c['inference_s'] for c in chunks_meta[1:]] or [chunks_meta[0]['inference_s']]
+        v_res = {
+            'variant_name': v_name,
+            'label': v_spec['label'],
+            'description': v_spec['description'],
+            'exec_horizon': v_spec['exec_horizon'],
+            'mode': v_spec['mode'],
+            'num_chunks': v_spec['num_chunks'],
+            'inference_count': len(chunks_meta),
+            'total_inference_wall_s': total_infer_s,
+            'warm_chunk_median_inference_s': float(np.median(warm_lat)),
+            'total_wall_clock_s': wall_elapsed_s,
+            'action_steps': frame_index,
+            'control_hz': 30,
+            'simulated_seconds': frame_index / 30.0,
+            'physics_steps': physics_steps,
+            'extra_capture_steps': extra_capture_steps,
+            'pickup_achieved': bool(max_lift > 0.02),
+            'hold_achieved': bool(hold_min_last_1s > 0.05 and release_drop > 0.03),
+            'task_success': bool(checks['lift_and_hold_5cm'] and checks['inspection_region_4cm'] and checks['release_drop_3cm']),
+            'checks': checks,
+            'brick_initial_m': initial_brick.tolist(),
+            'brick_final_m': brick_arr[-1].tolist(),
+            'brick_peak_height_m': float(brick_arr[:, 2].max()),
+            'maximum_target_lift_m': max_lift,
+            'final_target_lift_m': final_lift,
+            'minimum_hold_lift_last_1s_m': hold_min_last_1s,
+            'maximum_target_displacement_m': max_disp,
+            'minimum_inspection_xy_error_m': min_xy_err,
+            'inspection_xy_error_last_1s_m': hold_xy_err_last_1s,
+            'release_drop_m': release_drop,
+            'gripper_final_rad': grip_final,
+            'max_arm_tracking_error_rad': float(max(arm_tracking_errors_rad)),
+            'lowest_fk_grasp_frame': min_z_idx,
+            'lowest_fk_grasp_xyz_m': fk_arr[min_z_idx].tolist(),
+            'max_distractor_displacement_m': max_dist_disp,
+            'calibration_offsets_rad': offsets_rad.tolist(),
+            'calibration_offsets_deg': np.rad2deg(offsets_rad).tolist(),
+            'real_demo_replay_gate_passed': True,
+            'controller_params': {
+                'v_max_arm_deg_s': V_MAX_ARM_DEG_S.tolist() if v_spec['mode'] == 'smooth_limited' else None,
+                'a_max_arm_deg_s2': A_MAX_ARM_DEG_S2.tolist() if v_spec['mode'] == 'smooth_limited' else None,
+                'blend_tau_steps': 3.0 if v_spec['mode'] == 'smooth_limited' else None,
+                'intra_chunk_filter': '[1,4,6,4,1]/16' if v_spec['mode'] == 'smooth_limited' else None,
+                'gripper_channel': 'separate_passthrough',
+            },
+            'chunks': chunks_meta,
+        }
+        (v_dir / 'rollout-result.json').write_text(json.dumps(v_res, indent=2))
+        variant_results.append(v_res)
+        print('SMOOTH_VARIANT_DONE', v_name, json.dumps({
+            'pickup_achieved': v_res['pickup_achieved'],
+            'hold_achieved': v_res['hold_achieved'],
+            'max_lift_m': round(max_lift, 4),
+            'final_lift_m': round(final_lift, 4),
+            'max_disp_m': round(max_disp, 4),
+            'release_drop_m': round(release_drop, 4),
+            'lowest_fk_xyz': [round(x, 4) for x in v_res['lowest_fk_grasp_xyz_m']],
+            'infer_count': len(chunks_meta),
+            'wall_s': round(wall_elapsed_s, 2),
+        }), flush=True)
+
+    timeline.pause()
+    (IPC / 'done.flag').write_text('done\n')
+    (OUT / 'comparison-summary.json').write_text(json.dumps({
+        'checkpoint_uri': 'gs://onflow-30k-pi05-artifacts/runs/pi05-517-3epoch-20261114/checkpoints/time-step00006115.ckpt',
+        'checkpoint_step': 6115,
+        'checkpoint_sha256': '10c891fe37ba23704e830cf42a46708d79996ff7c6be8f68d099283ac4cb152c',
+        'simulated_seconds_per_variant': 10.0,
+        'action_steps_per_variant': 300,
+        'fps': 30,
+        'calibration_offsets_rad': CALIBRATED_OFFSETS_RAD.tolist(),
+        'calibration_offsets_deg': np.rad2deg(CALIBRATED_OFFSETS_RAD).tolist(),
+        'real_demo_replay_gate_status': 'PASSED on both Episode 0 (16.67 cm lift, 11.60 cm hold, 11.10 cm release drop) and Held-Out Episode 8 (16.18 cm lift, 9.87 cm hold, 8.73 cm release drop)',
+        'variants': variant_results,
+    }, indent=2))
+    print('ALL_SMOOTH_VARIANTS_COMPLETE', flush=True)
+except BaseException:
+    timeline.pause()
+    (IPC / 'done.flag').write_text('error\n')
+    (OUT / 'smooth-error.txt').write_text(traceback.format_exc())
+    raise

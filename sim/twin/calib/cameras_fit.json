@@ -1,0 +1,145 @@
+{
+ "top": {
+  "world_to_cv": [
+   [
+    0.23133588092645752,
+    0.9724656883329477,
+    0.028181469285792626
+   ],
+   [
+    0.8762733211233213,
+    -0.19569394235281756,
+    -0.44028280413152265
+   ],
+   [
+    -0.42264497735508993,
+    0.12654788003573314,
+    -0.8974167689401492
+   ]
+  ],
+  "position": [
+   0.5373326908064461,
+   -0.20998714963044102,
+   0.6162277421826412
+  ],
+  "fx": 604.7434692382812,
+  "fy": 603.7742919921875,
+  "cx": 304.16571044921875,
+  "cy": 239.0305938720703,
+  "resolution": [
+   640,
+   480
+  ],
+  "frame": "robot base (sim world, env origin)",
+  "method": "joe_cal2 top pose (the one the W / W9 joint offsets were fitted against) with D415 factory intrinsics; table-level check on 86 held-out brick<->W9 fin-tip pairs: median 1.86 cm, bias 0.4 cm (previous silhouette-only pose 3.40 cm, bias 2.7 cm on -y); arm silhouettes also better (5.89 vs 6.83)",
+  "metrics": {
+   "joe_cal2 as-is": {
+    "fit": [
+     5.098703384399414,
+     0.3559430234900164
+    ],
+    "held_out": [
+     4.806670188903809,
+     0.36269548366150084
+    ]
+   },
+   "joe_cal2 pose + factory intrinsics": {
+    "fit": [
+     6.307301998138428,
+     0.30897090145328093
+    ],
+    "held_out": [
+     6.8065104484558105,
+     0.300650164414314
+    ]
+   },
+   "fitted": {
+    "fit": [
+     4.923007965087891,
+     0.3642596562417834
+    ],
+    "held_out": [
+     4.644983291625977,
+     0.3691136309972233
+    ]
+   },
+   "top_refit_table_heldout_cm": {
+    "median": 1.86,
+    "p90": 4.08,
+    "prev_median": 3.4
+   }
+  },
+  "n_fit_frames": 264,
+  "n_held_out_frames": 132,
+  "status": "joe_cal2_pose_factory_intrinsics (sim/twin/align/top_refit, 2026-11-15)"
+ },
+ "inspect": {
+  "world_to_cv": [
+   [
+    -0.9517042750534073,
+    0.2897463848652556,
+    -0.10151849734202839
+   ],
+   [
+    0.13572664446880744,
+    0.10047081469446544,
+    -0.9856388250144513
+   ],
+   [
+    -0.2753856401962641,
+    -0.9518154484206197,
+    -0.13494480842755033
+   ]
+  ],
+  "position": [
+   0.4048900047157657,
+   0.1682709316688032,
+   0.1107060421830333
+  ],
+  "fx": 605.0665283203125,
+  "fy": 604.3594970703125,
+  "cx": 309.6224670410156,
+  "cy": 252.01724243164062,
+  "resolution": [
+   640,
+   480
+  ],
+  "frame": "robot base (sim world, env origin)",
+  "method": "silhouette fit to recorded cal2 episodes, factory intrinsics, start joe_cal2",
+  "metrics": {
+   "joe_cal2 as-is": {
+    "fit": [
+     14.855676651000977,
+     0.32266007203612473
+    ],
+    "held_out": [
+     12.760787963867188,
+     0.33544317188279904
+    ]
+   },
+   "joe_cal2 pose + factory intrinsics": {
+    "fit": [
+     16.662033081054688,
+     0.30036593200828166
+    ],
+    "held_out": [
+     14.680765151977539,
+     0.31593119067167963
+    ]
+   },
+   "fitted": {
+    "fit": [
+     4.937105178833008,
+     0.5588046994685381
+    ],
+    "held_out": [
+     4.195242881774902,
+     0.5748886016544117
+    ]
+   }
+  },
+  "n_fit_frames": 132,
+  "n_held_out_frames": 66,
+  "status": "TENTATIVE: held-out loss 12.8 -> 4.2, IoU 0.34 -> 0.58, but overlays still offset in some frames (held brick and people in the background pollute the mask); replace with the ChArUco screen-board measurement"
+ }
+}

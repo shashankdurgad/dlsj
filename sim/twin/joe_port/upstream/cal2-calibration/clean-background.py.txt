@@ -1,0 +1,16 @@
+"""Procedural static room/monitor backdrop: no photographed bricks or robot ghosts."""
+from pxr import UsdGeom, Gf
+clean_gray = material('Cal2CleanRoom',[.18,.19,.20],1.)
+monitor_black = material('Cal2Monitor',[.025,.028,.030],.8)
+bind(stage.GetPrimAtPath('/World/ReferenceProps/HallBackdrop'),clean_gray)
+monitor_path='/World/ReferenceProps/CleanMonitorPanel'
+if stage.GetPrimAtPath(monitor_path):stage.RemovePrim(monitor_path)
+cc=reference['inspect_camera'];rr=np.asarray(cc['world_to_cv']);eye=np.asarray(cc['position']);f=float(cc['focal_px']);depth=.6
+# Approximate laptop silhouette from initial cal2 inspection view; physical mesh,
+# no policy-input compositing and no foreground objects on the background.
+verts=[]
+for u,v in [(210,40),(500,40),(500,255),(210,255)]:
+ ray=rr.T@np.asarray([(u-320)/f,(v-240)/f,1.]);verts.append(tuple(eye+depth*ray))
+panel=UsdGeom.Mesh.Define(stage,monitor_path);panel.CreatePointsAttr(verts);panel.CreateFaceVertexCountsAttr([4]);panel.CreateFaceVertexIndicesAttr([0,1,2,3]);panel.CreateDoubleSidedAttr(True);bind(panel.GetPrim(),monitor_black)
+reference['background_note']='Procedural room and dark monitor mesh; removed photo backdrop because it contained foreground brick imagery visible from the wrist camera. Appearance remains approximate.'
+print('CLEAN_BACKGROUND_NO_FOREGROUND_PHOTO',flush=True)

@@ -1,0 +1,121 @@
+{
+ "_doc": "Twin copy of sim/realism/servo_params.json (servo_fit, 2026-11-15). Changed: first_order_K_per_tick (and time_constant_s) of every joint: pan 0.3024->0.42, lift 0.2518->0.378, elbow 0.2485->0.373, wrist_flex 0.288->0.45, wrist_roll 0.2944->0.42, gripper 0.2046->0.40. The A1 K values were fitted end to end (reading vs command), but the twin runs them in series with the PhysX PD lag (60 / 2 -> 33 ms) and the LeRobot clamp around the lagging reading, so the twin responded ~1.5x too slowly. Fitted by open-loop replay of 249 real windows (MolmoAct2 5.5k / 8k traces + cal2 teleop) in GraspEnv + play (sim/twin/servo_fit/, out/servo_fit/f_*). For the deployed controller also set PlayCfg(controller_delay=True) (1 tick on pan / wrist_flex / wrist_roll).",
+ "source": "recorded teleop (duplo_teleop 517 eps old calibration; duplo_teleop_cal2 for comparison)",
+ "control_rate_hz": 30,
+ "joints": {
+  "shoulder_pan": {
+   "delay_ticks": 0,
+   "first_order_K_per_tick": 0.42,
+   "time_constant_s": 0.0612,
+   "velocity_limit_deg_s": 168.8,
+   "accel_p99_deg_s2": 1345.1,
+   "steady_state_bias_deg": -0.088,
+   "steady_state_abs_err_p95_deg": 0.615,
+   "meas_noise_std": 0.1304,
+   "second_order_kp_kd_per_tick": [
+    0.1905,
+    0.6124
+   ],
+   "units": "gripper 0-100 range units; others LeRobot degrees",
+   "isaac_hint": "PD position drive at sim dt=1/30 s: emulate first-order K by stiffness/damping; add delay_ticks command FIFO; clip joint velocity to velocity_limit_deg_s; add Gaussian meas_noise_std to observed state"
+  },
+  "shoulder_lift": {
+   "delay_ticks": 0,
+   "first_order_K_per_tick": 0.378,
+   "time_constant_s": 0.0702,
+   "velocity_limit_deg_s": 226.8,
+   "accel_p99_deg_s2": 2057.1,
+   "steady_state_bias_deg": 0.659,
+   "steady_state_abs_err_p95_deg": 6.374,
+   "meas_noise_std": 0.1536,
+   "second_order_kp_kd_per_tick": [
+    0.0904,
+    0.3341
+   ],
+   "units": "gripper 0-100 range units; others LeRobot degrees",
+   "isaac_hint": "PD position drive at sim dt=1/30 s: emulate first-order K by stiffness/damping; add delay_ticks command FIFO; clip joint velocity to velocity_limit_deg_s; add Gaussian meas_noise_std to observed state"
+  },
+  "elbow_flex": {
+   "delay_ticks": 0,
+   "first_order_K_per_tick": 0.373,
+   "time_constant_s": 0.0714,
+   "velocity_limit_deg_s": 232.1,
+   "accel_p99_deg_s2": 1661.5,
+   "steady_state_bias_deg": 1.934,
+   "steady_state_abs_err_p95_deg": 3.165,
+   "meas_noise_std": 0.2487,
+   "second_order_kp_kd_per_tick": [
+    0.1016,
+    0.3918
+   ],
+   "units": "gripper 0-100 range units; others LeRobot degrees",
+   "isaac_hint": "PD position drive at sim dt=1/30 s: emulate first-order K by stiffness/damping; add delay_ticks command FIFO; clip joint velocity to velocity_limit_deg_s; add Gaussian meas_noise_std to observed state"
+  },
+  "wrist_flex": {
+   "delay_ticks": 0,
+   "first_order_K_per_tick": 0.45,
+   "time_constant_s": 0.0558,
+   "velocity_limit_deg_s": 168.8,
+   "accel_p99_deg_s2": 1424.2,
+   "steady_state_bias_deg": 0.22,
+   "steady_state_abs_err_p95_deg": 1.011,
+   "meas_noise_std": 0.1216,
+   "second_order_kp_kd_per_tick": [
+    0.1906,
+    0.6425
+   ],
+   "units": "gripper 0-100 range units; others LeRobot degrees",
+   "isaac_hint": "PD position drive at sim dt=1/30 s: emulate first-order K by stiffness/damping; add delay_ticks command FIFO; clip joint velocity to velocity_limit_deg_s; add Gaussian meas_noise_std to observed state"
+  },
+  "wrist_roll": {
+   "delay_ticks": 0,
+   "first_order_K_per_tick": 0.42,
+   "time_constant_s": 0.0612,
+   "velocity_limit_deg_s": 160.9,
+   "accel_p99_deg_s2": 1265.9,
+   "steady_state_bias_deg": -0.088,
+   "steady_state_abs_err_p95_deg": 0.615,
+   "meas_noise_std": 0.0805,
+   "second_order_kp_kd_per_tick": [
+    0.204,
+    0.6743
+   ],
+   "units": "gripper 0-100 range units; others LeRobot degrees",
+   "isaac_hint": "PD position drive at sim dt=1/30 s: emulate first-order K by stiffness/damping; add delay_ticks command FIFO; clip joint velocity to velocity_limit_deg_s; add Gaussian meas_noise_std to observed state"
+  },
+  "gripper": {
+   "delay_ticks": 0,
+   "first_order_K_per_tick": 0.4,
+   "time_constant_s": 0.0653,
+   "velocity_limit_deg_s": 121.0,
+   "accel_p99_deg_s2": 1488.1,
+   "steady_state_bias_deg": 1.232,
+   "steady_state_abs_err_p95_deg": 2.753,
+   "meas_noise_std": 0.1125,
+   "second_order_kp_kd_per_tick": [
+    0.0898,
+    0.3897
+   ],
+   "units": "gripper 0-100 range units; others LeRobot degrees",
+   "isaac_hint": "PD position drive at sim dt=1/30 s: emulate first-order K by stiffness/damping; add delay_ticks command FIFO; clip joint velocity to velocity_limit_deg_s; add Gaussian meas_noise_std to observed state"
+  }
+ },
+ "gripper": {
+  "hold_position_median": 5.75,
+  "hold_position_p5_p95": [
+   4.34,
+   6.15
+  ],
+  "squeeze_cmd_minus_meas_median": -2.55,
+  "close_speed_units_per_tick_median": -3.77,
+  "open_speed_units_per_tick_median": 3.97
+ },
+ "teleop_action_rate_p99_deg_per_tick": {
+  "shoulder_pan": 5.451,
+  "shoulder_lift": 7.121,
+  "elbow_flex": 7.209,
+  "wrist_flex": 5.626,
+  "wrist_roll": 5.099,
+  "gripper": 6.6
+ }
+}

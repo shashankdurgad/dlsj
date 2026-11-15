@@ -1,0 +1,16 @@
+{
+ "_source": "sim/twin/align/joint_fit/result.json grasp_depth_candidates.WS9, copied for the grasp gate",
+ "joint_offsets_rad": [
+  -0.0931995109302296,
+  -0.0529840809375952,
+  -0.02180408625806328,
+  -0.07254370037136444,
+  -1.6676767988432921,
+  0.0
+ ],
+ "sag_rad_per_Nm_lift_elbow_wflex": [
+  0.054022284462712324,
+  0.056734301258339184,
+  -0.08820256386664577
+ ]
+}

@@ -1,0 +1,24 @@
+# Keep the camera body behind the optical centre instead of surrounding it.
+eye=np.array(reference['inspect_camera']['position']);forward=np.array(reference['inspect_camera']['world_to_cv'])[2]
+for path,offset in [('/World/ReferenceProps/InspectionBody',.035),('/World/ReferenceProps/InspectionLens',.022)]:
+ p=stage.GetPrimAtPath(path);UsdGeom.Imageable(p).MakeVisible()
+ for op in UsdGeom.Xformable(p).GetOrderedXformOps():
+  if op.GetOpType()==UsdGeom.XformOp.TypeTranslate:op.Set(Gf.Vec3d(*(eye-forward*offset)))
+# Orange bracket stays behind the wrist camera lens.
+hp=stage.GetPrimAtPath(gripper_paths[0]+'/ReferenceCameraHousing')
+UsdGeom.Imageable(hp).MakeVisible()
+m=np.eye(4);m[:3,:3]=(np.array(reference['wrist_camera']['local_to_cv']).T@np.diag([1,-1,-1])).T;m[3,:3]=reference['wrist_camera']['position_local']
+UsdGeom.Xformable(hp).GetOrderedXformOps()[0].Set(Gf.Matrix4d(m.tolist()))
+UsdShade.Shader(stage.GetPrimAtPath('/World/ReferenceMaterials/Wood/Transform')).GetInput('scale').Set(Gf.Vec2f(3,3))
+UsdShade.Shader(stage.GetPrimAtPath('/World/ReferenceMaterials/Wood/Texture')).CreateInput('scale',Sdf.ValueTypeNames.Float4).Set(Gf.Vec4f(1.2,.85,.6,1))
+tex=UsdShade.Shader(stage.GetPrimAtPath('/World/ReferenceMaterials/Wood/Texture'))
+tex.GetInput('wrapS').Set('mirror');tex.GetInput('wrapT').Set('mirror')
+reference['wrist_camera']['method']='Camera mounted on the visible jaw side; position and orientation estimated visually. Not measured calibration.'
+reference['limitations'].append('Wrist orientation and inspection view are visual estimates; gripper mapping has not been calibrated against the real robot.')
+(ROOT/'assets/camera-fit.json').write_text(json.dumps(reference,indent=2))
+await app_utils.update_app_async(steps=40)
+for name,ann in annotators.items():
+ Image.fromarray(np.asarray(ann.get_data())[:,:,:3]).save(OUT/f'reference-{name}.png')
+stage.GetRootLayer().Export(str(OUT/'scene-reference.usda'))
+(OUT/'reference-configuration.json').write_text(json.dumps(reference,indent=2))
+print('REFERENCE_PERSISTED')

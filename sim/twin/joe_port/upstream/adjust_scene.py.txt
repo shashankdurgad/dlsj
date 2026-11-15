@@ -1,0 +1,26 @@
+timeline.play()
+home=np.deg2rad(np.array([-5.98,-92.79,96.8,4.26,-4.35,0],dtype=np.float32))
+home[-1]=1.46/100*limits[indices[-1],1]
+home=np.clip(home,limits[indices,0],limits[indices,1])
+robot.set_dof_positions(home.reshape(1,-1),dof_indices=indices)
+robot.set_dof_position_targets(home.reshape(1,-1),dof_indices=indices)
+await app_utils.update_app_async(steps=90)
+parent=stage.GetPrimAtPath(gripper_paths[0])
+parent_world=UsdGeom.Xformable(parent).ComputeLocalToWorldTransform(Usd.TimeCode.Default())
+eye=parent_world.ExtractTranslation()+Gf.Vec3d(.035,-.025,.045)
+desired_world=Gf.Matrix4d().SetLookAt(eye,Gf.Vec3d(.02,-.23,.015),Gf.Vec3d(0,0,1)).GetInverse()
+wrist_xform=UsdGeom.Xformable(stage.GetPrimAtPath(camera_paths['wrist']))
+wrist_xform.ClearXformOpOrder()
+wrist_xform.AddTransformOp().Set(desired_world*parent_world.GetInverse())
+sun=UsdLux.DistantLight.Define(stage,'/World/Sun')
+sun.CreateIntensityAttr(600)
+if sun.GetPrim().HasAttribute('xformOp:rotateXYZ'):
+    sun.GetPrim().GetAttribute('xformOp:rotateXYZ').Set(Gf.Vec3f(25,-30,20))
+else:
+    UsdGeom.Xformable(sun).AddRotateXYZOp().Set(Gf.Vec3f(25,-30,20))
+await app_utils.update_app_async(steps=90)
+timeline.pause()
+for name,ann in annotators.items():
+    Image.fromarray(np.asarray(ann.get_data())[:,:,:3]).save(OUT/f'initial-{name}.png')
+stage.GetRootLayer().Export(str(OUT/'scene.usda'))
+print('ADJUSTED',robot.get_dof_positions().numpy().tolist(), 'WRIST_EYE',list(eye))

@@ -1,0 +1,2 @@
+for path in [gripper_paths[0],camera_paths['wrist'],camera_paths['top']]:
+ print(path, np.array(UsdGeom.Xformable(stage.GetPrimAtPath(path)).ComputeLocalToWorldTransform(Usd.TimeCode.Default())).tolist())

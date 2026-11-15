@@ -1,0 +1,416 @@
+"""Closed-loop native ACT step7000 evaluation in the video-matched reference scene with measured physics."""
+import json
+import os
+import subprocess
+import time
+import traceback
+from pathlib import Path
+import numpy as np
+from PIL import Image
+from isaacsim.core.experimental.prims import RigidPrim
+
+EVAL_ROOT = ROOT / 'act-step7000'
+OUT = EVAL_ROOT / 'outputs'
+IPC = EVAL_ROOT / 'ipc'
+OUT.mkdir(parents=True, exist_ok=True)
+assert (OUT / 'policy-ready.json').exists(), 'Policy worker not ready'
+
+instruction = 'pick up the brick'  # Task label only: ACT is not language-conditioned
+ffmpeg_bin = str(Path.home() / '.local/bin/ffmpeg')
+
+distractors = {}
+for name, yaw in [('blue_brick', 120), ('yellow_brick', 77), ('cream_brick', 50)]:
+    distractors[name] = (
+        RigidPrim('/World/ReferenceProps/' + name),
+        np.asarray(reference['objects'][name]['position'], np.float32),
+        np.deg2rad(yaw),
+    )
+
+def canonical_state():
+    values = robot.get_dof_positions().numpy()[0, indices].copy()
+    state = np.rad2deg(values - joint_offsets)
+    state[-1] = values[-1] / limits[indices[-1], 1] * 100.0
+    return state.astype(np.float32), values
+
+def action_to_sim_radians(action):
+    target = np.deg2deg(action) if False else (np.deg2rad(action).astype(np.float32) + joint_offsets)
+    target[-1] = np.clip(action[-1] / 100.0, 0.0, 1.0) * limits[indices[-1], 1]
+    return np.clip(target, limits[indices, 0], limits[indices, 1]).astype(np.float32)
+
+def pose_reset(view, position, yaw):
+    view.set_world_poses(
+        positions=[np.asarray(position, np.float32)],
+        orientations=[[np.cos(yaw / 2.0), 0.0, 0.0, np.sin(yaw / 2.0)]],
+    )
+    view.set_velocities(linear_velocities=[[0.0, 0.0, 0.0]], angular_velocities=[[0.0, 0.0, 0.0]])
+
+def open_video_encoder(path, width=640, height=480, crf=18):
+    return subprocess.Popen(
+        [
+            ffmpeg_bin, '-hide_banner', '-loglevel', 'error', '-y',
+            '-f', 'rawvideo', '-pixel_format', 'rgb24',
+            '-video_size', f'{width}x{height}', '-framerate', '30',
+            '-i', '-', '-an', '-c:v', 'libx264', '-threads', '1',
+            '-g', '2', '-pix_fmt', 'yuv420p', '-crf', str(crf), str(path),
+        ],
+        stdin=subprocess.PIPE,
+    )
+
+# Compute recorded Episode 0 home joint configuration in sim radians
+home_deg = np.asarray(reference['initial_joint_state'], np.float32)
+home_q = np.deg2rad(home_deg) + joint_offsets
+home_q[-1] = home_deg[-1] / 100.0 * limits[indices[-1], 1]
+home_q = np.clip(home_q, limits[indices, 0], limits[indices, 1]).astype(np.float32)
+
+# Pre-grasp hover configuration from trial-plan.json
+hover_plan = json.loads((ROOT / 'synthetic/trial-plan.json').read_text())
+hover_q = np.asarray(hover_plan['initial_q'], np.float32)
+
+trials = []
+for name, horizon, limited in [('act-native-10',10,False),('act-limited-10',10,True)]:
+    trials.append({'name':name,'description':name+'; original approximate scene; 300 frames at30Hz',
+        'initial_q':home_q,'target_position':[0.1718973875542686,-0.10636524158167146,0.0076],
+        'target_yaw_deg':58.,'light_scale':1.,'num_chunks':300//horizon,
+        'horizon':horizon,'limited':limited,'record_overview':False})
+
+rep.orchestrator.set_capture_on_play(False)
+req_idx = 0
+all_trial_results = []
+
+try:
+    for t_idx, spec in enumerate(trials):
+        t_name = spec['name']
+        t_dir = OUT / ('trials/' + t_name)
+        t_dir.mkdir(parents=True, exist_ok=True)
+        render_products['overview'].hydra_texture.set_updates_enabled(bool(spec['record_overview']))
+
+        timeline.play()
+        q0 = np.asarray(spec['initial_q'], np.float32)
+        robot.set_dof_positions(q0[None], dof_indices=indices)
+        robot.set_dof_velocities(np.zeros((1, 6)), dof_indices=indices)
+        robot.set_dof_position_targets(q0[None], dof_indices=indices)
+        pose_reset(brick_view, spec['target_position'], np.deg2rad(spec['target_yaw_deg']))
+        for view, pos, yaw in distractors.values():
+            pose_reset(view, pos, yaw)
+        light.GetIntensityAttr().Set(700.0 * spec['light_scale'])
+        UsdLux.DistantLight(stage.GetPrimAtPath('/World/Sun')).GetIntensityAttr().Set(600.0 * spec['light_scale'])
+        SimulationManager.step(steps=30)
+        await rep.orchestrator.step_async(rt_subframes=1, pause_timeline=False, delta_time=0.0, wait_for_render=True)
+
+        timeline.pause()
+        initial_brick = brick_view.get_world_poses()[0].numpy()[0].copy()
+        dist_initial = {k: v[0].get_world_poses()[0].numpy()[0].copy() for k, v in distractors.items()}
+        max_dist_disp = {k: 0.0 for k in distractors}
+
+        cams = ['wrist', 'top', 'inspect'] + (['overview'] if spec['record_overview'] else [])
+        for c in cams:
+            pixels = np.asarray(annotators[c].get_data())[:, :, :3].copy()
+            Image.fromarray(pixels).save(t_dir / f'initial-{c}.png')
+            if t_idx == 0:
+                Image.fromarray(pixels).save(OUT / f'reference-{c}.png')
+
+        encoders = {c: open_video_encoder(t_dir / f'{c}.mp4', 640, 480, 18) for c in cams}
+        comp_enc = open_video_encoder(t_dir / 'three-cameras.mp4', 1920, 480, 18)
+
+        chunks_meta = []
+        observed = []
+        requested = []
+        applied = []
+        raw_q = []
+        brick_positions = []
+        contact_frames = []
+        frame_index = 0
+        previous_target = q0.copy()
+        command_velocity = np.zeros(5)
+        first_step = SimulationManager.get_num_physics_steps()
+        extra_capture_steps = 0
+
+        try:
+            for chunk in range(spec['num_chunks']):
+                before_step = SimulationManager.get_num_physics_steps()
+                await rep.orchestrator.step_async(rt_subframes=1, pause_timeline=False, delta_time=0.0, wait_for_render=True)
+                extra_capture_steps += SimulationManager.get_num_physics_steps() - before_step
+                state_vec, _ = canonical_state()
+                obs_payload = {
+                    'state': state_vec,
+                    'instruction': np.asarray(instruction),
+                    'crop_top': np.asarray(False),
+                    'seed': np.asarray(42 + chunk),
+                }
+                for c in ['wrist', 'top', 'inspect']:
+                    pixels = np.asarray(annotators[c].get_data())[:, :, :3].copy()
+                    assert pixels.shape == (480, 640, 3), (c, pixels.shape)
+                    obs_payload[c] = pixels
+                tmp_obs = IPC / f'obs-{req_idx:03d}.tmp.npz'
+                np.savez(tmp_obs, **obs_payload)
+                os.replace(tmp_obs, IPC / f'obs-{req_idx:03d}.npz')
+
+                act_file = IPC / f'actions-{req_idx:03d}.npz'
+                timeline.pause()
+                deadline = time.monotonic() + 600.0
+                while not act_file.exists():
+                    assert time.monotonic() < deadline, f'Policy worker timed out on req {req_idx}'
+                    await asyncio.sleep(0.03)
+                res_npz = np.load(act_file, allow_pickle=False)
+                actions = res_npz['actions']
+                latency_s = float(res_npz['latency_s'])
+                req_idx += 1
+
+                assert actions.shape == (50, 6) and np.isfinite(actions).all()
+                chunks_meta.append({
+                    'chunk': chunk,
+                    'inference_s': latency_s,
+                    'state': state_vec.tolist(),
+                    'action_min': actions.min(axis=0).tolist(),
+                    'action_max': actions.max(axis=0).tolist(),
+                })
+
+                for step_in_chunk, action in enumerate(actions[:spec['horizon']]):
+                    if step_in_chunk > 0:
+                        before_s = SimulationManager.get_num_physics_steps()
+                        await rep.orchestrator.step_async(rt_subframes=1, pause_timeline=False, delta_time=0.0, wait_for_render=True)
+                        extra_capture_steps += SimulationManager.get_num_physics_steps() - before_s
+
+                    cur_state, cur_q = canonical_state()
+                    frame_imgs = {}
+                    for c in cams:
+                        px = np.asarray(annotators[c].get_data())[:, :, :3].copy()
+                        frame_imgs[c] = px
+                        encoders[c].stdin.write(px.tobytes())
+                    comp = np.concatenate([frame_imgs['top'], frame_imgs['wrist'], frame_imgs['inspect']], axis=1)
+                    comp_enc.stdin.write(comp.tobytes())
+                    if frame_index % 50 == 0 or frame_index == 299:
+                        contact_frames.append(comp)
+
+                    target_rad = action_to_sim_radians(action)
+                    if spec['limited']:
+                        # Experiment settings, not measured hardware limits.
+                        dt = 1.0/30
+                        desired_velocity = (target_rad[:5]-previous_target[:5])/dt
+                        command_velocity += np.clip(desired_velocity-command_velocity,-np.deg2rad(360)*dt,np.deg2rad(360)*dt)
+                        command_velocity = np.clip(command_velocity,-np.deg2rad(90),np.deg2rad(90))
+                        target_rad[:5] = previous_target[:5]+command_velocity*dt
+                        target_rad = np.clip(target_rad, limits[indices,0],limits[indices,1])
+                    previous_target = target_rad.copy()
+                    robot.set_dof_position_targets(target_rad[None], dof_indices=indices)
+                    SimulationManager.step(steps=2)
+
+                    b_pos = brick_view.get_world_poses()[0].numpy()[0].copy()
+                    brick_positions.append(b_pos)
+                    observed.append(cur_state)
+                    requested.append(action.copy())
+                    applied.append(target_rad.copy())
+                    raw_q.append(cur_q)
+                    for k, v in distractors.items():
+                        cur_d = v[0].get_world_poses()[0].numpy()[0]
+                        max_dist_disp[k] = max(max_dist_disp[k], float(np.linalg.norm(cur_d - dist_initial[k])))
+                    frame_index += 1
+                print('TRIAL_CHUNK_DONE', t_name, chunk, f'latency={latency_s:.3f}s', flush=True)
+        finally:
+            for enc in encoders.values():
+                enc.stdin.close()
+                assert enc.wait() == 0
+            comp_enc.stdin.close()
+            assert comp_enc.wait() == 0
+
+        await rep.orchestrator.step_async(rt_subframes=1, pause_timeline=False, delta_time=0.0, wait_for_render=True)
+        for c in cams:
+            px = np.asarray(annotators[c].get_data())[:, :, :3].copy()
+            Image.fromarray(px).save(t_dir / f'final-{c}.png')
+            if t_idx == 0:
+                Image.fromarray(px).save(OUT / f'final-{c}.png')
+
+        if contact_frames:
+            sheet = np.concatenate(contact_frames, axis=0)
+            Image.fromarray(sheet).save(t_dir / 'rollout-contact.jpg', quality=90)
+            if t_idx == 0:
+                Image.fromarray(sheet).save(OUT / 'rollout-contact.jpg', quality=90)
+
+        brick_arr = np.asarray(brick_positions)
+        obs_arr = np.asarray(observed)
+        req_arr = np.asarray(requested)
+        app_arr = np.asarray(applied)
+        raw_arr = np.asarray(raw_q)
+        final_brick = brick_arr[-1].copy()
+        physics_steps = SimulationManager.get_num_physics_steps() - first_step
+
+        # Post-rollout gripper release drop check (excluded from video)
+        final_q = robot.get_dof_positions().numpy()[0, indices].copy()
+        grip_final = float(final_q[-1])
+        held_z = float(final_brick[2])
+        release_q = final_q.copy()
+        release_q[-1] = 1.0
+        robot.set_dof_position_targets(release_q[None], dof_indices=indices)
+        SimulationManager.step(steps=60)
+        released_z = float(brick_view.get_world_poses()[0].numpy()[0, 2])
+        release_drop = float(held_z - released_z)
+
+        lifts = brick_arr[:, 2] - initial_brick[2]
+        max_lift = float(lifts.max())
+        final_lift = float(lifts[-1])
+        hold_min_last_1s = float(lifts[-30:].min())
+        disp_all = np.linalg.norm(brick_arr - initial_brick[None, :], axis=1)
+        max_disp = float(disp_all.max())
+        xy_err_all = np.linalg.norm(brick_arr[:, :2] - np.array([0.20, 0.05]), axis=1)
+        min_xy_err = float(xy_err_all.min())
+        hold_xy_err_last_1s = float(xy_err_all[-30:].max())
+
+        checks = {
+            'lift_over_2cm': bool(max_lift > 0.02),
+            'lift_and_hold_5cm': bool(hold_min_last_1s > 0.05),
+            'inspection_region_4cm': bool(hold_xy_err_last_1s < 0.04),
+            'gripper_contact_stall': bool(0.12 < grip_final < 0.38),
+            'release_drop_3cm': bool(release_drop > 0.03),
+            'table_penetration': bool(float(brick_arr[:, 2].min()) > 0.0046),
+            'distractor_stationary': bool(max(max_dist_disp.values()) < 0.002),
+            'physics_steps': bool(physics_steps == 2 * frame_index),
+            'zero_capture_physics_steps': bool(extra_capture_steps == 0),
+        }
+        pickup_achieved = bool(max_lift > 0.02)
+        task_success = bool(
+            checks['lift_and_hold_5cm']
+            and checks['gripper_contact_stall']
+            and checks['release_drop_3cm']
+        )
+
+        np.savez_compressed(
+            t_dir / 'rollout-arrays.npz',
+            observed=obs_arr,
+            requested=req_arr,
+            applied_radians=app_arr,
+            joint_radians=raw_arr,
+            brick_positions=brick_arr,
+            timestamp=np.arange(frame_index, dtype=np.float64) / 30.0,
+        )
+        if t_idx == 0:
+            np.savez_compressed(
+                OUT / 'rollout-arrays.npz',
+                observed=obs_arr,
+                requested=req_arr,
+                applied_radians=app_arr,
+                joint_radians=raw_arr,
+                brick_positions=brick_arr,
+                timestamp=np.arange(frame_index, dtype=np.float64) / 30.0,
+            )
+
+        warm_latencies = [c['inference_s'] for c in chunks_meta[1:]] or [chunks_meta[0]['inference_s']]
+        trial_summary = {
+            'trial_name': t_name,
+            'description': spec['description'],
+            'status': 'completed',
+            'controller': {'horizon':spec['horizon'],'limited':spec['limited'],'arm_vmax_deg_s':90 if spec['limited'] else None,'arm_amax_deg_s2':360 if spec['limited'] else None},
+            'checkpoint_uri': 'gs://onflow-30k-pi05-artifacts/act/runs/act-cal2-grasp120-20261114/test_checkpoints/step7000',
+            'checkpoint_step': 7000,
+            'checkpoint_epoch': None,
+            'checkpoint_sha256': '5c99e5b34c6e355273ad15db8fdcf931a6078692b7094e428dda7635efe2fd95',
+            'instruction': instruction,
+            'language_conditioned': False,
+            'action_steps': frame_index,
+            'num_chunks': spec['num_chunks'],
+            'control_hz': 30,
+            'simulated_seconds': frame_index / 30.0,
+            'physics_steps': physics_steps,
+            'extra_capture_steps': extra_capture_steps,
+            'warm_chunk_median_s': float(np.median(warm_latencies)),
+            'pickup_achieved': pickup_achieved,
+            'task_success': task_success,
+            'checks': checks,
+            'brick_initial_m': initial_brick.tolist(),
+            'brick_final_m': final_brick.tolist(),
+            'brick_peak_height_m': float(brick_arr[:, 2].max()),
+            'maximum_target_lift_m': max_lift,
+            'final_target_lift_m': final_lift,
+            'minimum_hold_lift_last_1s_m': hold_min_last_1s,
+            'maximum_target_displacement_m': max_disp,
+            'minimum_inspection_xy_error_m': min_xy_err,
+            'inspection_xy_error_last_1s_m': hold_xy_err_last_1s,
+            'release_drop_m': release_drop,
+            'gripper_final_rad': grip_final,
+            'max_distractor_displacement_m': max_dist_disp,
+            'joint_order': JOINTS,
+            'observed_joint_min': obs_arr.min(axis=0).tolist(),
+            'observed_joint_max': obs_arr.max(axis=0).tolist(),
+            'requested_action_min': req_arr.min(axis=0).tolist(),
+            'requested_action_max': req_arr.max(axis=0).tolist(),
+            'joint_offsets_rad': joint_offsets.tolist(),
+            'top_camera_crop': None,
+            'chunks': chunks_meta,
+            'limitations': [
+                'Estimated real-to-sim camera extrinsics, intrinsics, appearance, and object placement (fitted to single wrist-housing landmark).',
+                'Three pitch-joint offsets are regularized visual estimates; axis alignment and gripper 0-100 mapping unverified against hardware.',
+                'Static conference-hall backdrop plane; simulated tabletop lighting and materials approximate real recording.',
+                'Synchronous chunk inference holds physics between 10-step chunks; video playback reflects simulated steps rather than wall-clock inference latency.',
+            ],
+        }
+        (t_dir / 'rollout-result.json').write_text(json.dumps(trial_summary, indent=2))
+        all_trial_results.append(trial_summary)
+        print('TRIAL_SUMMARY', t_name, json.dumps({
+            'pickup_achieved': pickup_achieved,
+            'task_success': task_success,
+            'max_lift_m': round(max_lift, 4),
+            'final_lift_m': round(final_lift, 4),
+            'max_disp_m': round(max_disp, 4),
+            'min_xy_err_m': round(min_xy_err, 4),
+            'release_drop_m': round(release_drop, 4),
+        }), flush=True)
+
+    timeline.pause()
+    (IPC / 'done.flag').write_text('done\n')
+
+    # Save primary nominal rollout summary and videos at top-level OUT as well
+    nominal = all_trial_results[0]
+    (OUT / 'rollout-result.json').write_text(json.dumps(nominal, indent=2))
+    evaluation_summary = {
+        'checkpoint_uri': 'gs://onflow-30k-pi05-artifacts/act/runs/act-cal2-grasp120-20261114/test_checkpoints/step7000',
+        'checkpoint_step': 7000,
+        'checkpoint_epoch': None,
+        'checkpoint_bytes': 206494960,
+        'checkpoint_sha256': '5c99e5b34c6e355273ad15db8fdcf931a6078692b7094e428dda7635efe2fd95',
+        
+        
+        'nominal_task_success': nominal['task_success'],
+        'nominal_pickup_achieved': nominal['pickup_achieved'],
+        'nominal_maximum_target_lift_m': nominal['maximum_target_lift_m'],
+        'nominal_final_target_lift_m': nominal['final_target_lift_m'],
+        'nominal_maximum_target_displacement_m': nominal['maximum_target_displacement_m'],
+        'nominal_minimum_inspection_xy_error_m': nominal['minimum_inspection_xy_error_m'],
+        'nominal_release_drop_m': nominal['release_drop_m'],
+        'warm_chunk_median_inference_s': nominal['warm_chunk_median_s'],
+        'any_trial_pickup_achieved': any(t['pickup_achieved'] for t in all_trial_results),
+        'any_trial_task_success': any(t['task_success'] for t in all_trial_results),
+        'trials': [
+            {
+                'trial_name': t['trial_name'],
+                'description': t['description'],
+                'action_steps': t['action_steps'],
+                'pickup_achieved': t['pickup_achieved'],
+                'task_success': t['task_success'],
+                'maximum_target_lift_m': t['maximum_target_lift_m'],
+                'final_target_lift_m': t['final_target_lift_m'],
+                'minimum_hold_lift_last_1s_m': t['minimum_hold_lift_last_1s_m'],
+                'maximum_target_displacement_m': t['maximum_target_displacement_m'],
+                'minimum_inspection_xy_error_m': t['minimum_inspection_xy_error_m'],
+                'inspection_xy_error_last_1s_m': t['inspection_xy_error_last_1s_m'],
+                'release_drop_m': t['release_drop_m'],
+                'gripper_final_rad': t['gripper_final_rad'],
+                'checks': t['checks'],
+                'brick_initial_m': t['brick_initial_m'],
+                'brick_final_m': t['brick_final_m'],
+                'observed_joint_min': t['observed_joint_min'],
+                'observed_joint_max': t['observed_joint_max'],
+                'requested_action_min': t['requested_action_min'],
+                'requested_action_max': t['requested_action_max'],
+            }
+            for t in all_trial_results
+        ],
+        'calibration_note': 'Estimated camera extrinsics/intrinsics and 3-joint pitch offsets fitted to a single wrist-housing landmark in Episode 0; physics uses measured convex-decomposition gripper jaws (friction 1.0/0.8, 32/8 solver iterations, 200/10 arm PD gains, 50/2 gripper PD gains).',
+    }
+    (OUT / 'evaluation.json').write_text(json.dumps(evaluation_summary, indent=2))
+    print('ALL_EVAL_ROLLOUTS_COMPLETE', json.dumps(evaluation_summary), flush=True)
+except BaseException:
+    timeline.pause()
+    (IPC / 'done.flag').write_text('error\n')
+    (EVAL_ROOT / 'rollout-error.txt').write_text(traceback.format_exc())
+    raise
+finally:
+    render_products['overview'].hydra_texture.set_updates_enabled(True)

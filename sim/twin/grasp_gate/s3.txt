@@ -1,0 +1,10 @@
+r3_mu0.6 --rung 3 --n 60 --place fk --set gripper.finray.material.static_friction=0.6 --set gripper.finray.material.dynamic_friction=0.5
+r3_mu1.3 --rung 3 --n 60 --place fk --set gripper.finray.material.static_friction=1.3 --set gripper.finray.material.dynamic_friction=1.2
+r3_mu1.8 --rung 3 --n 60 --place fk --set gripper.finray.material.static_friction=1.8 --set gripper.finray.material.dynamic_friction=1.6
+r3_kc3e3 --rung 3 --n 60 --place fk --set gripper.finray.material.compliant_contact_stiffness=3000
+r3_kc3e4 --rung 3 --n 60 --place fk --set gripper.finray.material.compliant_contact_stiffness=30000
+r3_kc1e5 --rung 3 --n 60 --place fk --set gripper.finray.material.compliant_contact_stiffness=100000
+r3_eff0.25 --rung 3 --n 60 --place fk --set gripper.finray.effort_nm=0.25
+r3_eff0.8 --rung 3 --n 60 --place fk --set gripper.finray.effort_nm=0.8
+r3_bmu0.3 --rung 3 --n 60 --place fk --set bricks.material.static_friction=0.3 --set bricks.material.dynamic_friction=0.25
+r3_bmu0.7 --rung 3 --n 60 --place fk --set bricks.material.static_friction=0.7 --set bricks.material.dynamic_friction=0.6

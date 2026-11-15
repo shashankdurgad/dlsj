@@ -1,0 +1,50 @@
+"""Generate independently seeded layouts; validation occupies a separate band."""
+import json,argparse
+from pathlib import Path
+import numpy as np
+from kinematics import Kinematics
+ROOT=Path(__file__).parent;k=Kinematics(ROOT/'robot-assets/so101_new_calib.urdf')
+parser=argparse.ArgumentParser();parser.add_argument('--candidates',type=int,default=90);parser.add_argument('--wide',action='store_true');parser.add_argument('--base-plan',type=Path,default=ROOT/'trial-plan.json');parser.add_argument('--output',type=Path,default=ROOT/'plans.json');args=parser.parse_args()
+base=json.loads(args.base_plan.read_text());phases=base['phases']
+segments=[(phase,phases.count(phase)) for phase in dict.fromkeys(phases)]
+DISTRACTORS=[(np.array([.24308880847834788,-.06753600016698766]),np.array([.064,.032]),120.),(np.array([.24098637725754907,-.0007425512540769064]),np.array([.064,.032]),77.),(np.array([.19664395652305044,.004627188633638153]),np.array([.032,.032]),50.)]
+def jaw_clearance_ok(xy,yaw_deg,min_clear=.008):
+ th=np.deg2rad(yaw_deg);c,s=np.cos(th),np.sin(th);R=np.array([[c,-s],[s,c]])
+ gx,gy=np.meshgrid(np.linspace(-.038,.043,17),np.linspace(-.016,.016,9))
+ pts=np.column_stack([gx.ravel(),gy.ravel()])@R.T+xy[:2]
+ for d_pos,d_size,d_yaw in DISTRACTORS:
+  dt=np.deg2rad(d_yaw);dc,ds=np.cos(dt),np.sin(dt);loc=(pts-d_pos)@np.array([[dc,-ds],[ds,dc]]);half=d_size/2.
+  if np.any((np.abs(loc[:,0])<half[0])&(np.abs(loc[:,1])<half[1])):return False
+  if float(np.hypot(np.maximum(np.abs(loc[:,0])-half[0],0.),np.maximum(np.abs(loc[:,1])-half[1],0.)).min())<min_clear:return False
+ return True
+plans=[];counts={'train':0,'validation':0};min_train=int(round(args.candidates*.8));min_val=int(round(args.candidates*.2));candidate=0
+while candidate<args.candidates or (args.wide and (counts['train']<min_train or counts['validation']<min_val)):
+ split='validation' if candidate%5==4 else 'train';rng=np.random.default_rng(20261114+candidate)
+ if args.wide:
+  xyz=np.array([rng.uniform(.15,.205),rng.uniform(-.18,-.16) if split=='validation' else rng.uniform(-.145,-.09),.0076]);yaw=float(rng.uniform(30,85));light_scale=float(rng.uniform(.85,1.15))
+  if any(np.linalg.norm(xyz[:2]-p)<.064 for p,_,_ in DISTRACTORS) or not jaw_clearance_ok(xyz[:2],yaw):candidate+=1;continue
+ else:
+  xyz=np.array([rng.uniform(.183,.191) if split=='validation' else rng.uniform(.162,.178),rng.uniform(-.117,-.097),.0076]);yaw=float(rng.uniform(48,68));light_scale=float(rng.uniform(.85,1.15))
+ try:
+  q=k.ik([*xyz[:2],.08],np.deg2rad(yaw));previous=np.r_[q,.55];actions=[]
+  for name,n in segments:
+   z={'settle':.08,'descend':.011,'close':.011,'lift':.081,'hold':.081,'inspect':.081,'inspect_hold':.081}[name]
+   grip=.55 if name in ['settle','descend'] else 0.
+   if args.wide and name in ['settle','close','hold','inspect_hold']:
+    for j in range(1,n+1):
+     t=j/n;alpha=t*t*(3-2*t);actions.append(np.r_[previous[:5],previous[-1]*(1-alpha)+grip*alpha].tolist())
+   else:
+    p0=k.grasp(previous)[0];goal=np.array([.2,.05,z]) if name in ['inspect','inspect_hold'] else np.r_[xyz[:2],z]
+    # Solve every fifth control frame, then interpolate the smooth joint path.
+    anchors=[(0,previous.copy())]
+    for j in sorted(set(list(range(5,n+1,5))+[n])):
+     t=j/n;alpha=t*t*(3-2*t);p=p0*(1-alpha)+goal*alpha
+     q=k.ik(p,np.deg2rad(yaw),anchors[-1][1][:5]);anchors.append((j,np.r_[q,previous[-1]*(1-alpha)+grip*alpha]))
+    for j in range(1,n+1):
+     for (ia,qa),(ib,qb) in zip(anchors,anchors[1:]):
+      if ia<j<=ib:actions.append((qa+(qb-qa)*(j-ia)/(ib-ia)).tolist());break
+   previous=np.asarray(actions[-1])
+  plans.append({'candidate':candidate,'seed':20261114+candidate,'split':split,'target_position':xyz.tolist(),'target_yaw_deg':yaw,'initial_q':actions[0],'actions':actions,'phases':phases,'light_scale':light_scale,'point_local':[.014,0,-.098]});counts[split]+=1
+ except ValueError as e:print('SKIP',candidate,str(e),flush=True)
+ candidate+=1
+args.output.write_text(json.dumps(plans));print('PLANS',len(plans),{s:sum(p['split']==s for p in plans) for s in ['train','validation']},flush=True)

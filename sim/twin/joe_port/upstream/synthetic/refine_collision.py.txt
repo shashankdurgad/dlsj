@@ -1,0 +1,11 @@
+timeline.stop();await app_utils.update_app_async(steps=3)
+for p in stage.Traverse():
+ if p.IsA(UsdGeom.Mesh) and p.GetName().startswith(('wrist_roll_follower','moving_jaw')):
+  UsdPhysics.MeshCollisionAPI.Apply(p).CreateApproximationAttr('convexDecomposition')
+  print('CONVEX_DECOMPOSITION',str(p.GetPath()))
+SimulationManager.setup_simulation(dt=1/60,device='cpu');timeline.play();await app_utils.update_app_async(steps=60)
+robot=Articulation('/World/SO101');brick_view=RigidPrim('/World/Brick')
+robot.set_dof_gains(stiffnesses=[[200]*5+[50]],dampings=[[10]*5+[2]],dof_indices=indices)
+robot.set_dof_max_efforts([[10]*5+[.5]],dof_indices=indices)
+timeline.pause()
+print('COLLISION_READY')

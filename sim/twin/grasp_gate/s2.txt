@@ -1,0 +1,15 @@
+r3_r0joe --rung 3 --n 60 --place rung0 --rung0_cam joe
+r3_r0fit --rung 3 --n 60 --place rung0 --rung0_cam fit
+r3_r0joe_k3 --rung 3 --n 60 --place rung0 --rung0_cam joe --kind auto3
+r3_r0joe_2x2 --rung 3 --n 60 --place rung0 --rung0_cam joe --kind 2x2
+r3_offC --rung 3 --n 60 --place fk --joint_offsets sim/twin/grasp_gate/offsets/C.json
+r3_lift --rung 3 --n 60 --place fk --joint_offsets sim/twin/grasp_gate/offsets/lift_only.json
+r3_elbow --rung 3 --n 60 --place fk --joint_offsets sim/twin/grasp_gate/offsets/elbow_only.json
+r3_wflex --rung 3 --n 60 --place fk --joint_offsets sim/twin/grasp_gate/offsets/wflex_only.json
+r3_gs-2 --rung 3 --n 60 --place fk --grip_shift -2
+r3_gs-1 --rung 3 --n 60 --place fk --grip_shift -1
+r3_gs1 --rung 3 --n 60 --place fk --grip_shift 1
+r3_gs2 --rung 3 --n 60 --place fk --grip_shift 2
+r1_r0joe --rung 1 --n 60 --place rung0 --rung0_cam joe
+r3_offC_r0fit --rung 3 --n 60 --place rung0 --rung0_cam fit --joint_offsets sim/twin/grasp_gate/offsets/C.json
+r3_lift_r0fit --rung 3 --n 60 --place rung0 --rung0_cam fit --joint_offsets sim/twin/grasp_gate/offsets/lift_only.json

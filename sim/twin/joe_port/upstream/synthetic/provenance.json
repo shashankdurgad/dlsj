@@ -1,0 +1,48 @@
+{
+  "physics_engine": "physx",
+  "physics_dt_s": 0.016666666666666666,
+  "control_hz": 30,
+  "physics_steps_per_frame": 2,
+  "data_source": "privileged scripted expert, not Pi05 model rollouts",
+  "robot_source_commit": "a758567c3978dfeefe282ede0500085a48fe8f78",
+  "robot_urdf_sha256": "3a65d2d35e68a8d2f0c2cc176d19b884506543c93ba72980145b80abe276022c",
+  "plans_sha256": "3e5726a5bf9ded069d75b909c3765970e15137db220f7409e2d5c69769b851c1",
+  "record_batch_sha256": "0104048a8f1eba4348b9e042368710c59aaff6a306e7c74e426ffd709436c269",
+  "reference_calibration_sha256": "8806f80a96f119fc54eedf3c6027dfc99e9f421caa145c53470ecee778dc7364",
+  "joint_offsets_rad": [
+    0.0,
+    -0.2756362557411194,
+    0.05638455972075462,
+    -0.45744994282722473,
+    0.0,
+    0.0
+  ],
+  "gripper_radian_upper_limit": 1.7453300952911377,
+  "gravity_magnitude_usd": "-inf",
+  "gravity_magnitude_is_authored": false,
+  "target_rigid_body_enabled": true,
+  "target_kinematic": false,
+  "max_joint_efforts": [
+    [
+      10.0,
+      10.0,
+      10.0,
+      10.0,
+      10.0,
+      0.5
+    ]
+  ],
+  "finger_collision_approximations": {
+    "wrist_roll_follower_so101_v1": "convexDecomposition",
+    "moving_jaw_so101_v1": "convexDecomposition"
+  },
+  "physics_material": {
+    "static_friction": 1.0,
+    "dynamic_friction": 0.8,
+    "restitution": 0.0,
+    "contact_offset_m": 0.001,
+    "rest_offset_m": 0.0,
+    "position_solver_iterations": 32,
+    "velocity_solver_iterations": 8
+  }
+}

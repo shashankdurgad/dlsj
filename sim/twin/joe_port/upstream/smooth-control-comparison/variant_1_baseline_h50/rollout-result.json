@@ -1,0 +1,166 @@
+{
+  "variant_name": "variant_1_baseline_h50",
+  "label": "Variant 1: Baseline (Execute 50 @ 30Hz)",
+  "description": "Existing controller: predict 50 actions, execute all 50 at 30 Hz without rate limiting (6 chunks x 50 = 300 steps = 10.0s)",
+  "exec_horizon": 50,
+  "mode": "passthrough",
+  "num_chunks": 6,
+  "inference_count": 6,
+  "total_inference_wall_s": 3.328333953002584,
+  "warm_chunk_median_inference_s": 0.35864022000168916,
+  "total_wall_clock_s": 53.80201502399723,
+  "action_steps": 300,
+  "control_hz": 30,
+  "simulated_seconds": 10.0,
+  "physics_steps": 600,
+  "extra_capture_steps": 0,
+  "pickup_achieved": false,
+  "hold_achieved": false,
+  "task_success": false,
+  "checks": {
+    "lift_over_2cm": false,
+    "lift_and_hold_5cm": false,
+    "inspection_region_4cm": false,
+    "gripper_contact_stall": false,
+    "release_drop_3cm": false,
+    "table_penetration": true,
+    "distractor_stationary": false,
+    "physics_steps": true,
+    "zero_capture_physics_steps": true
+  },
+  "brick_initial_m": [
+    0.1718972623348236,
+    -0.10636525601148605,
+    0.0076000140979886055
+  ],
+  "brick_final_m": [
+    0.17189715802669525,
+    -0.10636527836322784,
+    0.007599989417940378
+  ],
+  "brick_peak_height_m": 0.007600014563649893,
+  "maximum_target_lift_m": 4.656612873077393e-10,
+  "final_target_lift_m": -2.468004822731018e-08,
+  "minimum_hold_lift_last_1s_m": -2.468004822731018e-08,
+  "maximum_target_displacement_m": 2.000089835973995e-07,
+  "minimum_inspection_xy_error_m": 0.15887055995933125,
+  "inspection_xy_error_last_1s_m": 0.15887060774286182,
+  "release_drop_m": 0.0,
+  "gripper_final_rad": 0.07250511646270752,
+  "max_arm_tracking_error_rad": 0.21542900800704956,
+  "lowest_fk_grasp_frame": 135,
+  "lowest_fk_grasp_xyz_m": [
+    0.192467522716679,
+    -0.03789109485056475,
+    0.0065997493885486674
+  ],
+  "max_distractor_displacement_m": {
+    "blue_brick": 0.018673203885555267,
+    "yellow_brick": 0.021783435717225075,
+    "cream_brick": 0.0018618139438331127
+  },
+  "calibration_offsets_rad": [
+    0.16861799359321594,
+    -0.08230999857187271,
+    -0.1488959938287735,
+    0.11517900228500366,
+    -0.2734540104866028,
+    0.0
+  ],
+  "calibration_offsets_deg": [
+    9.66109848022461,
+    -4.716015338897705,
+    -8.531111717224121,
+    6.599270343780518,
+    -15.667759895324707,
+    0.0
+  ],
+  "real_demo_replay_gate_passed": true,
+  "controller_params": {
+    "v_max_arm_deg_s": null,
+    "a_max_arm_deg_s2": null,
+    "blend_tau_steps": null,
+    "intra_chunk_filter": null,
+    "gripper_channel": "separate_passthrough"
+  },
+  "chunks": [
+    {
+      "chunk": 0,
+      "seed": 42,
+      "inference_s": 1.5322357850018307,
+      "state": [
+        24.381811141967773,
+        -57.82363510131836,
+        68.0437240600586,
+        67.05258178710938,
+        31.34015655517578,
+        11.572397232055664
+      ]
+    },
+    {
+      "chunk": 1,
+      "seed": 43,
+      "inference_s": 0.363330437001423,
+      "state": [
+        26.053701400756836,
+        -19.27794075012207,
+        56.614051818847656,
+        60.6974983215332,
+        34.98491668701172,
+        28.049537658691406
+      ]
+    },
+    {
+      "chunk": 2,
+      "seed": 44,
+      "inference_s": 0.3641732600008254,
+      "state": [
+        22.853742599487305,
+        -36.735511779785156,
+        66.53199005126953,
+        69.9134292602539,
+        51.587982177734375,
+        28.257417678833008
+      ]
+    },
+    {
+      "chunk": 3,
+      "seed": 45,
+      "inference_s": 0.35863380299997516,
+      "state": [
+        -14.304194450378418,
+        -2.716442584991455,
+        13.149482727050781,
+        61.393409729003906,
+        21.92683982849121,
+        3.309039831161499
+      ]
+    },
+    {
+      "chunk": 4,
+      "seed": 46,
+      "inference_s": 0.35864022000168916,
+      "state": [
+        -22.963552474975586,
+        7.663403511047363,
+        21.338321685791016,
+        58.59416961669922,
+        14.865535736083984,
+        29.931974411010742
+      ]
+    },
+    {
+      "chunk": 5,
+      "seed": 47,
+      "inference_s": 0.3513204479968408,
+      "state": [
+        -30.213134765625,
+        7.830872058868408,
+        26.21993637084961,
+        62.24296569824219,
+        20.042877197265625,
+        28.207212448120117
+      ]
+    }
+  ]
+}
