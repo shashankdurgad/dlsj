@@ -47,7 +47,7 @@ import smolvla_control as S  # noqa: E402
 log = logging.getLogger("loop_control")
 # hold_min/lost_below: the grasp residual squeezes harder (cmd 0) and the fin-ray reads 2.9-3.5 on a brick; an empty
 # closed gripper settles at 1.0-2.1 (traces 14 Nov). Without the residual a brick reads 5.2-5.7, inside the band too.
-LCFG = SimpleNamespace(bring_mode="vla", spin_grasp_check=False, spin_continuous=True, spin_speed=90.0, use_inspect_pose=False, pose_speed=30.0, nudge_speed=15.0, hold_min=2.5, hold_max=11.5, lost_below=2.3, open_above=12.0, pick_timeout=45.0,
+LCFG = SimpleNamespace(bring_mode="vla", spin_grasp_check=False, spin_continuous=True, spin_speed=90.0, use_inspect_pose=False, pose_speed=30.0, nudge_speed=15.0, hold_min=2.5, hold_max=11.5, lost_below=2.3, open_above=12.0, pick_timeout=25.0,
                        bring_timeout=20.0, place_timeout=40.0, max_cycles=12, max_attempts=5,
                        max_misses=5, miss_below=2.4, stuck_closed_s=5.0,
                        workspace=(0, 60, 560, 480), empty_seconds=2.0, perception_hz=4.0, held_min_px=150,
@@ -637,7 +637,7 @@ def make_loop_controller_class(base):
                 g, before = float(self.measured[5]), w.misses
                 why = w.update(time.monotonic(), g)
                 if w.misses > before:
-                    self._event("pick_miss", n=w.misses, pos=round(g, 1), t=round(self._elapsed(), 1))
+                    self._event("pick_miss", n=w.misses, pos=round(g, 1), at_s=round(self._elapsed(), 1))
                     self.L["message"] = f"Missed grasp {w.misses}/{LCFG.max_misses}"
                 if why:
                     self.L["attempts"] += 1
