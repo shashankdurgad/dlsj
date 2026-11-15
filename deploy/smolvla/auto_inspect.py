@@ -217,7 +217,10 @@ class HeldCubeInspector:
 
         self.model = YOLO(str(weights), task="detect")
         self.device, self.min_conf, self.min_margin = device, conf, 0.0
-        self.agg = AggregateConfig(strategy="yolo_topk")
+        # the decision rule re-gates every frame with agg.yolo_min_conf: v2's 0.8 suits a classifier's softmax, but the
+        # detector's confidences on held bricks sit at ~0.5-0.8, so with 0.8 most confident frames counted as unsure and
+        # every brick came out uncertain -> purple (live, 15 Nov). Use the detector's own bar (0.5, Joe's demo setting).
+        self.agg = AggregateConfig(strategy="yolo_topk", yolo_min_conf=conf, yolo_min_margin=0.2)
         self.detector = detector  # the top-camera brick detector the loop's perception uses
         self.model.predict(np.zeros((480, 640, 3), np.uint8), imgsz=640, conf=0.05, device=device.lower(),
                            verbose=False)  # compile once, on the chosen device
