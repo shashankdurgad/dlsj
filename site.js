@@ -57,10 +57,10 @@ for (const id of pills.keys()) {
   if (s) spy.observe(s);
 }
 
-// Looping clips play only while on screen, and never on their own under reduced motion.
-const still = matchMedia("(prefers-reduced-motion: reduce)");
+// Looping clips: muted autoplay, played while at least a quarter is on screen, paused off screen.
+// Under reduced motion they stay paused with controls.
 const clips = document.querySelectorAll("video[data-loop]");
-if (still.matches) {
+if (matchMedia("(prefers-reduced-motion: reduce)").matches) {
   for (const v of clips) {
     v.removeAttribute("autoplay");
     v.pause();
@@ -68,38 +68,27 @@ if (still.matches) {
   }
 } else {
   const visible = new Set();
-  // A browser can refuse play() while the page is still loading; retry once the clip has
-  // data, then on the first interaction. Show controls only if it is still refused.
-  const start = (v) =>
-    v.play().catch(() => {
-      if (v.dataset.retry) return;
-      v.dataset.retry = "1";
-      const again = () => {
-        if (visible.has(v) && v.paused) v.play().catch(() => (v.controls = true));
-      };
-      v.addEventListener("canplay", () => setTimeout(again, 300), { once: true });
-      setTimeout(again, 1500);
-      for (const ev of ["pointerdown", "touchstart", "keydown", "scroll"])
-        addEventListener(ev, again, { once: true, passive: true });
-    });
+  const play = (v) => {
+    v.muted = true;
+    v.play().catch(() => {});
+  };
   const io = new IntersectionObserver(
     (entries) => {
       for (const e of entries) {
-        const v = e.target;
-        if (e.isIntersecting) {
-          visible.add(v);
-          if (v.preload === "none") v.preload = "auto";
-          start(v);
+        if (e.isIntersecting && e.intersectionRatio >= 0.25) {
+          visible.add(e.target);
+          play(e.target);
         } else {
-          visible.delete(v);
-          v.pause();
+          visible.delete(e.target);
+          e.target.pause();
         }
       }
     },
-    { threshold: 0.2 }
+    { threshold: 0.25 }
   );
-  for (const v of clips) {
-    v.addEventListener("playing", () => (v.controls = false));
-    io.observe(v);
-  }
+  for (const v of clips) io.observe(v);
+  // If the browser refused to start a clip during page load, start the visible ones on the first interaction.
+  const retry = () => { for (const v of visible) if (v.paused) play(v); };
+  for (const ev of ["pointerdown", "touchstart", "keydown", "scroll"])
+    addEventListener(ev, retry, { passive: true });
 }
