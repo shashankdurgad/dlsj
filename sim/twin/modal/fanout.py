@@ -429,17 +429,20 @@ def _live_apps() -> list[dict]:
             str(x.get("state"))]
 
 
-def _stop_leftovers(wait_s: float = 120) -> list[str]:
-    """Stop every app of this name Modal still lists as running, wait until none is (belt and braces after app.run)."""
+def _stop_leftovers(wait_s: float = 120, only: str | None = None) -> list[str]:
+    """Stop apps of this name Modal still lists as running (belt and braces after app.run), wait until none is.
+
+    only = an app id: stop just that one (a run cleans up after itself without killing other fan-out runs in
+    flight); None (`fanout.py stop`) stops all of them."""
     stopped = []
     try:
-        for x in _live_apps():
+        for x in [x for x in _live_apps() if only is None or x["app_id"] == only]:
             subprocess.run([sys.executable, "-m", "modal", "app", "stop", "-y", x["app_id"]], timeout=120,
                            capture_output=True)
             stopped.append(f"{x['app_id']} ({x.get('state')}, {x.get('tasks')} tasks)")
         t0 = time.time()
         while stopped and time.time() - t0 < wait_s:
-            live = _live_apps()
+            live = [x for x in _live_apps() if only is None or x["app_id"] == only]
             if not live:
                 break
             time.sleep(5)
@@ -569,11 +572,13 @@ def cmd_run(a) -> None:
         _t("snapshot")
         print(f"[fanout] snapshot {a.box}:{m['repo']} {m['branch']}@{m['head']} (+{m['dirty_files']} dirty files): "
               f"{m['files']} files, {m['bytes'] / 1e6:.1f} MB -> {tar.stat().st_size / 1e6:.1f} MB gz")
+        app_id = None
         with fan_vol.batch_upload(force=True) as up:
             up.put_file(str(tar), f"/runs/{run}/code.tar.gz")
         tar.unlink()
         _t("upload")
         with modal.enable_output(), app.run():
+            app_id = app.app_id
             _t("app started")
             if not a.skip_data:
                 ensure_data(a.box)
@@ -613,7 +618,7 @@ def cmd_run(a) -> None:
     finally:
         stop_ev.set()
         _t("app stopped")
-        left = _stop_leftovers()
+        left = _stop_leftovers(only=app_id) if app_id else []
         if left:
             print(f"[fanout] stopped leftover apps: {left}")
     res = [results.get(j["name"], {"job": j["name"], "rc": "n/a"}) for j in jobs]
@@ -657,8 +662,9 @@ def cmd_run(a) -> None:
 
 def cmd_data(a) -> None:
     with modal.enable_output(), app.run():
+        app_id = app.app_id
         man = ensure_data(a.box, force=a.force)
-    _stop_leftovers()
+    _stop_leftovers(only=app_id)
     print(json.dumps({k: {x: v.get(x) for x in ("files", "bytes", "from", "rev")} for k, v in man.items()}, indent=1))
 
 
