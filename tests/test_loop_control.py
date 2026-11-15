@@ -518,12 +518,9 @@ def test_spin_and_save_records_label(build, tmp_path, monkeypatch):
     c.collect_command("spin")
     assert "label" in c.collect_msg  # refuses without a label
     c.collect_command("label", "cross")
-    c.measured[5] = 1.0
+    assert c.auto_inspector.grasp_empty_pos < -1e6  # the spin ignores the gripper reading by default
     c.L["grasp"] = {"state": "empty", "pos": 1.0}
-    c.collect_command("spin")
-    assert "No brick" in c.collect_msg
-    c.L["grasp"] = {"state": "holding", "pos": 5.6}
-    c.collect_command("spin")
+    c.collect_command("spin")  # no gripper refusal any more
     assert insp.done.wait(2.0)
     for _ in range(200):
         if c.phase != "collecting":
