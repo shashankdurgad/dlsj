@@ -266,17 +266,19 @@ class TwinEnv:
                       meas_noise=cfg.meas_noise, episode_s=cfg.episode_s, instructions=dict(cfg.instructions),
                       target_size=cfg.target_size, **cfg.residual_kw)
         self.residual = ResidualEnv(rcfg, None, self.sim, self.scene, layout, cfg.device)
-        self.play = None
-        if cfg.play:
-            from sim.twin.dynamics.play import PlayCfg, install
-
-            self.play = install(self.residual, PlayCfg())
         # the twin's measured cameras (the residual env loaded joe_cal2's inspect camera for its in-view check)
         self.residual.profile = self.profile
         # gripper unit mapping of the twin profile (the physics layer may re-solve the bias for its finger colliders)
         self.residual.g_scale, self.residual.g_bias = float(self.profile.grip_scale), float(self.profile.grip_bias)
         ins = self.profile.inspect
         self.residual.inspect_cam = _cam_from_rows(np.array(ins.rows), device=cfg.device, f_px=ins.f_px)
+        # joint offsets of the twin profile (fit W): the residual env loaded joe_cal2's for to_sim / to_ours / measured
+        self.residual.off = torch.tensor(self.profile.joint_offsets, dtype=torch.float32, device=cfg.device)
+        self.play = None
+        if cfg.play:
+            from sim.twin.dynamics.play import PlayCfg, install
+
+            self.play = install(self.residual, PlayCfg())
 
         self.bricks = None
         if cfg.bricks == "data" and not cfg.target_size:

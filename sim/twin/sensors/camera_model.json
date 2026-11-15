@@ -1,0 +1,207 @@
+{
+ "wrist": {
+  "exposure_frames": 0.9,
+  "ae": {
+   "strength": 0.4,
+   "tau": 9.0,
+   "clip": [
+    0.6,
+    1.6
+   ],
+   "awb_strength": 0.0,
+   "awb_tau": 10.0,
+   "m_ref": 0.25989,
+   "chroma_ref": [
+    1.1856000423431396,
+    0.9243999719619751,
+    0.8802000284194946
+   ]
+  },
+  "codec": {
+   "mode": "x264",
+   "crf": 30,
+   "emulate_q": 72
+  },
+  "dr": {
+   "exposure": 0.1,
+   "wb": 0.04,
+   "noise": 0.3,
+   "blur": 0.35,
+   "sharpen": 0.3,
+   "crf": [
+    -2,
+    3
+   ]
+  },
+  "noise": {
+   "mid": 4.5,
+   "floor": 0.2,
+   "chroma": 0.6,
+   "corr": 0.5
+  },
+  "lens": {
+   "f": 341.849,
+   "K_real": [
+    343.069,
+    340.63,
+    339.261,
+    236.01
+   ],
+   "dist": [
+    0.05431,
+    -0.06627,
+    -0.00034,
+    -0.00023,
+    0.00197
+   ]
+  },
+  "vignette": [
+   -0.5595,
+   0.0299
+  ],
+  "blur_sigma": 1.0,
+  "sharpen_amount": 0.0,
+  "sharpen_radius": 1.0,
+  "exposure_gain": 0.9433,
+  "tone": {
+   "black": 0.0,
+   "gamma": 0.9,
+   "saturation": 1.4,
+   "err": 1.1281
+  }
+ },
+ "_note": "camera pipeline parameters per camera (sensors/pipeline.py), fitted by sensors/fit.py on the visual-fit evaluation set; colour matrices live in visuals/camera_color.json",
+ "inspect": {
+  "exposure_frames": 0.0,
+  "ae": {
+   "strength": 0.0,
+   "tau": 6.0,
+   "awb_strength": 0.0,
+   "awb_tau": 10.0,
+   "m_ref": 0.23674,
+   "chroma_ref": [
+    1.2438000440597534,
+    0.9925000071525574,
+    0.7930999994277954
+   ]
+  },
+  "codec": {
+   "mode": "x264",
+   "crf": 30,
+   "emulate_q": 72
+  },
+  "dr": {
+   "exposure": 0.08,
+   "wb": 0.03,
+   "noise": 0.3,
+   "blur": 0.2,
+   "sharpen": 0.25,
+   "crf": [
+    -2,
+    3
+   ]
+  },
+  "noise": {
+   "mid": 1.5,
+   "floor": 0.2,
+   "chroma": 0.6,
+   "corr": 0.5
+  },
+  "lens": {
+   "f": 604.713,
+   "K_real": [
+    605.067,
+    604.359,
+    309.622,
+    252.017
+   ],
+   "dist": [
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ]
+  },
+  "vignette": [
+   0.0,
+   0.0
+  ],
+  "blur_sigma": 0.3,
+  "sharpen_amount": 2.0,
+  "sharpen_radius": 1.0,
+  "exposure_gain": 0.7248,
+  "tone": {
+   "black": 0.08,
+   "gamma": 0.8,
+   "saturation": 1.6,
+   "err": 0.7627
+  }
+ },
+ "top": {
+  "exposure_frames": 0.0,
+  "ae": {
+   "strength": 0.0,
+   "tau": 6.0,
+   "awb_strength": 0.0,
+   "awb_tau": 10.0,
+   "m_ref": 0.22781,
+   "chroma_ref": [
+    0.9429000020027161,
+    1.0325000286102295,
+    1.0456000566482544
+   ]
+  },
+  "codec": {
+   "mode": "x264",
+   "crf": 30,
+   "emulate_q": 72
+  },
+  "dr": {
+   "exposure": 0.05,
+   "wb": 0.02,
+   "noise": 0.3,
+   "blur": 0.2,
+   "sharpen": 0.25,
+   "crf": [
+    -2,
+    3
+   ]
+  },
+  "noise": {
+   "mid": 1.5,
+   "floor": 0.2,
+   "chroma": 0.6,
+   "corr": 0.5
+  },
+  "lens": {
+   "f": 604.259,
+   "K_real": [
+    604.743,
+    603.774,
+    304.166,
+    239.031
+   ],
+   "dist": [
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ]
+  },
+  "vignette": [
+   0.0,
+   0.0
+  ],
+  "blur_sigma": 0.0,
+  "sharpen_amount": 1.0,
+  "sharpen_radius": 1.0,
+  "tone": {
+   "black": 0.12,
+   "gamma": 0.9,
+   "saturation": 1.3,
+   "note": "saturation set by hand from 1.0: held-out top plate chroma 36.6 -> ~46 (real 43.0), brick 23.6 -> ~29.5 (real 32.8), region dE 6.69 -> ~6.4"
+  }
+ }
+}

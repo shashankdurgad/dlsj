@@ -3,7 +3,7 @@
     from sim.twin.env.randomize import TwinRandomizer, postprocess
     dr = TwinRandomizer({"clutter": {"enabled": False}})     # partial overrides of DEFAULTS (deep-merged)
     draw = dr(env, rng)          # on reset, before rendering: env.sim / scene / stage / visuals / profile (+ env.sync)
-    img = postprocess(img, "wrist", draw)       # per rendered frame, AFTER twin_scene.color_correct (image-space DR)
+    img = postprocess(img, "wrist", draw)       # per rendered frame, AFTER twin_scene.color_correct (keeps image DR on)
     dr.restore(env)              # back to the nominal look (e.g. an evaluation reset after DR episodes)
 
     python sim/twin/env/randomize.py --build-textures          # photo-derived texture variants (no Isaac; cv2)
@@ -21,26 +21,28 @@ of 48 cal2 episodes; `test_randomize.py --real-stats`):
    orange mount plate / board meshes move with it (else a camera pushed backwards would look through the plate).
    Focal: one draw per camera per call, shared by all envs (Isaac Lab: per-env intrinsics are not supported by the
    tiled renderer, see Camera.set_intrinsic_matrices). sensor.data.intrinsic_matrices is NOT updated (USD only).
-2. lights: overall exposure 0.88-1.06 (real top table luma p5-p95 = -6 % / +4 % of the median; the nominal sim table
-   renders ~4 % brighter; image-space gain adds a little), key/dome balance 0.7-1.35, colour temperature dome 5800-7200 K / key 5500-7500 K (normalised to 6500 K
-   and constant luminance; real top table R/G spans +-4.5 %, B/G +-9 %), key direction tilted <= 20 deg from nominal
-   with a free azimuth, key softness 8-25 deg; optional dome texture from the station panorama (p 0.25).
+2. lights (owned by sim/twin/lighting; ranges and their reasons in lighting/spotlights.py, DEFAULTS["light"] =
+   spotlights.LIGHT_DR): ONE knob cfg["light"]["scale"] / TwinRandomizer.set_light_scale(s), 0 = the nominal fitted
+   rig, 1 = full range: global exposure, per-light gain / colour temperature / green-magenta tint, key and ceiling
+   tube direction tilt, side lamp position, one ceiling tube dimmed (light-off event), optional panorama dome, and
+   0-3 random spotlights per env (cone, softness, source size, strength subtle .. 1.5 x the rig, colour temperature,
+   tint, sometimes a saturated stage-light hue).
 3. materials / textures: brick colours = the env's own palette class (twin_scene.BRICK_RGB, measured) with hue +-5 deg,
    saturation / value x0.85-1.15; distractors re-drawn from the palette (excluding the target's colour class;
    the target's class is never changed, so the instruction stays valid); plate colours hue +-4 deg, S x0.9-1.1,
-   V x0.88-1.12, roughness 0.12-0.35; table texture variant (camera-projected original / phone-photo wood outside
-   the camera-seen area / phone-photo wood everywhere) + brightness x0.92-1.06, per-channel tint +-3 %, texture shift
-   +-2 cm, roughness 0.55-0.85; robot body value x0.7-1.5 (near black), roughness 0.35-0.75; jaw hue +-4 deg;
+   V x0.88-1.12, roughness 0.15-0.35; table texture = the rebuilt wood only (visuals/wood_texture.py; the
+   old blotchy photo variants are not drawn) + brightness x0.92-1.06, per-channel tint +-3 %, texture shift
+   +-2 cm, roughness 0.65-0.9; robot body value x0.7-1.5 (near black), roughness 0.35-0.75; jaw hue +-4 deg;
    inspect backdrop variant (median of the real inspect frames / 3 crops of the station panorama) and gain 0.8-1.2.
 4. clutter (visual only, no colliders): a dark cable (p 0.5, 20-45 cm, curved) and a hand-sized dark blob (p 0.3)
    on the table inside the top camera's view, kept clear of plates, bricks and the robot base.
-5. image (postprocess): per camera gain / contrast / white balance / gaussian blur / wrist motion blur / gaussian
-   noise / JPEG re-encode; the wrist camera is blurred most because the real wrist frames are mostly soft (variance
-   of the Laplacian median 15.5, p5 6.4, vs 122 top and 285 inspect). The twin's top / inspect renders are already
-   much softer than the real frames (texture resolution), so they get little blur. The inspect gain is centred
-   above 1 (0.97-1.2) because the nominal twin's inspect image is ~15 % darker than the real one (sim luma median
-   88 vs real 103); revisit if the core look is recalibrated. Known nominal bias not covered: inspect R/G sim 1.19
-   vs real 1.05 (twin_scene.color_correct('inspect')).
+5. image: the camera pipeline (sim/twin/sensors/pipeline.py: lens, colour, AE, vignetting, blur / motion blur,
+   sensor noise, ISP sharpening, the dataset's H.264 crf 30 g 2 round-trip), applied by twin_scene.color_correct, is
+   widened per episode by `pipeline.draw_dr(cam, rng, image.scale)`: exposure, white balance, noise gain, extra
+   blur, sharpening, crf offset, all small (half-ranges in sensors/camera_model.json "dr", e.g. top exposure
+   +-5 %, WB +-2 %, noise x0.74-1.35, blur +0-0.2 px, crf -2..+3 at scale 1). The draw is registered with the
+   pipeline so the effects land at the physically right stage (before the codec); `postprocess` only keeps it
+   active per frame (and runs the whole pipeline itself for frames that skipped color_correct).
 """
 from __future__ import annotations
 
@@ -48,12 +50,17 @@ import colorsys
 import copy
 import json
 import math
+import sys
 import time
 from pathlib import Path
 
 import numpy as np
 
 REPO = Path(__file__).resolve().parents[3]
+if str(REPO) not in sys.path:  # also when run as a script (--build-textures)
+    sys.path.insert(0, str(REPO))
+from sim.twin.lighting.spotlights import LIGHT_DR  # noqa: E402
+
 VIS = REPO / "sim/twin/visuals"
 PHOTOS = REPO / "sim/twin/data/photos"
 TEX_OUT = REPO / "sim/twin/out/dr/textures"  # git-ignored (derived from git-ignored photos)
@@ -67,16 +74,14 @@ DEFAULTS = {
     "camera": {"enabled": True, "pose": True, "focal": True, "cams": ["top", "inspect", "wrist"],
                "half_range": None,  # {cam: (pos m, rot deg, focal frac)}; None = sim.twin.calib.profile.DR
                "scale": 1.0},  # multiplies every half-range
-    "light": {"enabled": True, "exposure": (0.88, 1.06), "key_gain": (0.7, 1.35), "dome_kelvin": (5800.0, 7200.0),
-              "key_kelvin": (5500.0, 7500.0), "key_tilt_deg": 20.0, "key_azimuth_deg": 180.0,
-              "key_angle_deg": (8.0, 25.0), "p_dome_texture": 0.25},
+    "light": copy.deepcopy(LIGHT_DR),  # sim/twin/lighting/spotlights.py (the light section owner)
     "material": {"enabled": True,
                  "brick_hue_deg": 5.0, "brick_sat": (0.85, 1.15), "brick_val": (0.85, 1.15),
-                 "brick_roughness": (0.2, 0.45), "recolor_distractors": True, "recolor_target": False,
+                 "brick_roughness": (0.3, 0.5), "recolor_distractors": True, "recolor_target": False,
                  "plate_hue_deg": 4.0, "plate_sat": (0.9, 1.1), "plate_val": (0.88, 1.12),
-                 "plate_roughness": (0.12, 0.35),
-                 "table_variants": {"original": 0.4, "photo_outside": 0.4, "photo_full": 0.2},
-                 "table_gain": (0.92, 1.06), "table_tint": 0.03, "table_shift_m": 0.02, "table_roughness": (0.55, 0.85),
+                 "plate_roughness": (0.15, 0.35),
+                 "table_variants": {"original": 1.0},  # rebuilt wood only (visuals/wood_texture.py)
+                 "table_gain": (0.92, 1.06), "table_tint": 0.03, "table_shift_m": 0.02, "table_roughness": (0.65, 0.9),
                  "robot_body_val": (0.7, 1.5), "robot_roughness": (0.35, 0.75), "jaw_hue_deg": 4.0,
                  "jaw_val": (0.9, 1.1),
                  "backdrop_variants": {"original": 0.4, "pano0": 0.2, "pano1": 0.2, "pano2": 0.2},
@@ -84,16 +89,9 @@ DEFAULTS = {
     "clutter": {"enabled": True, "p_cable": 0.5, "p_blob": 0.3, "cable_len": (0.2, 0.45), "cable_radius": 0.003,
                 "cable_segments": 12, "blob_size": ((0.045, 0.03, 0.015), (0.065, 0.045, 0.025)),
                 "clearance": {"bowl": 0.115, "brick": 0.045, "robot": 0.16}},
-    "image": {"enabled": True,
-              "top": {"gain": (0.96, 1.04), "contrast": (0.95, 1.05), "wb": 0.03, "p_blur": 0.1,
-                      "blur_sigma": (0.3, 0.6), "p_motion": 0.0, "motion_len": (3, 7), "noise": (0.0, 3.0),
-                      "p_jpeg": 0.5, "jpeg_q": (40, 90)},
-              "wrist": {"gain": (0.92, 1.15), "contrast": (0.9, 1.1), "wb": 0.07, "p_blur": 0.5,
-                        "blur_sigma": (0.5, 1.6), "p_motion": 0.3, "motion_len": (3, 13), "noise": (0.0, 4.0),
-                        "p_jpeg": 0.5, "jpeg_q": (35, 85)},
-              "inspect": {"gain": (0.97, 1.2), "contrast": (0.93, 1.07), "wb": 0.05, "p_blur": 0.15,
-                          "blur_sigma": (0.3, 0.7), "p_motion": 0.0, "motion_len": (3, 7), "noise": (0.0, 3.0),
-                          "p_jpeg": 0.5, "jpeg_q": (40, 90)}},
+    "image": {"enabled": True, "scale": 1.0,  # x the sensor DR half-ranges (RL shift ramp)
+              "cams": ["top", "wrist", "inspect"],
+              "half_range": None},  # {cam: {exposure, wb, noise, blur, sharpen, crf}}; None = camera_model.json
 }
 
 
@@ -264,11 +262,10 @@ class TwinRandomizer:
 
     def restore(self, env=None):
         """Undo every change (nominal attributes, xforms, bindings, wrist offset; clutter hidden)."""
+        import omni.usd
         from pxr import Gf, Sdf, UsdGeom  # noqa: F401
 
         from sim.twin.visuals.usd_sync import set_local
-
-        import omni.usd
 
         stage = getattr(env, "stage", None) or omni.usd.get_context().get_stage()
         for (path, name), v in self._nom_attr.items():
@@ -361,7 +358,8 @@ class TwinRandomizer:
 
             h, w = sensor.image_shape
             f = intr["focal_length"] / intr["horizontal_aperture"] * w * fscale
-            K = torch.tensor([[f, 0, w / 2], [0, f, h / 2], [0, 0, 1]], dtype=torch.float32, device=getattr(sensor, "_device", None) or "cuda:0")
+            dev = getattr(sensor, "_device", None) or "cuda:0"
+            K = torch.tensor([[f, 0, w / 2], [0, f, h / 2], [0, 0, 1]], dtype=torch.float32, device=dev)
             sensor.set_intrinsic_matrices(K.expand(sensor.num_instances, 3, 3).contiguous(),
                                           focal_length=float(intr["focal_length"] * fscale))
             self._focal_touched[sensor.cfg.prim_path] = (sensor, intr)
@@ -389,54 +387,83 @@ class TwinRandomizer:
         for name in ("CamMountPlate", "CamBoard"):
             self._set_xf(stage, f"{g}/{name}", delta)
 
-    # ---------------------------------------------------------------- 2. lights
+    # ---------------------------------------------------------------- 2. lights (sim/twin/lighting/spotlights.py)
+    def set_light_scale(self, s: float):
+        """The single lighting-DR knob (cfg['light']['scale']): 0 = the nominal fitted rig, 1 = full ranges incl. up
+        to spots_max random spotlights and ceiling-tube dimming. Takes effect at the next draw (reset)."""
+        self.cfg["light"]["scale"] = float(np.clip(s, 0.0, 1.0))
+
     def _lights(self, env, stage, rng) -> dict:
+        """Nominal-rig jitter, a dimmed ceiling tube and random spotlights (lighting/spotlights.py draw_lights), on
+        the rig's prims (dome /World/Light, key /World/Sun, tubes /World/TwinCeil<i>, side lamps
+        /World/envs/env_<e>/TwinSide<i>) and per-env spot prims /World/envs/env_<e>/TwinDRLights/Spot<j>."""
         from pxr import Gf, Sdf
 
+        from sim.twin.lighting import rig, spotlights
+        from sim.twin.visuals.twin_scene import TwinLook
+
         c = self.cfg["light"]
+        look = getattr(env, "look", None) or TwinLook()
+        nominal = rig.nominal_lights(look)
+        envs = list(range(env.scene.num_envs))
+        d = spotlights.draw_lights(c, rng, nominal, len(envs))
         dome = getattr(getattr(env.scene.cfg, "dome", None), "prim_path", "/World/Light")
-        key = getattr(getattr(env.scene.cfg, "sun", None), "prim_path", "/World/Sun")
-        exp = rng.uniform(*c["exposure"])
-        kg = rng.uniform(*c["key_gain"])
-        dk, kk = rng.uniform(*c["dome_kelvin"]), rng.uniform(*c["key_kelvin"])
-        out = {"exposure": _r(exp), "key_gain": _r(kg), "dome_kelvin": round(dk), "key_kelvin": round(kk)}
-        tex = self._tex()
-        use_tex = "dome" in tex and rng.uniform() < c["p_dome_texture"]
+        tex = self._tex() if d["dome_texture"] else {}
         dome_gain = 1.0
-        if use_tex:
+        if d["dome_texture"] and "dome" in tex:
             dome_gain = tex["dome"]["gain"]
             self._set(stage, dome, "inputs:texture:file", Sdf.AssetPath(tex["dome"]["file"]), Sdf.ValueTypeNames.Asset)
             self._set(stage, dome, "inputs:texture:format", "latlong", Sdf.ValueTypeNames.Token)
-            az = rng.uniform(0, 360)
             nom = self._nom_xf_of(stage, dome)
+            az = d["dome_texture"]["azimuth_deg"]
             self._set_xf(stage, dome, nom * Gf.Matrix4d().SetRotate(Gf.Rotation(Gf.Vec3d(0, 0, 1), az)))
-            out["dome_texture"] = {"azimuth_deg": round(az, 1)}
         elif (dome, "inputs:texture:file") in self._nom_attr:  # back to the untextured dome
             self._restore_attr(stage, dome, "inputs:texture:file")
             if dome in self._nom_xf:
                 self._set_xf(stage, dome, self._nom_xf[dome])
-        for path, gain, kel in ((dome, exp * dome_gain, dk), (key, exp * kg, kk)):
-            i0 = self._get_nom(stage, path, "inputs:intensity")
-            col0 = self._get_nom(stage, path, "inputs:color")
-            if i0 is not None:
+        for L, rec in zip(nominal, d["lights"], strict=True):
+            gain = d["exposure"] * rec["gain"] * (dome_gain if L["kind"] == "dome" else 1.0)
+            paths = [L["path"]] if "path" in L else [f"/World/envs/env_{e}/TwinSide{L['index']}" for e in envs]
+            for path in paths:
+                i0 = self._get_nom(stage, path, "inputs:intensity")
+                if i0 is None:
+                    continue
                 self._set(stage, path, "inputs:intensity", float(i0 * gain))
-            col0 = np.asarray(col0 if col0 is not None else (1.0, 1.0, 1.0), float)
-            self._set(stage, path, "inputs:color", Gf.Vec3f(*map(float, col0 * kelvin_gain(kel))),
-                      Sdf.ValueTypeNames.Color3f)
-        # key direction: nominal, tilted about a random horizontal axis, then turned about world z
-        tilt = rng.uniform(0, c["key_tilt_deg"])
-        tax = rng.uniform(0, 2 * math.pi)
-        az = rng.uniform(-c["key_azimuth_deg"], c["key_azimuth_deg"])
-        R = Gf.Matrix4d().SetRotate(Gf.Rotation(Gf.Vec3d(math.cos(tax), math.sin(tax), 0), tilt)) * \
-            Gf.Matrix4d().SetRotate(Gf.Rotation(Gf.Vec3d(0, 0, 1), az))
-        nom = self._nom_xf_of(stage, key)
+                col0 = self._get_nom(stage, path, "inputs:color")
+                col0 = np.asarray(col0 if col0 is not None else (1.0, 1.0, 1.0), float)
+                self._set(stage, path, "inputs:color", Gf.Vec3f(*map(float, col0 * rec["rgb"])),
+                          Sdf.ValueTypeNames.Color3f)
+                if "dir" in rec or "pos" in rec:
+                    self._set_xf(stage, path, self._light_xf(stage, path, L, rec))
+        e_nom = rig.table_irradiance(look) * look.scale()
+        for e, spots in zip(envs, d["spots"], strict=True):
+            spotlights.apply_spots(stage, lambda p, n, v: self._set(stage, p, n, v),
+                                   lambda p, pos, q: self._set_xf(stage, p, _pose_mat(pos, q)),
+                                   e, spots, e_nom, int(c["spots_max"]))
+        return d
+
+    def _light_xf(self, stage, path: str, L: dict, rec: dict):
+        """Local transform of a jittered light: key / tubes re-aimed along rec['dir'] (rect tubes keep their distance
+        from the workspace centre), side lamps moved to rec['pos']."""
+        from pxr import Gf
+
+        from sim.twin.lighting import rig
+
+        nom = self._nom_xf_of(stage, path)
+        if L["kind"] == "side":
+            return Gf.Matrix4d(nom).SetTranslateOnly(Gf.Vec3d(*map(float, rec["pos"])))
+        if L["kind"] == "ceiling":
+            return _pose_mat(*rig.ceiling_pose(dict(L["cfg"], dir=rec["dir"])))
+        # key: rotate the nominal frame so that its +z (towards the light) follows the drawn direction
+        z0 = np.asarray(L["dir"], float)
+        z1 = np.asarray(rec["dir"], float)
+        ax = np.cross(z0, z1)
+        ang = float(np.degrees(np.arctan2(np.linalg.norm(ax), z0 @ z1)))
+        if np.linalg.norm(ax) < 1e-9:
+            return nom
+        R = Gf.Matrix4d().SetRotate(Gf.Rotation(Gf.Vec3d(*map(float, ax / np.linalg.norm(ax))), ang))
         t = nom.ExtractTranslation()
-        rot = Gf.Matrix4d(nom).SetTranslateOnly(Gf.Vec3d(0, 0, 0))
-        self._set_xf(stage, key, rot * R * Gf.Matrix4d().SetTranslate(t))
-        ang = rng.uniform(*c["key_angle_deg"])
-        self._set(stage, key, "inputs:angle", float(ang))
-        out.update(key_tilt_deg=_r(tilt, 2), key_azimuth_deg=_r(az, 2), key_angle_deg=_r(ang, 2))
-        return out
+        return Gf.Matrix4d(nom).SetTranslateOnly(Gf.Vec3d(0, 0, 0)) * R * Gf.Matrix4d().SetTranslate(t)
 
     def _nom_xf_of(self, stage, path):
         from pxr import Usd, UsdGeom
@@ -453,7 +480,7 @@ class TwinRandomizer:
 
     # ---------------------------------------------------------------- 3. materials / textures
     def _materials(self, env, stage, envs, rng) -> dict:
-        from pxr import Gf, Sdf, UsdGeom, UsdShade, Vt
+        from pxr import Gf, UsdShade, Vt
 
         from sim.twin.visuals.twin_scene import BRICK_RGB
 
@@ -491,7 +518,7 @@ class TwinRandomizer:
                 rgb = jitter_srgb(palette.get(k, (200, 200, 200)), rng, c["brick_hue_deg"], c["brick_sat"],
                                   c["brick_val"])
                 path = f"{DR_LOOKS}/env_{e}/Brick_{n}"
-                self._material(stage, path, rgb, rng.uniform(*c["brick_roughness"]), clearcoat=0.3)
+                self._material(stage, path, rgb, rng.uniform(*c["brick_roughness"]), clearcoat=0.1)
                 self._bind(stage, mp, path)
                 eb[n] = k
             out["bricks"].append(eb)
@@ -504,7 +531,7 @@ class TwinRandomizer:
                 rgb0 = lin_to_srgb(np.asarray(col if col is not None else (0.5, 0.5, 0.5), float)) * 255.0
                 rgb = jitter_srgb(rgb0, rng, c["plate_hue_deg"], c["plate_sat"], c["plate_val"])
                 path = f"{DR_LOOKS}/env_{e}/Plate_{name}"
-                self._material(stage, path, rgb, rng.uniform(*c["plate_roughness"]), clearcoat=0.4)
+                self._material(stage, path, rgb, rng.uniform(*c["plate_roughness"]), clearcoat=0.35)
                 self._bind(stage, mp, path)
                 ep[name] = _r(rgb, 1)
             out["plates"].append(ep)
@@ -730,21 +757,14 @@ class TwinRandomizer:
 
     # ---------------------------------------------------------------- 5. image-space parameters (per call)
     def _image(self, rng) -> dict:
-        out = {}
-        for cam in CAMS:
-            p = self.cfg["image"].get(cam)
-            if not p:
-                continue
-            d = {"gain": rng.uniform(*p["gain"]), "contrast": rng.uniform(*p["contrast"]),
-                 "wb": (1.0 + rng.uniform(-p["wb"], p["wb"], 3)).tolist(),
-                 "blur_sigma": rng.uniform(*p["blur_sigma"]) if rng.uniform() < p["p_blur"] else 0.0,
-                 "motion_len": int(rng.integers(p["motion_len"][0], p["motion_len"][1] + 1))
-                 if rng.uniform() < p["p_motion"] else 0,
-                 "motion_deg": rng.uniform(0, 180), "noise": rng.uniform(*p["noise"]),
-                 "jpeg_q": int(rng.integers(*p["jpeg_q"])) if rng.uniform() < p["p_jpeg"] else 0,
-                 "seed": int(rng.integers(2 ** 31))}
-            d["wb"] = [v / float(np.mean(d["wb"])) for v in d["wb"]]  # white balance only, no brightness
-            out[cam] = _r(d)
+        """Per-episode camera-pipeline DR (sensors.pipeline.draw_dr), registered with the pipeline."""
+        from sim.twin.sensors import pipeline
+
+        c = self.cfg["image"]
+        hr = c.get("half_range") or {}
+        out = {cam: _r(pipeline.draw_dr(cam, rng, float(c.get("scale", 1.0)), half_range=hr.get(cam)))
+               for cam in c.get("cams", CAMS)}
+        pipeline.set_dr(out)
         return out
 
 
@@ -753,6 +773,15 @@ def _usd_material(stage, path):
     from pxr import UsdShade
 
     return UsdShade.Material(stage.GetPrimAtPath(path))
+
+
+def _pose_mat(pos, quat_xyzw):
+    """Gf.Matrix4d (row-vector convention) from a position and an xyzw quaternion."""
+    from pxr import Gf
+
+    x, y, z, w = (float(v) for v in quat_xyzw)
+    m = Gf.Matrix4d().SetRotate(Gf.Quatd(w, x, y, z))
+    return m.SetTranslateOnly(Gf.Vec3d(*map(float, pos)))
 
 
 def _set_xf_plain(prim, m):
@@ -781,61 +810,20 @@ def _find_sync(env):
 
 
 def postprocess(img, cam: str, draw: dict | None, rng=None):
-    """Image-space DR for one rendered frame of camera `cam` ((H, W, 3|4) or (N, H, W, 3|4) uint8, numpy or torch),
-    with the parameters drawn on reset (draw['image'][cam]). Apply after twin_scene.color_correct. Returns the same
-    type (numpy uint8 / torch uint8 on the input device), 3 channels. Noise is fresh per call (rng or a generator
-    seeded from the draw)."""
+    """Image-space DR hook for one rendered frame of camera `cam` (numpy / torch uint8, (H, W, 3|4) or batched), called
+    AFTER twin_scene.color_correct. The sensor DR of the draw (draw['image'][cam], sensors.pipeline.draw_dr) is applied
+    inside the camera pipeline that color_correct runs, so here the frame is returned unchanged and the DR is kept
+    active for the next frame. A frame that did not go through color_correct gets the whole camera pipeline with the
+    draw's parameters (rng: noise generator)."""
     p = (draw or {}).get("image", {}).get(cam)
     if not p:
         return img
-    import torch
-    import torch.nn.functional as F
+    from sim.twin.sensors import pipeline
 
-    is_np = not isinstance(img, torch.Tensor)
-    x = torch.from_numpy(np.ascontiguousarray(img)) if is_np else img
-    single = x.dim() == 3
-    x = (x[None] if single else x)[..., :3].float().div(255.0).permute(0, 3, 1, 2)  # N 3 H W
-    dev = x.device
-    wb = torch.tensor(p["wb"], device=dev, dtype=torch.float32).view(1, 3, 1, 1)
-    x = x * wb * float(p["gain"])
-    x = (x - 0.5) * float(p["contrast"]) + 0.5
-    s = float(p["blur_sigma"])
-    if s > 0.05:
-        r = max(1, int(math.ceil(3 * s)))
-        t = torch.arange(-r, r + 1, device=dev, dtype=torch.float32)
-        k = torch.exp(-0.5 * (t / s) ** 2)
-        k = k / k.sum()
-        x = F.conv2d(F.pad(x, (r, r, 0, 0), mode="reflect"), k.view(1, 1, 1, -1).repeat(3, 1, 1, 1), groups=3)
-        x = F.conv2d(F.pad(x, (0, 0, r, r), mode="reflect"), k.view(1, 1, -1, 1).repeat(3, 1, 1, 1), groups=3)
-    L = int(p.get("motion_len", 0))
-    if L >= 2:
-        n = L if L % 2 else L + 1
-        k = np.zeros((n, n), np.float32)
-        a = math.radians(p["motion_deg"])
-        for tt in np.linspace(-(L - 1) / 2, (L - 1) / 2, 4 * L):
-            k[int(round(n // 2 + tt * math.sin(a))), int(round(n // 2 + tt * math.cos(a)))] = 1.0
-        k /= k.sum()
-        kk = torch.from_numpy(k).to(dev).view(1, 1, n, n).repeat(3, 1, 1, 1)
-        x = F.conv2d(F.pad(x, (n // 2,) * 4, mode="reflect"), kk, groups=3)
-    if rng is None:
-        rng = np.random.default_rng(int(p.get("seed", 0)) + int(time.perf_counter_ns() % 1_000_003))
-    sig = float(p["noise"]) / 255.0
-    if sig > 0:
-        g = torch.Generator(device=dev).manual_seed(int(rng.integers(2 ** 31)))
-        x = x + torch.randn(x.shape, generator=g, device=dev) * sig
-    x = (x.clamp(0, 1) * 255.0 + 0.5).to(torch.uint8).permute(0, 2, 3, 1)
-    q = int(p.get("jpeg_q", 0))
-    if q > 0:
-        import cv2
-
-        arr = x.cpu().numpy()
-        for i in range(len(arr)):
-            ok, buf = cv2.imencode(".jpg", arr[i][..., ::-1], [cv2.IMWRITE_JPEG_QUALITY, q])
-            if ok:
-                arr[i] = cv2.imdecode(buf, cv2.IMREAD_COLOR)[..., ::-1]
-        x = torch.from_numpy(arr).to(dev)
-    x = x[0] if single else x
-    return x.cpu().numpy() if is_np else x
+    pipeline.dr_heartbeat(cam, p)
+    if pipeline.consume_processed(cam):
+        return img
+    return pipeline.apply(img, cam, rng=rng, dr=p)
 
 
 # ------------------------------------------------------------------------------------------------ photo textures
@@ -896,7 +884,9 @@ def _photo_wood(path: Path, ref_rgb, ref_mask, debug: dict):
     hsv = cv2.cvtColor(img, cv2.COLOR_RGB2HSV)
     H, W = hsv.shape[:2]
     diam, plate_mask = [], np.zeros((H, W), np.uint8)
-    for lo, hi in (((0, 170, 120), (14, 255, 255)), ((20, 150, 150), (34, 255, 255)), ((115, 40, 120), (150, 255, 255))):
+    hsv_ranges = (((0, 170, 120), (14, 255, 255)), ((20, 150, 150), (34, 255, 255)),
+                  ((115, 40, 120), (150, 255, 255)))
+    for lo, hi in hsv_ranges:
         m = cv2.inRange(hsv, lo, hi)
         m = cv2.morphologyEx(m, cv2.MORPH_OPEN, np.ones((9, 9), np.uint8))
         cs, _ = cv2.findContours(m, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)
