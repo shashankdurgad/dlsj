@@ -268,10 +268,10 @@ def test_five_missed_grasps_go_home_and_try_again(build):
     assert c.L["step"] == "pick"
     for _ in range(4):  # open, close on nothing: four misses, still picking
         run(c, clock, 1.0, grip=37.0, cmd_grip=37.0)
-        run(c, clock, 1.0, grip=3.0, cmd_grip=0.0)
+        run(c, clock, 1.0, grip=1.5, cmd_grip=0.0)
     assert c.L["step"] == "pick" and c._pick_watch.misses == 4
     run(c, clock, 1.0, grip=37.0, cmd_grip=37.0)
-    run(c, clock, 0.2, grip=3.0, cmd_grip=0.0)  # fifth miss
+    run(c, clock, 0.2, grip=1.5, cmd_grip=0.0)  # fifth miss
     assert c.L["attempts"] == 1 and c.L["cycles"][-1]["result"] == "pick stopped: misses"
     assert c.L["step"] in ("home", "survey")
     run(c, clock, 1.2)
@@ -292,7 +292,7 @@ def test_missed_grasps_off_keeps_the_timeout(build, monkeypatch):
     run(c, clock, 0.1)
     for _ in range(5):
         run(c, clock, 1.0, grip=37.0, cmd_grip=37.0)
-        run(c, clock, 1.0, grip=3.0, cmd_grip=0.0)
+        run(c, clock, 1.0, grip=1.5, cmd_grip=0.0)
     assert c.L["step"] == "pick" and c.L["attempts"] == 0
 
 

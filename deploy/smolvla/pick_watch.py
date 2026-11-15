@@ -1,8 +1,9 @@
 """Notice a pick that is going nowhere, so the loop can go home and try the prompt again.
 
 The VLA picks well on its first try. Once it misses, it tends to keep fumbling where it is. A miss is easy to see on
-the gripper: the jaws close on nothing (they bottom out at 2.5-3.7) and reopen. On a brick they stall at 4.1-8.9
-(14 Nov traces, 67 picks). Clean picks had at most 2 misses; the default stops at the 5th to leave slow picks room. A pick can also freeze
+the gripper: the jaws close on nothing and reopen. With the grasp residual on (it commands the gripper to 0 in the
+pick), empty jaws settle at 1.0-2.1 and a held brick at 2.9-3.5, so `miss_below` = 2.4 (= the loop's lost_below).
+Without the residual, empty jaws only reach 2.5-3.7: use --miss-below 3.8 there (held 4.1-8.9). Clean picks had at most 2 misses; the default stops at the 5th to leave slow picks room. A pick can also freeze
 with the jaws shut on nothing, which never reopens, so a closed-on-nothing stretch of `stuck_s` stops it too.
 
 Pure: no robot, no clock of its own. The loop feeds it (time, gripper position) while the VLA runs the pick.
@@ -12,7 +13,7 @@ from __future__ import annotations
 
 
 class PickWatch:
-    def __init__(self, max_misses: int = 5, miss_below: float = 3.8, open_above: float = 12.0, stuck_s: float = 5.0):
+    def __init__(self, max_misses: int = 5, miss_below: float = 2.4, open_above: float = 12.0, stuck_s: float = 5.0):
         self.max_misses, self.miss_below, self.open_above, self.stuck_s = max_misses, miss_below, open_above, stuck_s
         self.misses = 0
         self._armed = False  # jaws opened since the last miss: the next close on nothing counts

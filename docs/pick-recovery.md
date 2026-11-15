@@ -13,22 +13,29 @@ pick goes home.
 
 | Rule | Default | Flag |
 |---|---|---|
-| Missed grasps: the jaws closed below 3.8 (on nothing) after having been open (≥ 12) | 5th miss | `--max-misses` (0 = off) |
+| Missed grasps: the jaws closed below 2.4 (on nothing) after having been open (≥ 12) | 5th miss | `--max-misses` (0 = off) |
 | Jaws shut on nothing, continuously, after having been open in this pick | 5 s | `--stuck-closed-s` (0 = off) |
 | Time (unchanged) | 45 s | `--pick-timeout` |
 | Failed picks in a row before the loop pauses for the operator | **5** (was 3) | `--max-attempts` |
 
-`--miss-below 3.8`: closed on nothing, the jaws bottom out at 2.5–3.7. On a brick they stall at 4.1–8.9. A
-grasp confirmed on the same tick wins, because the grasp check runs first.
+`--miss-below 2.4` is set for the grasp residual (`--residual on`), which commands the gripper to 0 during the pick.
+With it, empty jaws settle at 1.0–2.1 and a held brick at 2.9–3.5 (14 Nov 22:12 and 22:17 runs). Running **without**
+the residual, empty jaws only reach 2.5–3.7 and a held brick reads 4.1–8.9, so pass `--miss-below 3.8` there.
+Otherwise the rule never fires: it's safe but does nothing. A grasp confirmed on the same tick wins, because the grasp
+check runs first. With the residual, the loop also needs the residual checkout's `hold_min 2.6` / `lost_below 2.4` to
+see grasps at all; that change is separate from this one.
 
 `--max-attempts` went up because a stop now costs about 16 s instead of 45 s. Five early stops still take less time
 before a pause than three timeouts did, so the loop never asks for the operator sooner than before.
 
 `--max-misses 0 --stuck-closed-s 0 --max-attempts 3` restores the old behaviour exactly.
 
-## Evidence (14 Nov XPS traces, 67 picks, MolmoAct2 `ft_cal2_456_8k`)
+## Evidence
 
-Replaying every recorded pick through `PickWatch`:
+**Residual on** (22:12 and 22:17 runs, 5 picks): no pick stopped, so held bricks at 2.9–3.5 never count. Only one
+real empty close (2.0) was recorded, so catching residual misses still needs checking on the arm.
+
+**Residual off, with `--miss-below 3.8`** (14 Nov traces, 67 picks, MolmoAct2 `ft_cal2_456_8k`):
 
 | Picks | Count | Stopped by the new rules |
 |---|---|---|
