@@ -14,9 +14,13 @@ Bounds, rates, fingertip point and joint offsets come from the export's meta (`r
 Wrist target: `OVBrickDetector` (brick-detector-v1, plain OpenVINO on the NPU, never ultralytics) in its own thread,
 only while the gate is open, feeding `TargetTracker` (`twin_vendor/.../perception/wrist_target.py`, unchanged).
 `--residual-top-seed` also seeds the acquisition and the top-target obs from the loop's top-camera target
-(`SeededTracker`, `TopCamera`); off by default: on recorded episodes the twin's top-camera pose put the chosen brick
-6-14 cm from the close-frame fingertip, and seeding then cut the wrist detection rate (residual_replay.py). Without
-it the top-target obs is "not available" (valid 0, as the sim's dropouts) and the tracker uses its own gating.
+(`SeededTracker`, `TopCamera`); off by default. The top camera (twin calib/cameras_fit.json, fitted with the joe_cal2
+joint offsets) and the residual's FK (W9 offsets, fitted against a different top camera) disagree at table level:
+on recorded picks the grasped brick sits ~5-7 cm from the close-frame FK fingertip, a rotation of ~12-13 deg about
+the base plus ~2 cm radially (about 2 cm of it is the W9 vs joe_cal2 pan offset). Image coordinates, frame, table
+plane and intrinsics match the twin's scene/layout.py; the twin's own layouts show the same bias (1.7-4.6 cm, joe
+offsets). Until the twin refits the top camera with the W9 FK, the top-target obs is "not available" (valid 0, as
+the sim's dropouts) and the tracker uses its own gating.
 
 Modes (`--residual`): off = nothing is built, the controller is exactly the old one; shadow = detector + residual run
 and are logged, the arm gets the unmodified plan; on = applied. `--residual-weights zero` = an all-zero residual

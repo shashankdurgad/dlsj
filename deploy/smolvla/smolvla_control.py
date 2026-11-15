@@ -282,7 +282,7 @@ def _residual_args(ap) -> None:
                     help="reject a corrected goal that moves any body joint more than this (deg) from the plan")
     ap.add_argument("--residual-top-seed", action="store_true",
                     help="seed the wrist tracker and the top-target obs from the loop's top-camera target (off by "
-                         "default: the top camera -> table geometry was 6-14 cm off on recorded episodes)")
+                         "default: the twin's top camera and the W9 FK disagree by ~5-7 cm at table level, see residual.py)")
 
 
 def _residual_config(ours):
