@@ -107,6 +107,7 @@ Other research done in conversation (not separate reports):
   3.52 deg. Steps 5 / text 128 still not tried on the fine-tuned model (`optimize.py` variants; the 8k model was not
   trained at 128 tokens). Loop: inspection ~6 ms/frame on the NPU, continuous spin 61 frames in 8.2 s (vs 12 in
   11.2 s), cycle time median 35.3 s per brick over 20 bricks.
+- **Power (`bench/molmoact2_power.md`)**: energy per action chunk 436.9 J (stock PyTorch CPU, 31.8 W x 13.7 s) -> **12.1 J** (deployed OV GPU INT8 + RTC, 38.7 W x 0.31 s) = **36x less** (package, RAPL via a root read-only logger); platform 580 -> 16 J; idle 2.9 W package / 11.5 W platform.
 - Recipe note: AI2's LoRA (connector + action expert fully trained) vs Studio's default (LoRA everywhere) have identical inference cost; A's fully trained expert may be more INT8-sensitive (fallback: expert in FP16, 380 ms).
 
 ## 5. Datasets

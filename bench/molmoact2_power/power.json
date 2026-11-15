@@ -1,0 +1,54 @@
+{
+ "idle_w": {
+  "package": 2.8877981123794276,
+  "core": 0.9704445048326561,
+  "uncore": 0.2322262750823649,
+  "psys": 11.54216645554896
+ },
+ "rows": {
+  "ov:/home/intel/inference/exports/molmo_opt/ft_cal2_456_8k/rtc_int8@GPU": {
+   "label": "now: fine-tuned 8k, OV GPU INT8+RTC",
+   "median_ms": 312.8,
+   "w": {
+    "package": 38.748991984732925,
+    "core": 6.523991617910455,
+    "uncore": 25.776747978643634,
+    "psys": 51.850019068218444
+   },
+   "j_per_chunk": {
+    "package": 12.12068469282446,
+    "core": 2.0407045780823903,
+    "uncore": 8.062966767719729,
+    "psys": 16.21868596453873
+   },
+   "j_per_chunk_above_idle": {
+    "package": 11.217381443272174,
+    "core": 1.7371495369707355,
+    "uncore": 7.9903263888739655,
+    "psys": 12.608296297243015
+   }
+  },
+  "torch:cpu:bf16": {
+   "label": "baseline: stock PyTorch CPU bf16",
+   "median_ms": 13746.1,
+   "w": {
+    "package": 18.468045945518448,
+    "core": 15.332641427018505,
+    "uncore": 0.2198087037304383,
+    "psys": 27.80966102487082
+   },
+   "j_per_chunk": {
+    "package": 253.86360637169113,
+    "core": 210.76402231993907,
+    "uncore": 3.021512422348978,
+    "psys": 382.27438141397676
+   },
+   "j_per_chunk_above_idle": {
+    "package": 214.16764473911226,
+    "core": 197.4241951120589,
+    "uncore": -0.17069317756071845,
+    "psys": 223.61460709935525
+   }
+  }
+ }
+}

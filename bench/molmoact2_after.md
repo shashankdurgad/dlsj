@@ -15,6 +15,7 @@ row, load average < 3.5 before each timed block (no blocks redone). Raw: `bench/
 | actions per second (30-action chunk) | 2.8 | 96 | |
 | peak RAM | 26.8 GB | 5.9 GB | 4.5x less |
 | error vs the human demos (joints, mean abs) | 8.34 deg | **2.80 deg** | 3.0x lower |
+| **energy per chunk (CPU package, RAPL)** | 436.9 J (31.8 W x 13.7 s) | **12.1 J** (38.7 W x 0.31 s) | **36x less** (`bench/molmoact2_power.md`) |
 | control loop (30 Hz, RTC horizon 15) | a chunk takes 10.8 s: the arm waits | every chunk arrives before the action queue runs dry (p99 317 ms < 500 ms) | never idle |
 
 ## All rows
@@ -72,4 +73,4 @@ Rows 0-3: `bench/molmoact2_baseline.md` (same frames). Rows 4-6: this run (`benc
   yet; re-check before relying on it.
 - Thermals: rows run back to back after a quiet machine (load < 3.5). Throttled runs are slower (zero-shot INT8 measured
   538 ms straight after the 20-minute CPU baseline).
-- Power: package energy counters need root on the XPS; not measured.
+- Power: measured with a root RAPL logger, see `bench/molmoact2_power.md` (the baseline ran at 13.7 s/chunk in that run).
