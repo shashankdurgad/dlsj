@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import dataclasses
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -55,8 +56,26 @@ def _cams() -> dict:
     }
 
 
+def joint_offsets() -> list | None:
+    """Fitted joint offsets (rad, 6 incl. gripper) from align/joint_fit/result.json; None keeps joe_cal2's.
+
+    Fit W (wrist camera fixed to the fitted mount) replays real demos better than joe_cal2 (grasp gate rung 3:
+    72 % vs 63 % lift). DLSJ_JOINT_OFFSETS=joe_cal2 reverts to the old offsets.
+    """
+    if os.environ.get("DLSJ_JOINT_OFFSETS", "fit") == "joe_cal2":
+        return None
+    path = REPO / "sim/twin/align/joint_fit/result.json"
+    if not path.exists():
+        return None
+    rad = json.loads(path.read_text())["joint_offsets_rad_for_sim"]
+    return [float(v) for v in rad[:5]] + [0.0]
+
+
 def twin_profile(cams: dict | None = None):
     base = load_profile("joe_cal2")
+    offs = joint_offsets()
+    if offs is not None:
+        base = dataclasses.replace(base, joint_offsets=offs)
     c = cams or _cams()
     return dataclasses.replace(
         base, name="twin_measured", robot_usd=USD, **{k: cv_to_usd_rows(*c[k]) for k in ("top", "inspect", "wrist")}
