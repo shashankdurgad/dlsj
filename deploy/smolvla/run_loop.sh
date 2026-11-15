@@ -6,6 +6,8 @@
 # smolvla_control.py.
 # Grasp residual (pick only): append --residual shadow|on --residual-weights <deploy/residual_actor.npz>
 # (deploy/smolvla/residual.py; off by default). POST /ctl/residual_off fades it out live.
+# loop_control.py is the one next to this script (~/inference/deploy/smolvla/ on the XPS, or a test checkout).
+HERE=$(cd "$(dirname "$0")" && pwd)
 cd ~/inference/dlsj-smolvla
 export PYTHONPATH=$PWD
 PY=~/desmond/venvs/pi05rt/bin/python
@@ -17,7 +19,7 @@ if [ -z "${EXPORT:-}" ] && [ -n "$STUDIO_MODEL" ]; then
     exit 1
   }
 fi
-exec $PY ~/inference/deploy/smolvla/loop_control.py \
+exec $PY "$HERE/loop_control.py" \
   --export ${EXPORT:-$HOME/inference/exports/molmo_opt/ft_cal2_456_8k/rtc_int8} --device GPU --cache-dir ~/inference/ov_cache \
   --training-tasks ~/inference/deploy/molmoact2/finetune_cal2_456.json --brick blue \
   --pick-prompt "pick up the {brick} brick" --bring-prompt "bring the brick to the inspection camera" \

@@ -20,3 +20,6 @@ sim/twin/data/
 
 # local secrets
 .env
+
+# grasp-residual exports fetched by deploy/smolvla/fetch_residual.sh
+residual_exports/
