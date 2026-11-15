@@ -32,6 +32,27 @@ row, load average < 3.5 before each timed block (no blocks redone). Raw: `bench/
 
 Rows 0-3: `bench/molmoact2_baseline.md` (same frames). Rows 4-6: this run (`bench/molmoact2_after/results.json`).
 
+## Power and energy
+
+Measured with the Intel RAPL energy counters (package-0 = CPU cores + iGPU + uncore; psys = whole platform), read every
+100 ms by a read-only root logger and matched to the exact window of each row's timed calls. Raw log and analysis:
+`bench/molmoact2_power/`, details: `bench/molmoact2_power.md`.
+
+| | baseline: stock PyTorch, CPU, bf16 | now: fine-tuned 8k, OpenVINO, Arc GPU, INT8 + RTC | change |
+|---|---|---|---|
+| latency per chunk (this run) | 13,746 ms | 313 ms | 44x faster |
+| package power while running | 31.8 W (cores 27.6 W) | 38.7 W (iGPU/uncore 25.7 W, cores 6.5 W) | +22% |
+| platform power (psys) while running | 42.2 W | 51.8 W | +23% |
+| **energy per 30-action chunk, package** | **436.9 J** | **12.1 J** | **36x less** |
+| energy per chunk, whole platform | 580.2 J | 16.2 J | 36x less |
+| energy per chunk above idle, package | 397.2 J | 11.2 J | 35x less |
+| energy per action, package | 14.6 J | 0.40 J | |
+
+Idle: package 2.9 W, platform 11.5 W. The GPU path draws slightly more power while it runs (the iGPU works instead of 14
+CPU cores), but it finishes each chunk 44x sooner, so every action costs 36x less energy. At the deployed RTC rate (a
+chunk every 500 ms, each taking 313 ms) the GPU is busy ~63% of the time. The baseline ran slower in this run than in
+the original baseline (13.7 vs 10.8 s; warm machine after earlier work); power is taken over the timed calls only.
+
 ## What we did, and what each step bought
 
 **Policy inference (MolmoAct2)**
