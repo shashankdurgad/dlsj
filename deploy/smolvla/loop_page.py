@@ -75,6 +75,11 @@ th{color:var(--mute);font-weight:500;text-align:left;padding:4px 6px;border-bott
   <section class="card"><h2>Grasp check <em id="gnum"></em></h2><div class="gstate" id="gstate">&ndash;</div>
    <div class="gauge" id="gauge"><div class="band" id="band"></div><div class="cmd" id="gcmd"></div><div class="pos" id="gpos"></div></div>
    <div class="mute" style="font-size:12px">white = gripper position, blue = command, green band = holding a brick (4&ndash;9). Holding = squeezing an object at brick width.</div></section>
+  <section class="card"><h2>Inspection pose <em id="ipsrc"></em></h2>
+   <div class="btns" style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:8px">
+    <button onclick="PZ('goto')">Go to pose</button><button onclick="PZ('save')">Save</button><button onclick="PZ('reset')">Demo pose</button>
+    <button onclick="PZ('grip_open')">Open gripper</button><button onclick="PZ('grip_close')">Close gripper</button></div>
+   <table id="iptab"></table><div class="mute" id="ipmsg" style="font-size:12px;margin-top:6px"></div></section>
   <section class="card"><h2>Reason &middot; inspection <em id="ifr"></em></h2><img class="strip" id="strip" alt="YOLO crops from the spin">
    <div class="decision"><div class="sw" id="dsw"></div><div><b id="dout">&ndash;</b><span id="dwhy">waiting for a spin</span></div></div></section>
  </div>
@@ -84,9 +89,13 @@ th{color:var(--mute);font-weight:500;text-align:left;padding:4px 6px;border-bott
 </main>
 <script>
 const $=id=>document.getElementById(id),COL={yellow:'#f2c230',orange:'#f08a24',purple:'#9b7fe0',blue:'#3d8bff',red:'#e5484d',white:'#f4f4f4',brown:'#8b5a2b'};
-const STEPS=[['survey','Survey','bricks left?'],['pick','Pick','VLA'],['bring','Bring','grasp confirmed'],['inspect','Spin + YOLO','NPU'],['place','Place','VLA'],['home','Home','only to re-check']];
+const STEPS=[['survey','Survey','bricks left?'],['pick','Pick','VLA'],['bring','Bring','grasp confirmed'],['inspect','Spin + YOLO','NPU'],['place','Place','VLA'],['home','Home','only to re-check'],['verify','Verify','YOLO: table empty?']];
 const LBL={none:'plain',circle:'circle',cross:'cross',unknown:'uncertain'};
 function L(c){fetch('/loop/'+c,{method:'POST'})}
+function PZ(c){fetch('/pose/'+c,{method:'POST'})}
+const JL={shoulder_pan:'pan',shoulder_lift:'lift',elbow_flex:'elbow',wrist_flex:'wrist flex',wrist_roll:'roll'};
+function drawPose(ip){if(!ip)return;$('ipsrc').textContent=ip.source+(ip.enabled?'':' (VLA bring in use)');$('ipmsg').textContent=ip.message||'';
+ $('iptab').innerHTML=ip.joints.map((j,i)=>`<tr><td>${JL[j]||j}</td><td style="text-align:right;width:56px">${ip.pose[i].toFixed(1)}</td><td style="text-align:right">${[-5,-1,1,5].map(d=>`<button style="padding:3px 8px" onclick="PZ('nudge/${j}/${d}')">${d>0?'+':''}${d}</button>`).join(' ')}</td></tr>`).join('')}
 addEventListener('keydown',e=>{if(e.repeat||e.target.tagName==='INPUT')return;const k=e.key.toLowerCase();
  if(k==='q'){L('stop');e.preventDefault()}else if(k==='s')L('start');else if(k==='p')L('pause');else if(k==='r')L('resume');else if(k==='h')L('home')});
 $('pipe').innerHTML=STEPS.map(s=>`<div class="chip" id="c_${s[0]}"><b>${s[1]}</b><span>${s[2]}</span></div>`).join('');
@@ -106,7 +115,7 @@ async function tick(){let r;try{r=await fetch('/ctl/state').then(x=>x.json());wi
  $('band').style.left=sc(cfg.hold[0])+'%';$('band').style.width=(sc(cfg.hold[1])-sc(cfg.hold[0]))+'%';
  if(g.pos!=null){$('gpos').style.left=sc(g.pos)+'%';$('gcmd').style.left=sc(g.cmd)+'%'}
  const tb=pc.table||[],so=pc.sorted||[],tgt=pc.target;
- $('remain').textContent=`${tb.length} on the table · ${so.length} in plates`;$('ptop').textContent=pc.age_s!=null?`${pc.age_s}s ago`:'';
+ const vf=pc.verify;$('remain').textContent=`${tb.length} on the table · ${so.length} in plates`+(vf?(vf.state==='running'?` · verifying ${vf.frames||0}/${vf.need}`:vf.state==='clear'?` · verified clear (${vf.frames} frames)`:` · verify: ${(vf.bricks||[]).length} left`):'');$('ptop').textContent=pc.age_s!=null?`${pc.age_s}s ago`:'';
  const tally=lp.tallies||{};$('plates').innerHTML=['yellow','orange','purple'].map(c=>`<div class="plate"><i style="background:${COL[c]}"></i><b>${tally[c]||0}</b><span class="mute">${c} · this run</span></div>`).join('');
  $('bricks').innerHTML=tb.map(b=>`<span class="bk${tgt&&b.box+''==tgt.box+''?' t':''}" style="color:${COL[b.colour]||'#ccc'}">${b.colour} ${b.conf.toFixed(2)}</span>`).join('')||'<span class="mute">no bricks on the table</span>';
  const ins0=pc.inspect;$('pinsp').textContent=r.phase==='inspecting'?'spinning':(ins0&&ins0.held?'held brick':'');
@@ -129,7 +138,7 @@ function drawTop(pc,step){const c=$('ovtop').getContext('2d');c.clearRect(0,0,64
   c.font='600 14px system-ui';c.fillStyle=PC[p.colour]||'#ccc';c.fillText(p.colour+' plate',p.cx-p.r*.6,p.cy+p.r+16)});
  (pc.sorted||[]).forEach(b=>box(c,b.box,'#999',1));
  const t=pc.target;(pc.table||[]).forEach(b=>{const isT=t&&b.box+''==t.box+'';box(c,b.box,isT?'#3eff8e':(COL[b.colour]||'#ccc'),isT?4:2,(isT?'TARGET ':'')+b.colour+' '+b.conf.toFixed(2))});
- if(!['survey','idle','done','paused'].includes(step)){c.font='13px system-ui';c.fillStyle='rgba(255,255,255,.8)';c.fillText('last survey result (detector paused while the arm moves)',8,ws[1]+18)}}
+ if(!['survey','verify','idle','done','paused'].includes(step)){c.font='13px system-ui';c.fillStyle='rgba(255,255,255,.8)';c.fillText('last survey result (detector paused while the arm moves)',8,ws[1]+18)}}
 let inspMode='live';
 function drawInsp(r){const pc=r.perception||{},c=$('ovinsp').getContext('2d');c.clearRect(0,0,640,480);
  const spin=r.phase==='inspecting';const want=spin?'spin':'live';
@@ -139,6 +148,6 @@ function drawInsp(r){const pc=r.perception||{},c=$('ovinsp').getContext('2d');c.
  c.strokeStyle='rgba(255,255,255,.25)';c.lineWidth=1;[ins.band[0]*640,ins.band[1]*640].forEach(x=>{c.beginPath();c.moveTo(x,0);c.lineTo(x,480);c.stroke()});
  (ins.others||[]).forEach(b=>box(c,b,'rgba(170,170,170,.8)',1));
  if(ins.held)box(c,ins.held,'#3eff8e',4,'held brick')}
-const _tick=tick;tick=async function(){await _tick();try{const r=window._last;if(r){drawTop(r.perception||{},(r.loop||{}).step);drawInsp(r)}}catch(e){}};
+const _tick=tick;tick=async function(){await _tick();try{const r=window._last;if(r){drawTop(r.perception||{},(r.loop||{}).step);drawInsp(r);drawPose(r.inspect_pose)}}catch(e){}};
 setInterval(tick,150);tick();
 </script></body></html>"""

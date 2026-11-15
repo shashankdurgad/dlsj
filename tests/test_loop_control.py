@@ -92,10 +92,12 @@ class StubInspector:
 def build(monkeypatch, tmp_path):
     clock = Clock()
 
-    def make(inspector=None):
+    def make(inspector=None, fixed_pose=False):
         insp = inspector or StubInspector()
         monkeypatch.setattr(LC, "time", clock)
         monkeypatch.setattr(LC.LCFG, "log_dir", str(tmp_path))
+        monkeypatch.setattr(LC.LCFG, "use_inspect_pose", fixed_pose)
+        monkeypatch.setattr(LC, "_make_top_detector", lambda: None)
         monkeypatch.setattr(S, "_manual_make_controller_class", lambda b: b, raising=False)
         monkeypatch.setattr(S, "BRING", "bring the brick to the inspection camera")
         fake_ai = types.ModuleType("auto_inspect")
@@ -175,7 +177,71 @@ def test_full_cycle_then_done(build):
     see_bricks(c, clock, 0)
     clock.now += 3.0
     run(c, clock, 0.1)
-    assert c.L["mode"] == "done" and c.L["step"] == "done"
+    # the survey alone never ends the loop: the YOLO verification has to agree
+    assert c.L["mode"] == "running" and c.L["step"] == "verify"
+    feed_verify(c, [[]] * LC.LCFG.verify_frames)
+    run(c, clock, 0.1)
+    assert c.L["mode"] == "done" and c.L["step"] == "done" and c.perc["verify"]["state"] == "clear"
+
+
+def feed_verify(c, tables):
+    with c.lock:
+        c._verify_frames = list(tables)
+
+
+def _brick(x, y, conf=0.5, colour="blue"):
+    return LC.P.Brick((x, y, x + 40, y + 40), conf, colour, 0.8)
+
+
+def _to_verify(c, clock):
+    c.loop_command("start")
+    run(c, clock, 1.2)
+    see_bricks(c, clock, 0)
+    clock.now += 3.0
+    run(c, clock, 0.1)
+    assert c.L["step"] == "verify"
+
+
+def test_verify_finds_a_brick_and_goes_back_to_work(build):
+    c, clock, _ = build()
+    _to_verify(c, clock)
+    n = LC.LCFG.verify_frames
+    feed_verify(c, [[_brick(200, 300)]] * (n // 2 + 1) + [[]] * (n - n // 2 - 1))
+    run(c, clock, 0.1)
+    assert c.L["mode"] == "running" and c.L["step"] == "survey" and c.L["survey_from"] == "home"
+    assert c.perc["verify"]["state"] == "bricks" and len(c.perc["verify"]["bricks"]) == 1
+
+
+def test_verify_ignores_a_one_frame_flicker(build):
+    c, clock, _ = build()
+    _to_verify(c, clock)
+    feed_verify(c, [[_brick(200, 300)]] + [[]] * (LC.LCFG.verify_frames - 1))
+    run(c, clock, 0.1)
+    assert c.L["mode"] == "done"
+
+
+def test_verify_keeps_finding_bricks_then_pauses(build):
+    c, clock, _ = build()
+    _to_verify(c, clock)
+    for k in range(LC.LCFG.max_verify_fails + 1):
+        assert c.L["step"] == "verify"
+        feed_verify(c, [[_brick(200, 300)]] * LC.LCFG.verify_frames)
+        run(c, clock, 0.1)
+        if k < LC.LCFG.max_verify_fails:
+            assert c.L["step"] == "survey"
+            run(c, clock, 1.2)
+            see_bricks(c, clock, 0)  # the survey still cannot see it
+            clock.now += 3.0
+            run(c, clock, 0.1)
+    assert c.L["mode"] == "paused" and "Verification" in c.L["message"]
+
+
+def test_verify_without_top_frames_pauses(build):
+    c, clock, _ = build()
+    _to_verify(c, clock)
+    clock.now += LC.LCFG.verify_timeout + 1
+    run(c, clock, 0.1)
+    assert c.L["mode"] == "paused"
 
 
 def test_pick_timeout_goes_home_and_retries(build):
@@ -271,3 +337,86 @@ def test_next_pick_straight_from_the_plate(build):
     run(c, clock, 0.1)
     assert c.L["step"] == "pick" and c.stage == "pick" and c.phase == "running" and c.brick == "yellow"
     assert "home" not in homes and "start" not in homes and c.bowl is None and c.L["cycle"] == 2
+
+
+class TileDetector:
+    """Answers only for the tile whose frame contains a bright square: boxes in tile pixels."""
+
+    def detect(self, tile):
+        ys, xs = np.nonzero(tile[..., 0] > 200)
+        if not len(xs):
+            return []
+        return [SimpleNamespace(box=(int(xs.min()), int(ys.min()), int(xs.max()) + 1, int(ys.max()) + 1),
+                                confidence=0.6)]
+
+
+def test_tile_grid_covers_the_work_area_with_overlap():
+    tiles = LC.P.tile_grid((0, 60, 560, 480))
+    assert len(tiles) == 4
+    assert min(t[0] for t in tiles) == 0 and max(t[2] for t in tiles) == 560
+    assert min(t[1] for t in tiles) == 60 and max(t[3] for t in tiles) == 480
+    xs = sorted({t[0] for t in tiles})
+    assert 320 - xs[1] >= 60  # neighbouring tiles overlap by more than a brick
+
+
+def test_detect_tiled_maps_boxes_back_and_merges_duplicates():
+    img = np.zeros((480, 640, 3), np.uint8)
+    img[280:320, 260:300] = 255  # in the overlap of all four tiles
+    dets = LC.P.detect_tiled(TileDetector(), img, (0, 60, 560, 480))
+    assert len(dets) == 1 and dets[0].box == (260, 280, 300, 320)
+
+
+def test_persistent_bricks_needs_half_the_frames():
+    b = _brick(100, 100)
+    near = _brick(105, 98)
+    assert LC.P.persistent_bricks([[b], [near], [], []]) and len(LC.P.persistent_bricks([[b], [near], [], []])) == 1
+    assert LC.P.persistent_bricks([[b], [], [], []]) == []
+    assert LC.P.persistent_bricks([]) == []
+
+
+def test_fixed_inspection_pose_after_grasp(build):
+    c, clock, insp = build(fixed_pose=True)
+    c.ready = np.array([26.3, -51.8, 30.1, 73.1, 15.9, 37.7])
+    c.cmd = np.array([30.0, 20.0, -2.0, 70.0, 28.0, 0.0])
+    c.loop_command("start")
+    run(c, clock, 1.2)
+    see_bricks(c, clock, 1)
+    clock.now += 3.0
+    run(c, clock, 0.1)
+    run(c, clock, 1.0, grip=5.6, cmd_grip=0.0)
+    assert c.L["step"] == "bring" and c.phase == "moving" and c._mover is not None
+    went_up = False
+    for _ in range(30 * 25):
+        clock.now += 1 / 30
+        c.measured[5] = 5.6
+        c.tick()
+        went_up = went_up or c.cmd[1] < -45  # through the raised ready pose
+        if c.L["step"] != "bring":
+            break
+    assert went_up and np.allclose(c.cmd[:5], c.ip_pose, atol=2.5)
+    assert c.cmd[5] == 0.0  # gripper command untouched: still squeezing
+    assert insp.done.wait(2.0) and c.L["step"] == "inspect"
+
+
+def test_pose_tuning_commands(build, tmp_path, monkeypatch):
+    c, clock, _ = build(fixed_pose=True)
+    saved = {}
+    monkeypatch.setattr(LC.IP, "save", lambda pose, fid, **kw: saved.setdefault("pose", list(pose)) and "x.json")
+    c.cmd = np.array(list(c.ip_pose) + [30.0])
+    c.pose_command("goto")
+    run(c, clock, 0.2)
+    assert c.phase == "posed"
+    c.pose_command("nudge", "shoulder_pan", "5")
+    assert c.ip_pose[0] == pytest.approx(LC.IP.DEMO_POSE[0] + 5) and c.phase == "posing"
+    run(c, clock, 1.0)
+    assert c.phase == "posed" and c.cmd[0] == pytest.approx(c.ip_pose[0], abs=1.0)
+    c.pose_command("save")
+    assert saved["pose"][0] == pytest.approx(LC.IP.DEMO_POSE[0] + 5) and c.ip_src == "saved"
+    c.pose_command("grip_close")
+    run(c, clock, 1.5)
+    assert c.cmd[5] < 1.0
+    c.loop_command("start")  # tuning is refused while the loop runs
+    before = c.ip_pose.copy()
+    c.pose_command("nudge", "elbow_flex", "5")
+    assert np.allclose(c.ip_pose, before)
+

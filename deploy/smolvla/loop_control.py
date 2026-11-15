@@ -6,7 +6,9 @@ PERCEIVE -> DETECT -> REASON -> ACT, repeated until the table is empty:
          --> grasp confirmed (gripper squeezing an object at brick width) --> bring (VLA "bring the brick to the
          inspection camera") --> arrived (arm settled, inspection camera sees the brick) --> spin + YOLO on the NPU
          (`auto_inspect.py`) --> plate decided --> place (VLA "place the brick in the <plate> bowl")
-         --> released (gripper open) --> home --> survey ... --> no bricks left: stay home, done.
+         --> released (gripper open) --> home --> survey ... --> no bricks left --> verify (YOLO brick detector,
+         zoomed tiles of the top view, a brick must persist across 8 frames) --> clear: stay home, done; bricks
+         left: survey again.
 
 Recovery: empty grasp / pick timeout -> home and retry (max --max-attempts in a row, then pause); brick dropped
 while bringing or spinning -> home, it is picked again from the table; uncertain inspection -> re-spin -> purple;
@@ -35,16 +37,19 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import auto_control as A  # noqa: E402  (also puts the ultralytics overlay on sys.path)
+import inspect_pose as IP  # noqa: E402
 import perception as P  # noqa: E402
 import smolvla_control as S  # noqa: E402
 
 log = logging.getLogger("loop_control")
-LCFG = SimpleNamespace(hold_min=4.0, hold_max=9.0, lost_below=3.0, open_above=12.0, pick_timeout=45.0,
+LCFG = SimpleNamespace(use_inspect_pose=True, pose_speed=30.0, nudge_speed=15.0, hold_min=4.0, hold_max=9.0, lost_below=3.0, open_above=12.0, pick_timeout=45.0,
                        bring_timeout=25.0, place_timeout=40.0, max_cycles=12, max_attempts=3,
                        workspace=(0, 60, 560, 480), empty_seconds=2.0, perception_hz=4.0, held_min_px=150,
                        held_band=(0.25, 0.75), fg_frac=0.35,
+                       top_detector="~/inference/models/brick-detector-v1", top_device="NPU", top_conf=0.3,
+                       verify_conf=0.25, verify_frames=8, verify_timeout=10.0, max_verify_fails=2,
                        log_dir="~/inference/logs/loop")
-STEPS = ["survey", "pick", "bring", "inspect", "place", "home"]
+STEPS = ["survey", "pick", "bring", "inspect", "place", "home", "verify"]
 
 
 class FrameStream:
@@ -87,8 +92,16 @@ def make_loop_controller_class(base):
             except Exception:  # noqa: BLE001
                 pass
             self.detector = getattr(getattr(self.auto_inspector, "insp", None), "detector", None)
+            self.top_detector = _make_top_detector()  # brick-detector-v1 again, own low threshold, zoomed tiles
             self.auto_inspector.listener = self._on_inspect_frame
+            self._verify_frames: list = []  # tables seen during the final "is it really empty" check
             self._insp_ref = None  # blurred grey inspection frame with the arm away (taken while surveying)
+            # fixed inspection pose (same for every brick), tunable from the dashboard
+            self.follower_id = getattr(self.arm, "id", "follower")
+            self.ip_pose, self.ip_src = IP.load(self.follower_id)
+            self.ip_msg = f"inspect pose: {self.ip_src}"
+            self._mover = None
+            self._grip_target = None
             insp = getattr(self.auto_inspector, "insp", None)
             if insp is not None and hasattr(insp, "crop_box"):
                 self._roi_crop_box = insp.crop_box
@@ -97,7 +110,7 @@ def make_loop_controller_class(base):
                       "target": None, "message": "Press Start loop", "cycles": [], "tallies": {},
                       "grasp": {"state": "open"}, "started": None, "events": collections.deque(maxlen=40)}
             self.perc = {"t": 0.0, "table": [], "sorted": [], "plates": [], "target": None, "inspect_seen": None,
-                         "inspect": None, "workspace": list(LCFG.workspace)}
+                         "inspect": None, "workspace": list(LCFG.workspace), "verify": None}
             self._plates: dict[str, P.Plate] = {}
             self._count_hist: collections.deque = collections.deque(maxlen=64)  # (t, n bricks on the table)
             self._pose_hist: collections.deque = collections.deque(maxlen=60)  # 2 s at 30 Hz
@@ -164,7 +177,8 @@ def make_loop_controller_class(base):
                 if name == "start":
                     if self.L["mode"] == "running":
                         return
-                    self.L.update(mode="running", cycle=0, attempts=0, cycles=[], tallies={}, started=time.time())
+                    self.L.update(mode="running", cycle=0, attempts=0, cycles=[], tallies={}, started=time.time(),
+                                  verify_fails=0)
                     self._go_home("Loop started: going home")
                 elif name == "resume":
                     if self.L["mode"] in ("paused", "done"):
@@ -202,12 +216,64 @@ def make_loop_controller_class(base):
                     self._grip_hist.append(float(self.measured[5]))
                 self._update_grasp()
                 if self.L["mode"] != "running":
+                    self._tuning_tick()
                     return
                 try:
                     getattr(self, f"_step_{self.L['step']}", lambda: None)()
                 except Exception as e:  # noqa: BLE001  never leave the loop running blind
                     log.exception("loop step failed")
                     self._pause(f"Loop error: {e}")
+
+        # ------------------------------------------------------------------ inspection pose tuning (loop off)
+        def _tuning_tick(self) -> None:
+            if self.phase == "posing" and self._mover is not None:
+                if self._mover.step(self):
+                    self._mover, self.phase = None, "posed"
+                    self.message = "At the inspection pose: nudge joints, then Save"
+            if self._grip_target is not None and self.phase in ("posed", "posing", "idle", "holding") \
+                    and self.cmd is not None:
+                base = np.asarray(self.cmd, float)
+                t = base.copy()
+                t[5] = self._grip_target
+                m = self._step(base + np.clip(t - base, -1.0, 1.0))  # 30 deg/s on the gripper
+                if abs(float(m[5]) - self._grip_target) < 1.0 or (self._grip_target < 5 and abs(t[5] - base[5]) < 1e-6):
+                    self._grip_target = None
+
+        def pose_command(self, name: str, *args) -> None:
+            with self.lock:
+                if self.L["mode"] == "running" or self.phase in ("running", "readying", "inspecting", "homing", "moving"):
+                    self.ip_msg = "Stop the loop / wait for the arm before tuning the pose"
+                    return
+                if self.cmd is None:
+                    self.cmd = np.asarray(self.measured if self.measured is not None else self.arm.read(), float)
+                if name == "goto":
+                    cur = np.asarray(self.cmd, float)[:5]
+                    far = float(np.abs(cur - self.ip_pose).max()) > 20
+                    ready = None if getattr(self, "ready", None) is None else np.asarray(self.ready, float)[:5]
+                    self._mover = IP.Mover([ready if far else None, self.ip_pose], LCFG.pose_speed)
+                    self.phase, self.ip_msg = "posing", "Moving to the inspection pose"
+                elif name == "nudge":
+                    joint, delta = args[0], float(args[1])
+                    self.ip_pose = IP.nudge(self.ip_pose, joint, delta)
+                    self.ip_src = "edited (not saved)"
+                    self.ip_msg = f"{joint} {delta:+g} deg"
+                    if self.phase in ("posed", "posing"):
+                        self._mover = IP.Mover([self.ip_pose], LCFG.nudge_speed)
+                        self.phase = "posing"
+                elif name == "save":
+                    path = IP.save(self.ip_pose, self.follower_id)
+                    self.ip_src, self.ip_msg = "saved", f"Saved to {path}"
+                    self._event("inspect_pose_saved", pose=np.round(self.ip_pose, 1).tolist())
+                elif name == "reset":
+                    self.ip_pose, self.ip_src = np.asarray(IP.DEMO_POSE, float), "demo (not saved)"
+                    self.ip_msg = "Back to the demo pose"
+                    if self.phase in ("posed", "posing"):
+                        self._mover, self.phase = IP.Mover([self.ip_pose], LCFG.nudge_speed), "posing"
+                elif name in ("grip_close", "grip_open"):
+                    self._grip_target = 0.0 if name == "grip_close" else 30.0
+                    if self.phase not in ("posed", "posing"):
+                        self.phase = "holding"
+                    self.ip_msg = "Gripper " + ("closing" if name == "grip_close" else "opening")
 
         def _update_grasp(self) -> None:
             if self.measured is None or self.cmd is None:
@@ -232,6 +298,42 @@ def make_loop_controller_class(base):
             elif self.phase == "stopped":
                 self._pause("Homing interrupted")
 
+        # ------------------------------------------------------------------ physical verification (end of the loop)
+        def _start_verify(self) -> None:
+            """The survey saw an empty table from home: before stopping, check it physically with the YOLO brick
+            detector (brick-detector-v1, zoomed tiles, lower threshold) over several frames."""
+            with self.lock:
+                self._verify_frames = []
+            self.perc["verify"] = {"state": "running", "frames": 0, "need": LCFG.verify_frames, "bricks": []}
+            self._goto("verify", f"Survey says the table is clear: verifying with YOLO over {LCFG.verify_frames} frames")
+
+        def _step_verify(self) -> None:
+            if self.phase == "stopped":
+                return self._pause("Stopped while verifying")
+            frames = list(self._verify_frames)
+            self.perc["verify"] = {**(self.perc.get("verify") or {}), "frames": len(frames)}
+            if len(frames) < LCFG.verify_frames:
+                if self._elapsed() > LCFG.verify_timeout:
+                    self._pause(f"Verification got {len(frames)}/{LCFG.verify_frames} top frames in "
+                                f"{LCFG.verify_timeout:.0f} s: check the top camera / detector")
+                return
+            left = P.persistent_bricks(frames)
+            self.perc["verify"] = {"state": "clear" if not left else "bricks", "frames": len(frames),
+                                   "need": LCFG.verify_frames, "bricks": left}
+            self._event("verify", bricks=len(left), boxes=[b["box"] for b in left],
+                        conf=[round(b["conf"], 2) for b in left])
+            if not left:
+                self.L["mode"] = "done"
+                total = sum(self.L["tallies"].values())
+                return self._goto("done", f"Verified clear: YOLO sees no bricks on the table in {len(frames)} "
+                                          f"frames. {total} brick(s) sorted. Loop stopped")
+            self.L["verify_fails"] = self.L.get("verify_fails", 0) + 1
+            if self.L["verify_fails"] > LCFG.max_verify_fails:
+                return self._pause(f"Verification still sees {len(left)} brick(s) after {LCFG.max_verify_fails} "
+                                   "re-surveys but the survey cannot target them: check the table, then Resume")
+            self.L["survey_from"] = "home"
+            self._goto("survey", f"Verification found {len(left)} brick(s) still on the table: back to work")
+
         def _step_survey(self) -> None:
             if self._elapsed() < 1.0:  # let the arm settle
                 return
@@ -241,10 +343,7 @@ def make_loop_controller_class(base):
             if len(recent) >= max(3, int(LCFG.empty_seconds * LCFG.perception_hz * 0.6)) and max(recent) == 0:
                 if not from_home:  # the arm may hide bricks from up here: only the view from home decides
                     return self._go_home("No bricks seen from here: going home to check the whole table")
-                self.L["mode"] = "done"
-                total = sum(self.L["tallies"].values())
-                self._goto("done", f"Table clear: {total} brick(s) sorted. Staying home")
-                return
+                return self._start_verify()
             if self.L["cycle"] >= LCFG.max_cycles:
                 self._pause(f"Reached --max-cycles {LCFG.max_cycles}")
                 return
@@ -289,6 +388,12 @@ def make_loop_controller_class(base):
                 self._replan_now()
                 self._cycle(grip=self.L["grasp"]["pos"], t_grasp=round(time.time() - self.L["cycles"][-1]["t0"], 1))
                 self._event("grasp", pos=self.L["grasp"]["pos"])
+                if LCFG.use_inspect_pose:  # the same fixed pose for every brick: raised ready pose, then the camera
+                    self._hold_here()
+                    self.phase = "moving"
+                    ready = None if getattr(self, "ready", None) is None else np.asarray(self.ready, float)[:5]
+                    self._mover = IP.Mover([ready, self.ip_pose], LCFG.pose_speed)
+                    return self._goto("bring", f"Grasp confirmed: moving to the inspection pose ({self.ip_src})")
                 self._goto("bring", "Grasp confirmed: bringing the brick to the inspection camera")
                 return
             if self._elapsed() > LCFG.pick_timeout:
@@ -298,7 +403,23 @@ def make_loop_controller_class(base):
 
         def _step_bring(self) -> None:
             if self.phase == "stopped":
+                self._mover = None
                 return self._pause("Stopped while bringing")
+            if self._mover is not None:  # scripted move to the fixed inspection pose
+                if self._held_for("lost", self.L["grasp"].get("pos", 99.0) < LCFG.lost_below, 0.5):
+                    self._mover = None
+                    self.L["attempts"] += 1
+                    self._cycle(result="dropped while bringing")
+                    return self._go_home("Brick dropped: going home, it will be picked again")
+                done = self._mover.step(self)
+                if self._held_for("posed", done, 0.5):  # arrived and settled
+                    self._mover = None
+                    self.phase = "running"
+                    self._cycle(t_inspect=round(time.time() - self.L["cycles"][-1]["t0"], 1))
+                    self._insp_frames, self._insp_crops = [], []
+                    self._start_inspection()
+                    self._goto("inspect", "At the inspection pose: spinning the brick, YOLO on the NPU")
+                return
             if self.phase != "running":
                 return
             g = self.L["grasp"].get("pos", 99.0)
@@ -356,7 +477,7 @@ def make_loop_controller_class(base):
                 return
             bowl = self.bowl or "?"
             self.L["tallies"][bowl] = self.L["tallies"].get(bowl, 0) + 1
-            self.L["attempts"] = 0
+            self.L["attempts"], self.L["verify_fails"] = 0, 0
             c = self.L["cycles"][-1] if self.L["cycles"] else {}
             self._cycle(result="sorted", seconds=round(time.time() - c.get("t0", time.time()), 1))
             self._event("sorted", bowl=bowl, seconds=c.get("seconds"))
@@ -380,11 +501,11 @@ def make_loop_controller_class(base):
                 t0 = time.monotonic()
                 step = self.L["step"]
                 try:
-                    self._perceive_once(detect_top=step in ("survey", "idle", "done", "paused"),
+                    self._perceive_once(detect_top=step in ("survey", "verify", "idle", "done", "paused"),
                                         detect_inspect=step in ("bring", "idle", "paused"))
                 except Exception:  # noqa: BLE001
                     log.exception("perception failed")
-                hz = LCFG.perception_hz if step in ("survey", "bring") else 1.5
+                hz = LCFG.perception_hz if step in ("survey", "verify", "bring") else 1.5
                 time.sleep(max(0.05, 1.0 / hz - (time.monotonic() - t0)))
 
         def _perceive_once(self, detect_top: bool = True, detect_inspect: bool = True) -> None:
@@ -396,13 +517,20 @@ def make_loop_controller_class(base):
                 for p in P.find_plates(top):
                     self._plates[p.colour] = p  # plates don't move: keep the last good circle per colour
                 plates = list(self._plates.values())
-                dets = self.detector.detect(top) if self.detector is not None else []
-                table, srt = P.split_bricks(dets, plates, top, LCFG.workspace)
+                if self.top_detector is not None:  # zoomed tiles: the ~40 px top-view bricks score 0.5+, not 0.1-0.45
+                    dets = P.detect_tiled(self.top_detector, top, LCFG.workspace)
+                else:
+                    dets = self.detector.detect(top) if self.detector is not None else []
+                table, srt = P.split_bricks(dets, plates, top, LCFG.workspace, min_conf=LCFG.top_conf)
                 target = P.choose_target(table)
+                if self.L["step"] == "verify":  # lower bar, but it has to persist across frames (persistent_bricks)
+                    vt, _ = P.split_bricks(dets, plates, top, LCFG.workspace, min_conf=LCFG.verify_conf)
+                    with self.lock:
+                        self._verify_frames.append(vt)
                 self._last_top = (table, srt, plates, target)
                 now = time.monotonic()
                 with self.lock:
-                    arm_busy = self.L["step"] not in ("survey", "idle", "done", "paused")
+                    arm_busy = self.L["step"] not in ("survey", "verify", "idle", "done", "paused")
                     self.perc.update(t=now, table=[b.to_dict() for b in table], sorted=[b.to_dict() for b in srt],
                                      plates=[vars(p) for p in plates],
                                      target=None if target is None else target.to_dict())
@@ -503,6 +631,9 @@ def make_loop_controller_class(base):
                 d["loop"]["events"] = list(L["events"])[:12]
                 d["loop"]["inspect_frames"] = self._insp_frames[-12:]
                 d["perception"] = {k: v for k, v in self.perc.items() if k != "t"}
+                d["inspect_pose"] = {"pose": np.round(self.ip_pose, 1).tolist(), "source": self.ip_src,
+                                     "joints": IP.JOINTS, "message": self.ip_msg,
+                                     "enabled": LCFG.use_inspect_pose}
                 d["perception"]["age_s"] = round(time.monotonic() - self.perc["t"], 1) if self.perc["t"] else None
                 ins = self.perc.get("inspect")
                 if ins:
@@ -519,6 +650,29 @@ def make_loop_controller_class(base):
                 super().stop()
 
     return LoopController
+
+
+def _make_top_detector():
+    """brick-detector-v1 (GitHub release brick-auto-ensemble-v1, detector_openvino_model) for the top camera, at
+    LCFG.verify_conf so the survey (top_conf) and the final check (verify_conf) filter the same detections.
+    Plain OpenVINO on the NPU when this dlsj checkout has it (releases the GIL; ultralytics in-process starves the
+    servo reads), else ultralytics on the CPU. None -> the loop falls back to the inspection detector, full frame."""
+    path = Path(LCFG.top_detector).expanduser()
+    try:
+        try:
+            from dlsj.inspect.brick_detector import make_brick_detector
+        except ImportError:
+            from dlsj.inspect.brick_detector import BrickDetector
+
+            det = BrickDetector(path / "best.pt" if path.is_dir() else path, "cpu", LCFG.verify_conf)
+        else:
+            det = make_brick_detector(path, LCFG.top_device, LCFG.verify_conf)
+        log.info("top detector: %s on %s, conf %.2f, tiles %s", path, getattr(det, "device", "?"), LCFG.verify_conf,
+                 P.tile_grid(LCFG.workspace))
+        return det
+    except Exception:  # noqa: BLE001
+        log.exception("no top detector; using the inspection detector on the full top frame")
+        return None
 
 
 def _label(outcome) -> str:
@@ -552,6 +706,16 @@ def wrap_handler(make_handler):
                 return super().do_GET()
 
             def do_POST(self):
+                if self.path.startswith("/pose/"):
+                    parts = self.path.removeprefix("/pose/").split("/")
+                    if parts[0] in ("goto", "save", "reset", "grip_close", "grip_open") or \
+                            (parts[0] == "nudge" and len(parts) == 3 and parts[1] in IP.JOINTS):
+                        try:
+                            ctl.pose_command(parts[0], *parts[1:])
+                        except ValueError:
+                            return self._send(400, b"", "text/plain")
+                        return self._send(200, b"{}", "application/json")
+                    return self._send(404, b"", "text/plain")
                 if self.path.startswith("/loop/"):
                     name = self.path.removeprefix("/loop/")
                     if name in ("start", "pause", "resume", "stop", "home"):
@@ -581,17 +745,28 @@ def main() -> None:
     ap.add_argument("--empty-seconds", type=float, default=LCFG.empty_seconds)
     ap.add_argument("--held-min-px", type=int, default=LCFG.held_min_px,
                     help="held brick at least this big (px) on the inspection camera = close enough to spin")
+    ap.add_argument("--top-detector", default=LCFG.top_detector,
+                    help="brick detector for the top camera (release brick-auto-ensemble-v1 detector)")
+    ap.add_argument("--top-device", default=LCFG.top_device)
+    ap.add_argument("--top-conf", type=float, default=LCFG.top_conf, help="survey: brick confidence threshold")
+    ap.add_argument("--verify-conf", type=float, default=LCFG.verify_conf,
+                    help="final empty-table check: lower threshold, the brick must persist in >= half the frames")
+    ap.add_argument("--verify-frames", type=int, default=LCFG.verify_frames)
     ap.add_argument("--inspect-device", default="NPU")
     ap.add_argument("--inspect-roi", default="")
     ap.add_argument("--inspect-frames", type=int, default=12)
     ap.add_argument("--inspect-range", type=float, default=180.0)
     ap.add_argument("--inspect-speed", type=float, default=60.0)
+    ap.add_argument("--vla-bring", action="store_true",
+                    help="use the VLA's bring stage instead of the fixed inspection pose")
     ours, rest = ap.parse_known_args()
+    LCFG.use_inspect_pose = not ours.vla_bring
     if ours.loop_help:
         ap.print_help()
         return
     for k in ("hold_min", "hold_max", "lost_below", "open_above", "pick_timeout", "bring_timeout", "place_timeout",
-              "max_cycles", "max_attempts", "empty_seconds", "held_min_px"):
+              "max_cycles", "max_attempts", "empty_seconds", "held_min_px", "top_detector", "top_device", "top_conf",
+              "verify_conf", "verify_frames"):
         setattr(LCFG, k, getattr(ours, k))
     LCFG.workspace = tuple(int(v) for v in ours.workspace.split(","))
     A.CFG.__dict__.update(inspect_device=ours.inspect_device, inspect_frames=ours.inspect_frames,

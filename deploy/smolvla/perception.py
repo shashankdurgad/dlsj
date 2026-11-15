@@ -79,6 +79,77 @@ def find_plates(bgr: np.ndarray, min_area: float = 7000.0) -> list[Plate]:
     return out
 
 
+@dataclass(frozen=True)
+class Det:
+    box: tuple[int, int, int, int]
+    confidence: float
+
+
+def tile_grid(workspace, tile=(320, 240)) -> list[tuple[int, int, int, int]]:
+    """Overlapping tiles covering the work area (2 x 2 for the default 560 x 420 area). Each tile is letterboxed to
+    the detector's 640 px input, i.e. zoomed ~2x: the released detector (brick-detector-v1) was trained on
+    inspection-camera close-ups, and the ~40 px top-camera bricks score 0.1-0.45 at 1x but 0.5-0.65 at 2x
+    (live top frame, 15 Nov). Overlap >= one brick, so a brick cut by one tile is whole in its neighbour."""
+    x0, y0, x1, y1 = workspace
+    tw, th = min(tile[0], x1 - x0), min(tile[1], y1 - y0)
+    nx, ny = max(1, -(-(x1 - x0) // tw)), max(1, -(-(y1 - y0) // th))
+    xs = [x0 + round(i * (x1 - x0 - tw) / max(1, nx - 1)) for i in range(nx)] if nx > 1 else [x0]
+    ys = [y0 + round(j * (y1 - y0 - th) / max(1, ny - 1)) for j in range(ny)] if ny > 1 else [y0]
+    return [(x, y, x + tw, y + th) for y in ys for x in xs]
+
+
+def merge_dets(dets, overlap: float = 0.5, extra=()) -> list[Det]:
+    """Cross-tile NMS on overlap-over-the-smaller-box, highest confidence first. (A union of duplicates fused
+    neighbouring bricks into one oversized box on live frames, 15 Nov: cut boxes are dropped in `detect_tiled`.)"""
+    keep: list[Det] = []  # `extra` (lower priority) only fills in where none of `dets` overlaps
+    for d in sorted(dets, key=lambda d: -d.confidence) + sorted(extra, key=lambda d: -d.confidence):
+        b = d.box
+        a = max(1, (b[2] - b[0]) * (b[3] - b[1]))
+        if not any(max(0, min(b[2], k.box[2]) - max(b[0], k.box[0])) * max(0, min(b[3], k.box[3]) - max(b[1], k.box[1]))
+                   / min(a, max(1, (k.box[2] - k.box[0]) * (k.box[3] - k.box[1]))) > overlap for k in keep):
+            keep.append(d)
+    return keep
+
+
+def detect_tiled(detector, bgr: np.ndarray, workspace, tile=(320, 240), edge: int = 2) -> list[Det]:
+    """The detector over zoomed overlapping tiles of the work area, boxes in full-frame pixels, merged. A box
+    touching a tile border inside the work area may be a brick cut by the tile: the overlap shows it whole in the
+    neighbouring tile, so cut boxes only survive the merge when no whole box overlaps them (the neighbour can miss
+    a brick sitting right at the border: live frame 15 Nov, 0.58 in one tile, nothing in the other)."""
+    wx0, wy0, wx1, wy1 = workspace
+    whole, cut = [], []
+    for tx0, ty0, tx1, ty1 in tile_grid(workspace, tile):
+        for d in detector.detect(np.ascontiguousarray(bgr[ty0:ty1, tx0:tx1])):
+            x0, y0, x1, y1 = d.box[0] + tx0, d.box[1] + ty0, d.box[2] + tx0, d.box[3] + ty0
+            if ((x0 <= tx0 + edge and tx0 > wx0) or (x1 >= tx1 - edge and tx1 < wx1)
+                    or (y0 <= ty0 + edge and ty0 > wy0) or (y1 >= ty1 - edge and ty1 < wy1)):
+                cut.append(Det((x0, y0, x1, y1), float(d.confidence)))
+            else:
+                whole.append(Det((x0, y0, x1, y1), float(d.confidence)))
+    return merge_dets(whole, extra=cut)
+
+
+def persistent_bricks(frames: list[list[Brick]], min_frac: float = 0.5, dist: float = 20.0) -> list[dict]:
+    """Bricks seen at the same place (centre within `dist` px) in >= `min_frac` of the frames: the final
+    "is the table really empty" check counts these, so one-frame flickers neither block nor fake an empty table."""
+    if not frames:
+        return []
+    clusters: list[dict] = []
+    for i, bricks in enumerate(frames):
+        for b in bricks:
+            cx, cy = b.centre
+            for c in clusters:
+                if (cx - c["cx"]) ** 2 + (cy - c["cy"]) ** 2 <= dist ** 2:
+                    c["frames"].add(i)
+                    c["best"] = max(c["best"], b, key=lambda x: x.conf)
+                    break
+            else:
+                clusters.append({"cx": cx, "cy": cy, "frames": {i}, "best": b})
+    need = max(1, int(np.ceil(min_frac * len(frames))))
+    return [{**c["best"].to_dict(), "seen": len(c["frames"]), "of": len(frames)}
+            for c in clusters if len(c["frames"]) >= need]
+
+
 def classify_colour(bgr_patch: np.ndarray) -> tuple[str, float]:
     """Training colour of a brick crop (centre region): (colour, confidence 0-1)."""
     h, w = bgr_patch.shape[:2]
