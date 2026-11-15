@@ -12,6 +12,18 @@ tester while retaining Anomalib's anomaly score and heatmap.
 
 The full plan, commands, code snippets and sources are in **[docs/PLAYBOOK.md](docs/PLAYBOOK.md)**.
 
+## Open data and models
+
+Write-up of the hackathon entry and our approach: **[docs/OPEN_SOURCE.md](docs/OPEN_SOURCE.md)**.
+
+- Datasets (CC BY 4.0, LeRobot format): [akoniti/dlsj-canonical](https://huggingface.co/datasets/akoniti/dlsj-canonical),
+  [akoniti/dlsj-teleop-campaign1](https://huggingface.co/datasets/akoniti/dlsj-teleop-campaign1),
+  [akoniti/dlsj-posttrain-v3-1](https://huggingface.co/datasets/akoniti/dlsj-posttrain-v3-1)
+- Model (Apache-2.0, as its base MolmoAct2): [akoniti/dlsj-molmoact2-ft-8k](https://huggingface.co/akoniti/dlsj-molmoact2-ft-8k)
+- Digital twin assets and residual RL checkpoints: [akoniti/dlsj-so101-twin](https://huggingface.co/datasets/akoniti/dlsj-so101-twin)
+- Licence: code under MIT ([LICENSE](LICENSE)); third-party parts under their own licences
+  ([THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)).
+
 ## The loop
 
 | Step | What | Where |
