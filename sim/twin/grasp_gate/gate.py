@@ -71,7 +71,8 @@ ap.add_argument("--grip_shift", type=int, default=0)
 ap.add_argument("--grip_scale", type=float, default=1.0, help="scale the gripper action below 15 units")
 ap.add_argument("--servo_k", type=float, default=1.0, help="scale the servo model's first-order gain")
 ap.add_argument("--arm_bias", type=float, default=1.0, help="scale the servo model's steady-state bias")
-ap.add_argument("--play", type=int, default=0, help="1 = GraspEnv's fitted joint-play model (sim/twin/dynamics/play.py)")
+ap.add_argument("--play", type=int, default=0,
+                help="1 = GraspEnv's fitted joint-play model (sim/twin/dynamics/play.py)")
 ap.add_argument("--distractors", type=int, default=0, help="GraspEnv clutter bricks (0 = the gate's single target)")
 ap.add_argument("--plates", type=int, default=0, help="1 = plates on the table")
 ap.add_argument("--clamp", type=float, default=1000.0)
@@ -337,7 +338,8 @@ if phys is not None:  # the effective physics (other agents change params.json /
     import hashlib
 
     pp = phys._p()
-    res["physics"] = {"gripper": pp.get("gripper"), "table": pp.get("table"), "bricks_material": pp["bricks"]["material"],
+    res["physics"] = {"gripper": pp.get("gripper"), "table": pp.get("table"),
+                      "bricks_material": pp["bricks"]["material"],
                       "md5": {f: hashlib.md5((REPO / "sim/twin" / f).read_bytes()).hexdigest()[:10]
                               for f in ("physics/params.json", "physics/apply.py", "gripper/model.py")}}
 C.dump(out / "result.json", {"summary": res, "episodes": per})

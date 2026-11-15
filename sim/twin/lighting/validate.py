@@ -26,7 +26,7 @@ sys.path.insert(0, str(REPO))
 OUT = REPO / "sim/twin/out/lighting"
 VF = REPO / "sim/twin/out/visual_fit"
 LIGHT_FIELDS = ("dome_intensity", "dome_rgb", "key_intensity", "key_angle_deg", "key_rot_xyz_deg", "key_rgb",
-                "ceiling_lights", "side_lights", "ambient_intensity", "exposure_scale")
+                "ceiling_lights", "side_lights", "ambient_intensity", "exposure_scale", "dome_specular")
 
 
 class CandidateLook:
@@ -68,7 +68,7 @@ def main():
 
     h = Harness(passes=args.passes)
     import carb
-    from pxr import Gf
+    from pxr import Gf, Sdf
 
     st = carb.settings.get_settings()
     stage = h.env.stage
@@ -96,6 +96,8 @@ def main():
         lk = new if which == "new" else old
         dome.GetAttribute("inputs:color").Set(Gf.Vec3f(*map(float, lk.dome_rgb)))
         sun.GetAttribute("inputs:color").Set(Gf.Vec3f(*map(float, lk.key_rgb)))
+        spec = getattr(lk, "dome_specular", None)
+        dome.CreateAttribute("inputs:specular", Sdf.ValueTypeNames.Float).Set(float(1.0 if spec is None else spec))
         amb = new.ambient_intensity if which == "new" else old_amb
         st.set(rig.AMBIENT_KEY, float(old_amb if amb is None else amb))
 

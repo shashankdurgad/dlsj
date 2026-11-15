@@ -159,6 +159,21 @@ def no_shadows(stage, num_envs: int) -> int:
     return n
 
 
+def apply_dome(stage, look, path: str = "/World/Light") -> float | None:
+    """Specular multiplier of the dome (UsdLux inputs:specular, `look.dome_specular`; None = leave it). The real
+    hall's ceiling is dark apart from a few strips, so a uniform dome must light diffusely but not show up as a
+    uniform reflection (a grey veil) on the clear-coated table and plates; the room's reflections come from the hall
+    cylinder and the strips."""
+    v = getattr(look, "dome_specular", None)
+    prim = stage.GetPrimAtPath(path)
+    if v is None or not prim:
+        return None
+    from pxr import Sdf
+
+    prim.CreateAttribute("inputs:specular", Sdf.ValueTypeNames.Float).Set(float(v))
+    return float(v)
+
+
 def build(stage, look, num_envs: int, prefix: str = "/World/TwinCeil", side_name: str = "TwinSide") -> dict:
     """Create the rig's ceiling tubes (global, <prefix><i>) and side lamps (per env, env_<e>/<side_name><i>) on the
     stage, stop the room stand-ins from casting shadows and apply the RTX settings."""
@@ -166,7 +181,8 @@ def build(stage, look, num_envs: int, prefix: str = "/World/TwinCeil", side_name
     ceil = [_ceiling(stage, i, c, s, prefix) for i, c in enumerate(look.ceiling_lights)]
     side = [_side(stage, e, i, c, s, side_name) for e in range(num_envs)
             for i, c in enumerate(getattr(look, "side_lights", []))]
-    return {"ceiling": ceil, "side": side, "no_shadow_prims": no_shadows(stage, num_envs),
+    return {"ceiling": ceil, "side": side, "no_shadow_prims": no_shadows(stage, num_envs), "dome_specular":
+            apply_dome(stage, look),
             "rtx_before": apply_rtx(look)}
 
 

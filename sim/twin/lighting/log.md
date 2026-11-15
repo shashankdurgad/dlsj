@@ -124,3 +124,16 @@ light keys it knows (`exposure` tuple, `p_dome_texture`), everything else follow
 * Inspect left-side blue / purple cast: lacquer reflecting the purple-lit hall (hall texture x table gloss), not a light.
 * The far strips and lamps make the warm grazing sheen in the inspect view (area 0.09 % -> 2.7-4.3 %, real 4.5 %);
   its shape is a broad glow, the real one streaky (the real lacquer is uneven).
+
+## Top-view haze check (replay ep122, 00:56)
+`contrast_check.py` / `metrics.contrast` (table / plate luma mean, std, Lab chroma; no AE / AWB normalisation).
+* The replay's sim top frames have luma std 13 and a black level (p2) of 92 from frame 0 on (real: std 38, p2 8).
+  Our validate renders of the same rig (static, 3 passes, camera response applied) have std 31.5, p2 48.
+* p2 = 92 is exactly sRGB(0.116 linear): the top camera model in visuals/camera_color.json at 00:56 had
+  `offset_linear` [0.116, 0.110, 0.096] (a veiling-glare offset), which lifts black to grey everywhere. The sensor agent
+  set it to 0 at 01:01. Not the lights.
+* Lights: rig v2 vs v3 (dome share 0.66 vs 0.745) and v3 vs v3 + dome_specular 0.2 change table luma std by < 0.5
+  and chroma by < 0.2 (validate_v3 / v4): the lighting is not what flattens the image. `dome_specular` (rig.apply_dome)
+  is available but left unset.
+* Remaining real-vs-sim gap at matched states (v4, table region): luma std 24 vs 33, chroma 7.8 vs 9.8, mean 132 vs
+  118. Under near-uniform light the table's contrast is the texture's (wood rebuild) and the material's: visual-fit.

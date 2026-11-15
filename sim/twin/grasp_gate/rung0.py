@@ -110,7 +110,8 @@ def fit_box(cam, mask, org) -> dict:
                               "cost": float(r.fun)}
     name = min(fits, key=lambda k: fits[k]["cost"] + (0.0 if k.endswith("/up") else 0.03))
     best = dict(fits[name])
-    best.update(kind=name.split("/")[0], pose=name.split("/")[1], height=POSES[name][2], iou=round(1.0 - best.pop("cost"), 3),
+    best.update(kind=name.split("/")[0], pose=name.split("/")[1], height=POSES[name][2],
+                iou=round(1.0 - best.pop("cost"), 3),
                 iou_all={k: round(1.0 - v["cost"], 3) for k, v in fits.items()})
     return best
 
@@ -144,7 +145,8 @@ def main():
     ap.add_argument("--pool", default="test")
     ap.add_argument("--n", type=int, default=0)
     ap.add_argument("--sheets", type=int, default=16)
-    ap.add_argument("--shard", default="", help="'i,n': demos i::n -> rung0_shard<i>.json (run n of them, then --merge)")
+    ap.add_argument("--shard", default="",
+                    help="'i,n': demos i::n -> rung0_shard<i>.json (run n of them, then --merge)")
     ap.add_argument("--merge", action="store_true")
     args = ap.parse_args()
     out = C.OUT / "rung0"
@@ -172,7 +174,8 @@ def main():
             print(ep, "frames missing", flush=True)
             continue
         zf = kin_fin.fk(torch.tensor(d["state"][max(cf - 10, 0):cf + 25]))[0][:, 2].numpy() - TABLE_Z
-        row = {"cf": cf, "fin_tip_fk_mm": round(float(zf.min()) * 1e3, 1), "tip_fk": np.round(p, 4).tolist(), "yaw_close": round(math.atan2(R[1, 0], R[0, 0]), 4)}
+        row = {"cf": cf, "fin_tip_fk_mm": round(float(zf.min()) * 1e3, 1), "tip_fk": np.round(p, 4).tolist(),
+               "yaw_close": round(math.atan2(R[1, 0], R[0, 0]), 4)}
         for name, cam in cams.items():
             uv = project(cam, [p[0], p[1], TABLE_Z + BODY_H])[0]
             bm = brick_mask(fr[0], fr[ins], uv)
@@ -190,13 +193,15 @@ def main():
                 for c in crop:
                     cnt, _ = cv2.findContours(bm[0], cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)
                     cv2.drawContours(c, cnt, -1, (255, 255, 0), 1)
-                    hull = cv2.convexHull(np.round(project(cam, box_corners(*fit["xy"], fit["yaw_long"],
-                                                                            POSES[fit["kind"] + "/" + fit["pose"]])) - bm[1]).astype(np.int32))
+                    size = POSES[fit["kind"] + "/" + fit["pose"]]
+                    corners = box_corners(*fit["xy"], fit["yaw_long"], size)
+                    hull = cv2.convexHull(np.round(project(cam, corners) - bm[1]).astype(np.int32))
                     cv2.polylines(c, [hull], True, (0, 255, 0), 1)
                     cv2.drawMarker(c, tuple(np.round(uv - bm[1]).astype(int)), (255, 0, 255), cv2.MARKER_CROSS, 9, 1)
                 t = cv2.resize(np.concatenate(crop, 1), None, fx=2, fy=2, interpolation=cv2.INTER_NEAREST)
                 t = cv2.copyMakeBorder(t, 0, 340 - t.shape[0], 0, 680 - t.shape[1], cv2.BORDER_CONSTANT)
-                cv2.putText(t, f"ep {ep} {fit['kind']}/{fit['pose']} iou {fit['iou']} off {fit['off_grip_mm']}", (4, 14),
+                cv2.putText(t, f"ep {ep} {fit['kind']}/{fit['pose']} iou {fit['iou']} off {fit['off_grip_mm']}",
+                            (4, 14),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.45, (255, 255, 255), 1)
                 tiles.append(t)
         if "joe" in row:
@@ -225,18 +230,22 @@ def main():
         q = np.percentile(o, [10, 50, 90], 0)
         nrm = np.linalg.norm(o, axis=1)
         stats[name] = {"n": len(o), "x_p10_50_90": q[:, 0].round(1).tolist(), "y_p10_50_90": q[:, 1].round(1).tolist(),
-                       "norm_median": round(float(np.median(nrm)), 1), "norm_p90": round(float(np.percentile(nrm, 90)), 1),
+                       "norm_median": round(float(np.median(nrm)), 1),
+                       "norm_p90": round(float(np.percentile(nrm, 90)), 1),
                        "kinds": {k: kinds.count(k) for k in LONG}}
-        md.append(f"| {name} | {len(o)} | {q[0, 0]:.1f} / {q[1, 0]:.1f} / {q[2, 0]:.1f} | {q[0, 1]:.1f} / {q[1, 1]:.1f} "
+        md.append(f"| {name} | {len(o)} | {q[0, 0]:.1f} / {q[1, 0]:.1f} / {q[2, 0]:.1f} | "
+                  f"{q[0, 1]:.1f} / {q[1, 1]:.1f} "
                   f"/ {q[2, 1]:.1f} | {np.median(nrm):.1f} / {np.percentile(nrm, 90):.1f} | {stats[name]['kinds']} |")
     both = [(r["joe"]["xy"], r["fit"]["xy"]) for r in res.values() if "fit" in r and "joe" in r]
     if both:
         dd = np.linalg.norm(np.array([a for a, _ in both]) - np.array([b for _, b in both]), axis=1) * 1e3
-        stats["joe_vs_fit_mm"] = {"median": round(float(np.median(dd)), 1), "p90": round(float(np.percentile(dd, 90)), 1)}
+        stats["joe_vs_fit_mm"] = {"median": round(float(np.median(dd)), 1),
+                                  "p90": round(float(np.percentile(dd, 90)), 1)}
         md.append(f"\nThe two camera models put the same brick {np.median(dd):.1f} mm apart (median; p90 "
                   f"{np.percentile(dd, 90):.1f} mm).")
     good = [r for r in res.values() if r["iou"] >= 0.6]
-    md.append("\n| top-camera resting pose | n | FK fin-tip height above the table at close, mm (p10 / median / p90) |\n|---|---|---|")
+    md.append("\n| top-camera resting pose | n | FK fin-tip height above the table at close, mm (p10 / median / p90) |"
+              "\n|---|---|---|")
     stats["pose_vs_fk_height"] = {}
     for pose in ("up", "side", "end"):
         z = np.array([r["fin_tip_fk_mm"] for r in good if r["pose"] == pose])
