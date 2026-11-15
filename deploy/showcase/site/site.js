@@ -98,5 +98,8 @@ if (still.matches) {
     },
     { threshold: 0.2 }
   );
-  for (const v of clips) io.observe(v);
+  for (const v of clips) {
+    v.addEventListener("playing", () => (v.controls = false));
+    io.observe(v);
+  }
 }
