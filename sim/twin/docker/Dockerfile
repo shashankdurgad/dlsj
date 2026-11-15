@@ -18,4 +18,8 @@ RUN --mount=type=cache,target=/root/.cache/uv \
  && uv pip install --python ${VIRTUAL_ENV}/bin/python -c /opt/isaaclab-pins.txt -e /opt/physical-ai-studio/library \
  && chown -R isaaclab:isaaclab /opt/physical-ai-studio \
  && find ${VIRTUAL_ENV} \! -user isaaclab -exec chown isaaclab:isaaclab {} +
+# Telemetry off: even with PRIVACY_CONSENT=N, Kit still spawns omni.telemetry.transmitter, so make it a no-op.
+RUN find /isaac-sim -type f -name omni.telemetry.transmitter -print \
+      -exec sh -c 'printf "#!/bin/sh\nexit 0\n" > "$1"' _ {} \; | tee /opt/telemetry-disabled.txt \
+ && test -s /opt/telemetry-disabled.txt
 USER isaaclab
