@@ -85,3 +85,32 @@ def test_abort_stops_the_sweep(tmp_path):
     res = ai.inspect(arm, arm.goal().copy())
     cams.stop()
     assert res.status == "aborted"
+
+
+def test_continuous_spin_classifies_many_frames_and_saves_every_crop(tmp_path):
+    import json as _json
+
+    arm, cams, ai = make((-200.0, 200.0), tmp_path)
+    ai.continuous, ai.continuous_speed, ai.early_stop = True, 600.0, False  # 600 deg/s at 200 fps = 1 frame / 3 deg
+    start = arm.goal().copy()
+    res = ai.inspect(arm, start)
+    cams.stop()
+    assert res.status == "ok" and res.outcome == "cross" and res.bowl == "purple"
+    assert res.frames > 40  # every planned angle, not 12 stops
+    out = Path(res.saved[0])
+    crops = sorted(out.glob("crop_*.jpg"))
+    assert len(crops) == res.frames and len(_json.loads((out / "crops.json").read_text())) == res.frames
+    assert len(list(out.glob("frame_*.png"))) <= 12  # full frames subsampled
+    assert abs(float(arm.read_state()[4]) - float(start[4])) < 2.0
+
+
+def test_scaled_counts():
+    from dlsj.inspect.aggregate import AggregateConfig
+
+    from auto_inspect import scaled_agg
+
+    base = AggregateConfig(strategy="yolo_topk")
+    assert scaled_agg(base, 12) is base
+    big = scaled_agg(base, 180)
+    assert big.yolo_min_marked_frames == base.yolo_min_marked_frames * 15
+    assert big.yolo_max_outlier_frames == base.yolo_max_outlier_frames * 15

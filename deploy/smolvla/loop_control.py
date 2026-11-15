@@ -43,7 +43,7 @@ import perception as P  # noqa: E402
 import smolvla_control as S  # noqa: E402
 
 log = logging.getLogger("loop_control")
-LCFG = SimpleNamespace(bring_mode="vla", spin_grasp_check=False, use_inspect_pose=False, pose_speed=30.0, nudge_speed=15.0, hold_min=4.0, hold_max=9.0, lost_below=3.0, open_above=12.0, pick_timeout=45.0,
+LCFG = SimpleNamespace(bring_mode="vla", spin_grasp_check=False, spin_continuous=True, spin_speed=30.0, use_inspect_pose=False, pose_speed=30.0, nudge_speed=15.0, hold_min=4.0, hold_max=9.0, lost_below=3.0, open_above=12.0, pick_timeout=45.0,
                        bring_timeout=25.0, place_timeout=40.0, max_cycles=12, max_attempts=3,
                        workspace=(0, 60, 560, 480), empty_seconds=2.0, perception_hz=4.0, held_min_px=150,
                        held_band=(0.25, 0.75), fg_frac=0.35,
@@ -117,6 +117,8 @@ def make_loop_controller_class(base):
             self.detector = getattr(getattr(self.auto_inspector, "insp", None), "detector", None)
             self.top_detector = _make_top_detector()  # brick-detector-v1 again, own low threshold, zoomed tiles
             self.auto_inspector.listener = self._on_inspect_frame
+            self.auto_inspector.continuous = LCFG.spin_continuous  # roll without stopping, every camera frame
+            self.auto_inspector.continuous_speed = LCFG.spin_speed
             if not LCFG.spin_grasp_check:  # spin regardless of the gripper reading (user, 15 Nov)
                 self.auto_inspector.grasp_empty_pos = -1e9
             self._verify_frames: list = []  # tables seen during the final "is it really empty" check
@@ -982,6 +984,9 @@ def main() -> None:
     ap.add_argument("--inspect-frames", type=int, default=12)
     ap.add_argument("--inspect-range", type=float, default=180.0)
     ap.add_argument("--inspect-speed", type=float, default=60.0)
+    ap.add_argument("--spin-stepped", action="store_true", help="stop at --inspect-frames angles instead of a "
+                    "continuous roll that classifies every camera frame")
+    ap.add_argument("--spin-speed", type=float, default=LCFG.spin_speed, help="continuous roll speed, deg/s")
     ap.add_argument("--spin-grasp-check", action="store_true",
                     help="abort a spin when the gripper reads empty (< 4.0); off by default")
     ap.add_argument("--bring-mode", choices=("vla", "vla_pose", "vla_offset", "fixed"), default="vla",
@@ -990,6 +995,7 @@ def main() -> None:
     ours, rest = ap.parse_known_args()
     LCFG.bring_mode = ours.bring_mode
     LCFG.spin_grasp_check = ours.spin_grasp_check
+    LCFG.spin_continuous, LCFG.spin_speed = not ours.spin_stepped, ours.spin_speed
     if ours.loop_help:
         ap.print_help()
         return
