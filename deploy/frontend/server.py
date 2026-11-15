@@ -240,6 +240,10 @@ LOOP_COMMANDS = ("start", "pause", "resume", "stop", "home")
 def make_handler(source: Source, config: dict, twin_upstream: str = "", console: str = ""):
 
     class Handler(BaseHTTPRequestHandler):
+        # keep-alive: the twin renderer polls /api/pose ~30 times a second through an SSH tunnel, where a new
+        # connection costs 0.2-0.4 s. Every reply sets Content-Length; the streaming relay closes its connection.
+        protocol_version = "HTTP/1.1"
+
         def log_message(self, *a):  # quiet
             pass
 
@@ -261,7 +265,9 @@ def make_handler(source: Source, config: dict, twin_upstream: str = "", console:
             self.send_response(200)
             self.send_header("Content-Type", up.headers.get("Content-Type", "multipart/x-mixed-replace"))
             self.send_header("Cache-Control", "no-store")
+            self.send_header("Connection", "close")
             self.end_headers()
+            self.close_connection = True
             try:
                 while chunk := up.read1(65536):
                     self.wfile.write(chunk)
