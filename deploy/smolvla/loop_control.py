@@ -131,6 +131,7 @@ def make_loop_controller_class(base):
             self.collect = C.Store()  # rig data for retraining the YOLO classifier
             self.collect_label = None  # plain / circle / cross: every spin is saved under this TRUE label
             self.collect_msg = ""
+            self._vla_bring_t0 = None
             self._bring_base = None
             insp = getattr(self.auto_inspector, "insp", None)
             if insp is not None and hasattr(insp, "crop_box"):
@@ -256,6 +257,19 @@ def make_loop_controller_class(base):
 
         # ------------------------------------------------------------------ inspection pose tuning (loop off)
         def _tuning_tick(self) -> None:
+            if self._vla_bring_t0 is not None:
+                if self.phase != "running" or self.stage != "bring":  # stopped (Q) or something else took over
+                    self._vla_bring_t0 = None
+                else:
+                    el = time.monotonic() - self._vla_bring_t0
+                    settled = (len(self._pose_hist) >= 60
+                               and float(np.ptp(np.stack(self._pose_hist)[:, :5], axis=0).max()) < 2.5)
+                    if (el > 4.0 and self._held_for("vla_bring_settled", settled, 0.5)) or el > LCFG.bring_timeout:
+                        self._vla_bring_t0 = None
+                        self._hold_here()
+                        self.stage = "pick"
+                        self.collect_msg = "At the camera: Spin & save"
+                    return
             if self.phase == "posing" and self._mover is not None:
                 if self._mover.step(self):
                     self._mover, self.phase = None, "posed"
@@ -360,6 +374,21 @@ def make_loop_controller_class(base):
                     lab = args[0] if args else "off"
                     self.collect_label = lab if lab in C.LABELS else None
                     self.collect_msg = f"Collecting as {self.collect_label}" if self.collect_label else "Collection off"
+                elif name == "bring":  # the VLA's bring stage for a hand-fed brick, then hold at the camera
+                    if self.L["mode"] == "running" or self.phase in ("running", "readying", "inspecting", "homing",
+                                                                       "moving", "posing", "collecting"):
+                        self.collect_msg = "Bring to camera needs the loop off and the arm still"
+                        return
+                    if self.L["grasp"].get("pos", 0.0) < LCFG.lost_below:
+                        self.collect_msg = "No brick in the gripper (close it on a brick first)"
+                        return
+                    if self.cmd is None:
+                        self.cmd = np.asarray(self.measured if self.measured is not None else self.arm.read(), float)
+                    self.stage = "bring"
+                    self._replan_now()
+                    self.phase, self._vla_bring_t0 = "running", time.monotonic()
+                    self._marks.pop("vla_bring_settled", None)
+                    self.collect_msg = "VLA bringing the brick to the camera..."
                 elif name == "spin":
                     if self.L["mode"] == "running" or self.phase in ("running", "readying", "inspecting", "homing",
                                                                        "moving", "posing", "collecting"):
@@ -892,8 +921,8 @@ def wrap_handler(make_handler):
                     try:
                         if parts[0] == "set" and len(parts) == 2:
                             ctl.collect_command("label", parts[1])
-                        elif parts[0] == "spin":
-                            ctl.collect_command("spin")
+                        elif parts[0] in ("spin", "bring"):
+                            ctl.collect_command(parts[0])
                         elif parts[0] == "toggle" and len(parts) == 3:
                             ctl.collect.update(parts[1], toggle=int(parts[2]))
                         elif parts[0] == "label" and len(parts) == 3:
