@@ -138,7 +138,7 @@ def make_loop_controller_class(base):
             self._vla_bring_t0 = None
             self._bring_base = None
             insp = getattr(self.auto_inspector, "insp", None)
-            if insp is not None and hasattr(insp, "crop_box"):
+            if insp is not None and hasattr(insp, "crop_box") and not hasattr(insp, "held_box"):
                 self._roi_crop_box = insp.crop_box
                 insp.crop_box = self._crop_box_held  # YOLO crops the HELD brick, not bricks on the table behind it
             self.L = {"mode": "off", "step": "idle", "since": time.monotonic(), "cycle": 0, "attempts": 0,
@@ -980,7 +980,7 @@ def main() -> None:
                     help="final empty-table check: lower threshold, the brick must persist in >= half the frames")
     ap.add_argument("--verify-frames", type=int, default=LCFG.verify_frames)
     ap.add_argument("--inspect-device", default="NPU")
-    ap.add_argument("--inspector", choices=("held_cube", "held_cube_v2", "yolo_v2"), default="held_cube",
+    ap.add_argument("--inspector", choices=("held_crop", "held_cube", "held_cube_v2", "yolo_v2"), default="held_cube",
                     help="spin classifier: held_cube (Joe's held-cube YOLO26n v4, default), held_cube_v2 or yolo_v2")
     ap.add_argument("--inspect-roi", default="")
     ap.add_argument("--inspect-frames", type=int, default=12)

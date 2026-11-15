@@ -258,6 +258,68 @@ class HeldCubeInspector:
         return YoloInspector.to_frame(index, angle, c)
 
 
+class HeldCropInspector:
+    """Two stages: the held-cube detector draws the box around the cube held in the gripper (it ignores cubes on the
+    table), and the YOLO v2 classifier classifies ONLY that crop (same padding / 320 px / JPEG round trip / confidence
+    gate as v2 was trained and tuned with). A frame with no held cube is an unsure frame: nothing in the background
+    is ever classified. Same per-frame dict as YoloInspector.classify, so the loop and decision rule are unchanged."""
+
+    def __init__(self, held_weights, classifier_dir, device: str = "NPU", held_conf: float = 0.25, padding: float = 0.05,
+                 detector=None):
+        from dlsj.inspect.yolo_inspector import YoloInspector
+        from ultralytics import YOLO
+
+        self.held = YOLO(str(held_weights), task="detect")
+        self.cls = YoloInspector(classifier_dir, device, padding=padding)  # classifier only, no crop selection
+        self.device, self.held_conf = device, held_conf
+        self.min_conf, self.min_margin, self.agg = self.cls.min_conf, self.cls.min_margin, self.cls.agg
+        self.detector = detector  # the top-camera brick detector the loop's perception uses
+        self.held.predict(np.zeros((480, 640, 3), np.uint8), imgsz=640, conf=held_conf, device=device.lower(),
+                          verbose=False)
+
+    def held_box(self, bgr):
+        r = self.held.predict(bgr, imgsz=640, conf=self.held_conf, device=self.device.lower(), verbose=False)[0]
+        if not len(r.boxes):
+            return None, 0.0
+        i = int(r.boxes.conf.argmax())
+        return tuple(int(v) for v in r.boxes.xyxy[i].tolist()), float(r.boxes.conf[i])
+
+    def classify(self, frame_rgb: np.ndarray) -> dict:
+        from dlsj.inspect.aggregate import YOLO_CLASSES, gate
+        from dlsj.inspect.brick_detector import inspection_crop
+        from dlsj.inspect.yolo_inspector import default_roi, jpeg_roundtrip
+
+        t0 = time.perf_counter()
+        bgr = np.ascontiguousarray(frame_rgb[..., ::-1])
+        box, hconf = self.held_box(bgr)
+        t1 = time.perf_counter()
+        if box is None:  # no held cube: unsure, and never a background crop
+            h, w = bgr.shape[:2]
+            roi = default_roi(w, h)
+            crop, _ = inspection_crop(bgr, roi, padding=0.0, size=320)
+            probs = {c: 1 / 3 for c in YOLO_CLASSES}
+            return {"probs": probs, "confident": None, "top": "plain", "conf": 0.0, "margin": 0.0, "box": roi,
+                    "source": "no_held_cube", "crop": crop, "ms": (time.perf_counter() - t0) * 1e3,
+                    "model_ms": (t1 - t0) * 1e3, "device": self.device, "held_conf": 0.0}
+        crop, bounds = inspection_crop(bgr, box, padding=self.cls.padding, size=320)
+        crop = jpeg_roundtrip(crop, self.cls.jpeg_quality)
+        t2 = time.perf_counter()
+        p = self.cls.classifier.predict(crop)
+        t3 = time.perf_counter()
+        probs = {c: float(p[c]) for c in YOLO_CLASSES}
+        confident, top, conf, margin = gate(probs, self.min_conf, self.min_margin)
+        return {"probs": probs, "confident": confident, "top": top, "conf": conf, "margin": margin,
+                "box": tuple(int(v) for v in bounds), "source": "held_crop", "crop": crop,
+                "ms": (time.perf_counter() - t0) * 1e3, "model_ms": (t1 - t0 + t3 - t2) * 1e3, "device": self.device,
+                "held_conf": hconf}
+
+    @staticmethod
+    def to_frame(index, angle, c):
+        from dlsj.inspect.yolo_inspector import YoloInspector
+
+        return YoloInspector.to_frame(index, angle, c)
+
+
 class _LatestFrame:
     """Continuous spins: `fresh(name, 1)` returns the newest camera frame at once instead of waiting ~33 ms for the
     next one, so the roll never pauses between frames (the sweep only ticks the wrist when it isn't grabbing)."""
@@ -305,6 +367,20 @@ def make_auto_inspector(cameras, follower_id: str = "follower", device: str = "N
     from dlsj.inspect.yolo_inspector import YoloInspector
 
     models = Path("~/inference/models").expanduser()
+    if kind == "held_crop":  # held-cube v4 box -> YOLO v2 classifier on that crop only
+        from dlsj.inspect.brick_detector import BrickDetector
+
+        top_det = BrickDetector(str(_ov_dir(models / "brick-detector-v1")), device.lower())
+        insp = HeldCropInspector(models / HELD_CUBE_WEIGHTS["held_cube"], models / "brick-yolo-classifier-v2", device,
+                                 detector=top_det)
+        try:
+            limits = arms.joint_limits_deg(follower_id, "wrist_roll")
+        except Exception as e:  # noqa: BLE001
+            log.warning("no calibrated wrist_roll limits (%s); sweeping without clipping", e)
+            limits = None
+        log.info("auto-inspect: held_crop (held-cube v4 box -> YOLO v2 classifier) on %s, wrist_roll limits %s",
+                 device, limits)
+        return AutoInspector(cameras, insp, limits, **kw)
     if kind in HELD_CUBE_WEIGHTS:
         from dlsj.inspect.brick_detector import BrickDetector
 
