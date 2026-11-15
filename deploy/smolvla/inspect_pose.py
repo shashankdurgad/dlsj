@@ -74,3 +74,31 @@ class Mover:
         if np.abs(cmd[:5] - target[:5]).max() < 1e-6 and np.abs(measured[:5] - target[:5]).max() < self.tol:
             self.i += 1
         return self.done
+
+
+# ---------------------------------------------------------------------- offset from the VLA's own bring endpoint
+def load_offset(follower_id: str = "follower", cal_dir=None) -> tuple[np.ndarray, str]:
+    """(5-joint offset added to where the VLA's bring stage stops, "saved" | "default (zero)")."""
+    import json
+
+    try:
+        from dlsj.loop.poses import pose_path
+
+        p = pose_path(follower_id, "inspect_offset", cal_dir)
+        if p.exists():
+            d = json.loads(p.read_text())
+            return np.array([float(d.get(f"{j}.pos", 0.0)) for j in JOINTS]), "saved"
+    except Exception:  # noqa: BLE001
+        pass
+    return np.zeros(5), "zero (not saved)"
+
+
+def save_offset(offset5, follower_id: str = "follower", cal_dir=None) -> str:
+    import json
+
+    from dlsj.loop.poses import pose_path
+
+    p = pose_path(follower_id, "inspect_offset", cal_dir)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(json.dumps({f"{j}.pos": round(float(v), 2) for j, v in zip(JOINTS, offset5)}, indent=2) + "\n")
+    return str(p)

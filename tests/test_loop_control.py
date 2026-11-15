@@ -96,7 +96,7 @@ def build(monkeypatch, tmp_path):
         insp = inspector or StubInspector()
         monkeypatch.setattr(LC, "time", clock)
         monkeypatch.setattr(LC.LCFG, "log_dir", str(tmp_path))
-        monkeypatch.setattr(LC.LCFG, "use_inspect_pose", fixed_pose)
+        monkeypatch.setattr(LC.LCFG, "bring_mode", "fixed" if fixed_pose else "vla_offset")
         monkeypatch.setattr(LC, "_make_top_detector", lambda: None)
         monkeypatch.setattr(S, "_manual_make_controller_class", lambda b: b, raising=False)
         monkeypatch.setattr(S, "BRING", "bring the brick to the inspection camera")
@@ -419,4 +419,56 @@ def test_pose_tuning_commands(build, tmp_path, monkeypatch):
     before = c.ip_pose.copy()
     c.pose_command("nudge", "elbow_flex", "5")
     assert np.allclose(c.ip_pose, before)
+
+
+def test_vla_bring_then_offset_with_live_tuning(build):
+    c, clock, insp = build()
+    c.ip_offset = np.zeros(5)
+    c.pose_command("hold_on")
+    c.loop_command("start")
+    run(c, clock, 1.2)
+    see_bricks(c, clock, 1)
+    clock.now += 3.0
+    run(c, clock, 0.1)
+    run(c, clock, 1.0, grip=5.6, cmd_grip=0.0)
+    assert c.L["step"] == "bring" and c.phase == "running"  # the VLA brings it (its own prompt)
+    vla_end = np.array([-12.0, 34.0, -53.0, 88.0, -4.0])
+    run(c, clock, 7.0, grip=5.6, cmd_grip=0.0, pose=vla_end)  # VLA settles at its endpoint
+    c.cmd[:5] = vla_end
+    for _ in range(60):
+        clock.now += 1 / 30
+        c.measured[5] = 5.6
+        c.tick()
+    assert c.L["step"] == "tune" and np.allclose(c._bring_base, vla_end)
+    c.pose_command("off_nudge", "shoulder_pan", "-5")  # shift right in the inspection view
+    for _ in range(90):
+        clock.now += 1 / 30
+        c.measured[5] = 5.6
+        c.tick()
+    assert c.cmd[0] == pytest.approx(-17.0, abs=0.6) and c.cmd[5] == 0.0
+    c.pose_command("spin")
+    assert insp.done.wait(2.0) and c.L["cycles"][-1]["offset"][0] == -5.0
+
+
+def test_saved_offset_applied_without_hold(build):
+    c, clock, insp = build()
+    c.ip_offset = np.array([-6.0, 0, 0, 0, 0])
+    c.loop_command("start")
+    run(c, clock, 1.2)
+    see_bricks(c, clock, 1)
+    clock.now += 3.0
+    run(c, clock, 0.1)
+    run(c, clock, 1.0, grip=5.6, cmd_grip=0.0)
+    vla_end = np.array([-12.0, 34.0, -53.0, 88.0, -4.0])
+    run(c, clock, 7.0, grip=5.6, cmd_grip=0.0, pose=vla_end)
+    c.cmd[:5] = vla_end
+    for _ in range(120):
+        clock.now += 1 / 30
+        c.measured[5] = 5.6
+        c.tick()
+        if c.L["step"] != "bring":
+            break
+    assert insp.done.wait(2.0)
+    cyc = c.L["cycles"][-1]
+    assert cyc["offset"][0] == -6.0 and cyc["vla_end"][0] == pytest.approx(-12.0)
 
