@@ -184,6 +184,11 @@ class WristCamera:
         return max(float(cov.mean()) * self.cover_weight, best_iou)
 
 
+def _cross2(a, b):
+    """z of the 2-D cross product (np.cross rejects 2-D vectors from numpy 2.5 on)."""
+    return a[..., 0] * b[..., 1] - a[..., 1] * b[..., 0]
+
+
 def _hull(uv):
     """Convex hull (counter-clockwise in image coordinates) of points uv (k, 2) (monotone chain)."""
     p = uv[np.lexsort((uv[:, 1], uv[:, 0]))]
@@ -191,7 +196,7 @@ def _hull(uv):
     def half(seq):
         h = []
         for q in seq:
-            while len(h) >= 2 and np.cross(h[-1] - h[-2], q - h[-2]) <= 0:
+            while len(h) >= 2 and _cross2(h[-1] - h[-2], q - h[-2]) <= 0:
                 h.pop()
             h.append(q)
         return h

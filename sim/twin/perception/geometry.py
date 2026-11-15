@@ -239,7 +239,8 @@ def _splat_mesh(V, F, cam, shape, scale):
         )
         / scale
     )
-    area = 0.5 * np.abs(np.cross(uv[:, 1] - uv[:, 0], uv[:, 2] - uv[:, 0]))
+    e1, e2 = uv[:, 1] - uv[:, 0], uv[:, 2] - uv[:, 0]  # 2-D cross by hand: np.cross rejects 2-D from numpy 2.5
+    area = 0.5 * np.abs(e1[:, 0] * e2[:, 1] - e1[:, 1] * e2[:, 0])
     lev = np.clip(np.ceil(np.sqrt(area * 2.0)), 1, 64).astype(int)
     for L in np.unique(lev):
         t = tri[lev == L]
