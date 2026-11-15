@@ -118,8 +118,9 @@ class AutoInspector:
         can_stop = (self.early_stop and hasattr(agg, "early_stop")
                     and "should_stop" in _inspect.signature(Sweeper.run).parameters)
         kw = {"should_stop": should_stop} if can_stop else {}
+        cams = _LatestFrame(self.cameras) if self.continuous else self.cameras
         try:
-            sres = Sweeper(robot, self.cameras, cfg, self.abort).run(start_cmd.copy(), on_frame=on_frame, **kw)
+            sres = Sweeper(robot, cams, cfg, self.abort).run(start_cmd.copy(), on_frame=on_frame, **kw)
             recs = [f.result(timeout=10.0) for f in futures]
         finally:
             pool.shutdown(wait=True, cancel_futures=True)
@@ -195,6 +196,25 @@ def _ov_dir(d: Path) -> Path:
     if not link.exists():
         link.symlink_to(d.name)
     return link
+
+
+class _LatestFrame:
+    """Continuous spins: `fresh(name, 1)` returns the newest camera frame at once instead of waiting ~33 ms for the
+    next one, so the roll never pauses between frames (the sweep only ticks the wrist when it isn't grabbing)."""
+
+    def __init__(self, cameras):
+        self.cameras = cameras
+
+    def fresh(self, name, n, timeout_s: float = 2.0):
+        s = getattr(self.cameras, "streams", {}).get(name)
+        if n == 1 and s is not None and getattr(s, "frame", None) is not None:
+            with s.cond:
+                f = s.frame
+            return [np.ascontiguousarray(f[..., ::-1])]  # BGR -> RGB, like StreamCameras.fresh
+        return self.cameras.fresh(name, n, timeout_s)
+
+    def __getattr__(self, k):
+        return getattr(self.cameras, k)
 
 
 def scaled_agg(cfg, n: int, base: int = 12):

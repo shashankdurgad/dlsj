@@ -43,7 +43,7 @@ import perception as P  # noqa: E402
 import smolvla_control as S  # noqa: E402
 
 log = logging.getLogger("loop_control")
-LCFG = SimpleNamespace(bring_mode="vla", spin_grasp_check=False, spin_continuous=True, spin_speed=30.0, use_inspect_pose=False, pose_speed=30.0, nudge_speed=15.0, hold_min=4.0, hold_max=9.0, lost_below=3.0, open_above=12.0, pick_timeout=45.0,
+LCFG = SimpleNamespace(bring_mode="vla", spin_grasp_check=False, spin_continuous=True, spin_speed=90.0, use_inspect_pose=False, pose_speed=30.0, nudge_speed=15.0, hold_min=4.0, hold_max=9.0, lost_below=3.0, open_above=12.0, pick_timeout=45.0,
                        bring_timeout=25.0, place_timeout=40.0, max_cycles=12, max_attempts=3,
                        workspace=(0, 60, 560, 480), empty_seconds=2.0, perception_hz=4.0, held_min_px=150,
                        held_band=(0.25, 0.75), fg_frac=0.35,
