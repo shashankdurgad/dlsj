@@ -75,16 +75,28 @@ class VisualSync:
         self.robot = scene[robot_key] if robot_key in scene.articulations else None
         self.envs = list(range(scene.num_envs))
         self.links, self.rigid, self.cams = {}, {}, {}
+        rel = self._link_rel_paths() if self.robot is not None else None
         for e in self.envs:
             root = self.stage.GetPrimAtPath(f"/World/envs/env_{e}/{robot_vis}")
             if root and self.robot is not None:
+                # match visual links to physics bodies by their path below the robot root: leaf names are not unique
+                # (the fin-ray hinge segments are TwinFinSeg_a.. on BOTH fingers; the physics view renames the
+                # second chain TwinFinSeg_a_0..). Matching by name posed the moving fin's segments onto the fixed
+                # fin, so the wrist camera never saw the moving fin (sim/twin/wrist_fit, 2026-11-15).
+                by_path = []
+                if rel:
+                    for i, r in enumerate(rel):
+                        p = self.stage.GetPrimAtPath(f"/World/envs/env_{e}/{robot_vis}{r}") if r else None
+                        if p:
+                            by_path.append((i, p))
                 names = set(self.robot.body_names)
                 found = {}
                 for p in Usd.PrimRange(root):
                     if p.GetName() in names and p.GetName() not in found:
                         found[p.GetName()] = p
-                order = sorted(found, key=lambda n: str(found[n].GetPath()).count("/"))
-                self.links[e] = [(self.robot.body_names.index(n), found[n]) for n in order]
+                by_name = [(self.robot.body_names.index(n), found[n]) for n in found]
+                links = by_path if len(by_path) >= len(by_name) else by_name
+                self.links[e] = sorted(links, key=lambda ip: str(ip[1].GetPath()).count("/"))  # parents first
             for key, obj in scene.rigid_objects.items():
                 name = env_path(obj.cfg.prim_path, e).rsplit("/", 1)[1]
                 vp = self.stage.GetPrimAtPath(f"/World/envs/env_{e}/{vis_root}/{name}")
@@ -96,6 +108,18 @@ class VisualSync:
                     local0 = UsdGeom.Xformable(cam).GetLocalTransformation(Usd.TimeCode.Default())
                     self.cams[e] = (cam, self.robot.body_names.index(cam.GetParent().GetName()), local0,
                                     _parent_world(cam).GetInverse())
+
+    def _link_rel_paths(self) -> list | None:
+        """Physics link prim paths of env 0 relative to the robot prim, in body index order (None if unavailable)."""
+        try:
+            view = self.robot.root_physx_view
+            paths = list(view.link_paths[0])
+            root = env_path(self.robot.cfg.prim_path, 0)
+            if len(paths) != len(self.robot.body_names):
+                return None
+            return [p[len(root):] if p.startswith(root + "/") else None for p in paths]
+        except Exception:  # noqa: BLE001
+            return None
 
     def __call__(self) -> int:
         n = 0
